@@ -67,8 +67,8 @@ This repository is intentionally curated from the private SaaS monorepo. Do not 
 
 ## Documentation
 
-Docs live in `apps/docs` and are published at https://runtraice.github.io/traice-sdk/.
-The `docs.runtraice.com` custom domain can be added after DNS is configured.
+Docs live in `apps/docs` and are reachable from https://runtraice.com/docs.
+The app-owned `/docs` route redirects to the current GitHub Pages deployment.
 
 ## License
 
