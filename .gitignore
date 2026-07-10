@@ -1,0 +1,14 @@
+node_modules
+dist
+.next
+out
+coverage
+.env
+.env.*
+!.env.example
+.traice
+.traice-*
+.traice-costs
+*.log
+*.tgz
+.DS_Store

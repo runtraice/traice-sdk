@@ -1,0 +1,49 @@
+{
+  "name": "traice-sdk-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Public SDKs and coding-agent collectors for trAIce.",
+  "license": "MIT",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @traice/protocol && npm run build --workspace @traice/sdk && npm run build --workspace @traice/collector && npm run docs:build",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run public:verify",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "prepare": "husky",
+    "public:verify": "node scripts/verify-public-surface.mjs",
+    "test": "npm run test --workspace @traice/protocol && npm run test --workspace @traice/collector && npm run test --workspace @traice/sdk",
+    "typecheck": "npm run typecheck --workspace @traice/protocol && npm run typecheck --workspace @traice/collector && npm run typecheck --workspace @traice/sdk && npm run typecheck --workspace @traice/docs",
+    "docs:dev": "npm run dev --workspace apps/docs",
+    "docs:build": "npm run build --workspace apps/docs",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "npm run check && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7",
+    "@eslint/js": "^9.32.0",
+    "@types/node": "^20.19.9",
+    "eslint": "^9.32.0",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
+    "prettier": "^3.9.5",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.38.0",
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "esbuild": "0.28.1",
+    "next": {
+      "postcss": "8.5.10"
+    },
+    "postcss": "8.5.10"
+  }
+}

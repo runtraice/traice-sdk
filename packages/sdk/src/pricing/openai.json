@@ -1,0 +1,67 @@
+{
+  "gpt-4o": {
+    "input": 2.5,
+    "output": 10.0,
+    "unit": "per_million_tokens"
+  },
+  "gpt-4o-2024-11-20": {
+    "input": 2.5,
+    "output": 10.0,
+    "unit": "per_million_tokens"
+  },
+  "gpt-4o-2024-08-06": {
+    "input": 2.5,
+    "output": 10.0,
+    "unit": "per_million_tokens"
+  },
+  "gpt-4o-mini": {
+    "input": 0.15,
+    "output": 0.6,
+    "unit": "per_million_tokens"
+  },
+  "gpt-4o-mini-2024-07-18": {
+    "input": 0.15,
+    "output": 0.6,
+    "unit": "per_million_tokens"
+  },
+  "gpt-4-turbo": {
+    "input": 10.0,
+    "output": 30.0,
+    "unit": "per_million_tokens"
+  },
+  "gpt-4-turbo-2024-04-09": {
+    "input": 10.0,
+    "output": 30.0,
+    "unit": "per_million_tokens"
+  },
+  "gpt-4": {
+    "input": 30.0,
+    "output": 60.0,
+    "unit": "per_million_tokens"
+  },
+  "gpt-3.5-turbo": {
+    "input": 0.5,
+    "output": 1.5,
+    "unit": "per_million_tokens"
+  },
+  "o1": {
+    "input": 15.0,
+    "output": 60.0,
+    "unit": "per_million_tokens"
+  },
+  "o1-mini": {
+    "input": 3.0,
+    "output": 12.0,
+    "unit": "per_million_tokens"
+  },
+  "o3": {
+    "input": 10.0,
+    "output": 40.0,
+    "unit": "per_million_tokens"
+  },
+  "o3-mini": {
+    "input": 1.1,
+    "output": 4.4,
+    "unit": "per_million_tokens"
+  }
+}

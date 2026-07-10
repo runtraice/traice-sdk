@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "isolatedModules": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "rootDir": ".",
+    "types": ["node", "jest"]
+  },
+  "include": ["src/**/*.ts", "dashboard/**/*.ts", "tests/**/*.ts", "examples/**/*.ts", "demo.ts", "tsup.config.ts"],
+  "exclude": ["dist", "node_modules"]
+}

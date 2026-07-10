@@ -1,0 +1,43 @@
+{
+  "name": "@traice/protocol",
+  "version": "0.1.0",
+  "description": "Shared trAIce event schemas and normalization helpers.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runtraice/traice-sdk.git",
+    "directory": "packages/protocol"
+  },
+  "bugs": {
+    "url": "https://github.com/runtraice/traice-sdk/issues"
+  },
+  "homepage": "https://docs.runtraice.com",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "name": "@traice/sdk",
+  "version": "0.1.0",
+  "description": "Per-feature, per-user cost attribution and reporting for LLM API calls.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runtraice/traice-sdk.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/runtraice/traice-sdk/issues"
+  },
+  "homepage": "https://docs.runtraice.com",
+  "type": "module",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "files": [
+    "dist",
+    "dashboard/index.html",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "bin": {
+    "traice-sdk": "./dist/cli.cjs"
+  },
+  "scripts": {
+    "build": "tsup",
+    "demo": "tsx demo.ts",
+    "dashboard": "node dist/dashboard/server.cjs",
+    "test": "npm run build && jest",
+    "test:smoke": "tsx tests/smoke.ts",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm pack --dry-run"
+  },
+  "keywords": [
+    "llm",
+    "openai",
+    "anthropic",
+    "cost",
+    "tokens",
+    "observability",
+    "monitoring",
+    "ai",
+    "pricing",
+    "attribution",
+    "usage"
+  ],
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.20.0",
+    "@langchain/core": ">=0.1.0",
+    "@opentelemetry/api": ">=1.0.0",
+    "openai": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "cli-table3": "^0.6.3",
+    "commander": "^12.1.0",
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/uuid": "^10.0.0",
+    "jest": "^30.0.5",
+    "ts-jest": "^29.4.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
