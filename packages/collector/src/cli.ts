@@ -12,7 +12,7 @@ program
   .command("install")
   .argument("<agent>", "agent to install: claude-code or codex")
   .option("--config <path>", "collector config path")
-  .option("--server-url <url>", "trAIce app URL", "https://app.runtraice.com")
+  .option("--server-url <url>", "trAIce app URL", "https://runtraice.com")
   .option("--api-key <key>", "trAIce API key")
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--employee-email <email>", "employee email")

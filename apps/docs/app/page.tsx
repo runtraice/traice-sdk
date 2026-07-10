@@ -16,8 +16,8 @@ export default function HomePage() {
             collector for Claude Code, Codex, and future adapters.
           </p>
           <div className="hero-actions">
-            <Link className="primary-link" href="/docs/sdk-quickstart">
-              Start with the SDK
+            <Link className="primary-link" href="/docs/install">
+              Start the install guide
               <ArrowRight size={16} />
             </Link>
             <Link className="secondary-link" href="/docs/claude-code">
@@ -29,7 +29,7 @@ export default function HomePage() {
           <pre>{`npm install @traice/sdk
 
 npx @traice/collector@latest install claude-code \\
-  --server-url https://app.runtraice.com \\
+  --server-url https://runtraice.com \\
   --employee-email you@company.com
 
 npx @traice/collector@latest collect`}</pre>
@@ -37,10 +37,10 @@ npx @traice/collector@latest collect`}</pre>
       </section>
 
       <section className="feature-grid" aria-label="Documentation areas">
-        <Link href="/docs/sdk-quickstart" className="feature-card">
+        <Link href="/docs/install" className="feature-card">
           <Terminal size={20} />
-          <h2>Runtime SDK</h2>
-          <p>Track product LLM cost by feature, tenant, user, workflow, run, and step.</p>
+          <h2>Install Guide</h2>
+          <p>Sign in, create an API key, and send product or internal-spend events.</p>
         </Link>
         <Link href="/docs/collector-overview" className="feature-card">
           <Radio size={20} />

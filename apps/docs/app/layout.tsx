@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowUpRight, BookOpen, Github, Home, Package } from "lucide-react";
+import { ArrowUpRight, BookOpen, Github, Home, Package, Wrench } from "lucide-react";
 import { CommandMenu } from "./components/CommandMenu";
 import { allDocs } from "./lib/docs";
 import "./globals.css";
@@ -30,6 +30,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Home size={16} />
               trAIce home
             </a>
+            <Link href="/docs/install">
+              <Wrench size={16} />
+              Install
+            </Link>
             <Link href="/docs/sdk-quickstart">
               <Package size={16} />
               SDK

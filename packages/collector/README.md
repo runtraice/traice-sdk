@@ -6,7 +6,7 @@ Unified local collector for coding-agent usage.
 
 ```sh
 npx @traice/collector@latest install claude-code \
-  --server-url https://app.runtraice.com \
+  --server-url https://runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
   --team-name Engineering \
@@ -22,7 +22,7 @@ Prompt logging stays disabled unless you explicitly pass `--include-prompts`.
 ## Codex
 
 ```sh
-npx @traice/collector@latest install codex --server-url https://app.runtraice.com --api-key-stdin
+npx @traice/collector@latest install codex --server-url https://runtraice.com --api-key-stdin
 npx @traice/collector@latest collect --agent codex
 ```
 

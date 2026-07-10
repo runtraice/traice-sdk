@@ -10,7 +10,7 @@ Install:
 
 ```sh
 npx @traice/collector@latest install codex \
-  --server-url https://app.runtraice.com \
+  --server-url https://runtraice.com \
   --employee-email you@company.com \
   --team-name Engineering \
   --api-key-stdin

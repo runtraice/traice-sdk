@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { resolve } from "node:path";
 import {
+  DEFAULT_SERVER_URL,
   buildDefaultConfig,
   defaultSourceForAgent,
   mergeConfigForAgent,
@@ -37,7 +38,7 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
       : { codexHome: resolveHome(options.codexHome ?? base.codexHome ?? "~/.codex") };
 
   const next = mergeConfigForAgent(current, options.agent, {
-    serverUrl: normalizeUrl(options.serverUrl ?? current?.serverUrl ?? "https://app.runtraice.com"),
+    serverUrl: normalizeUrl(options.serverUrl ?? current?.serverUrl ?? DEFAULT_SERVER_URL),
     apiKey,
     listenHost,
     listenPort,
