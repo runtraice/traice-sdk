@@ -67,7 +67,8 @@ This repository is intentionally curated from the private SaaS monorepo. Do not 
 
 ## Documentation
 
-Docs live in `apps/docs` and are planned for `https://docs.runtraice.com`.
+Docs live in `apps/docs` and are published at https://runtraice.github.io/traice-sdk/.
+The `docs.runtraice.com` custom domain can be added after DNS is configured.
 
 ## License
 

@@ -11,7 +11,7 @@
   "bugs": {
     "url": "https://github.com/runtraice/traice-sdk/issues"
   },
-  "homepage": "https://docs.runtraice.com",
+  "homepage": "https://runtraice.github.io/traice-sdk/",
   "type": "module",
   "engines": {
     "node": ">=20.9"
