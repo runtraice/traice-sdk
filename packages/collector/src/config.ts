@@ -5,6 +5,7 @@ import type { AgentName, CollectorConfig } from "./types";
 import { defaultSourcePrincipal, normalizeUrl, readJsonFile, resolveHome, writePrivateJson } from "./fs";
 
 export const DEFAULT_CONFIG_PATH = "~/.traice/collector/config.json";
+export const DEFAULT_SERVER_URL = "https://runtraice.com";
 
 export function resolveConfigPath(path = DEFAULT_CONFIG_PATH): string {
   return resolveHome(path);
@@ -27,7 +28,7 @@ export function buildDefaultConfig(now = new Date()): CollectorConfig {
     version: 1,
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
-    serverUrl: "https://app.runtraice.com",
+    serverUrl: DEFAULT_SERVER_URL,
     listenHost: "127.0.0.1",
     listenPort: 4318,
     includePrompts: false,

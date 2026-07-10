@@ -63,7 +63,7 @@ describe("@traice/collector", () => {
       version: 1,
       createdAt: "2026-07-10T00:00:00.000Z",
       updatedAt: "2026-07-10T00:00:00.000Z",
-      serverUrl: "https://app.runtraice.com",
+      serverUrl: "https://runtraice.com",
       listenHost: "127.0.0.1",
       listenPort: 4318,
       includePrompts: false,

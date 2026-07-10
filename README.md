@@ -47,7 +47,7 @@ const { configure, meter } = require("@traice/sdk");
 
 ```sh
 npx @traice/collector@latest install claude-code \
-  --server-url https://app.runtraice.com \
+  --server-url https://runtraice.com \
   --employee-email you@company.com \
   --team-name Engineering
 

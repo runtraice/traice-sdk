@@ -16,7 +16,7 @@ stty echo
 printf "\n"
 printf "%s" "$TRAICE_API_KEY" | npx @traice/collector@latest install claude-code \
   --api-key-stdin \
-  --server-url https://app.runtraice.com \
+  --server-url https://runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
   --team-name Engineering
