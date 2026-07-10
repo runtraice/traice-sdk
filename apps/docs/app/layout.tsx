@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BookOpen, Github, Package } from "lucide-react";
+import { ArrowUpRight, BookOpen, Github, Home, Package } from "lucide-react";
 import { CommandMenu } from "./components/CommandMenu";
 import { allDocs } from "./lib/docs";
 import "./globals.css";
+
+const APP_URL = "https://www.runtraice.com/app/dashboard";
+const HOME_URL = "https://www.runtraice.com";
 
 export const metadata: Metadata = {
   title: "trAIce SDK Docs",
@@ -23,6 +26,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <span>trAIce SDK</span>
           </Link>
           <nav aria-label="Primary navigation">
+            <a href={HOME_URL}>
+              <Home size={16} />
+              trAIce home
+            </a>
             <Link href="/docs/sdk-quickstart">
               <Package size={16} />
               SDK
@@ -34,6 +41,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="https://github.com/runtraice/traice-sdk">
               <Github size={16} />
               GitHub
+            </a>
+            <a className="app-link" href={APP_URL}>
+              Go to app
+              <ArrowUpRight size={16} />
             </a>
           </nav>
         </header>
