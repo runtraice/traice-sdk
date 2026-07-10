@@ -8,6 +8,7 @@ export function CommandMenu({ docs }: { docs: DocSummary[] }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -65,7 +66,7 @@ export function CommandMenu({ docs }: { docs: DocSummary[] }) {
             </div>
             <div className="command-results">
               {results.map((doc) => (
-                <a href={`/docs/${doc.slug}`} key={doc.slug}>
+                <a href={`${basePath}/docs/${doc.slug}`} key={doc.slug}>
                   <span>{doc.title}</span>
                   <small>{doc.excerpt}</small>
                 </a>

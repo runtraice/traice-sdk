@@ -19,12 +19,13 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
   const { slug } = await params;
   const doc = docBySlug(slug);
   if (!doc) notFound();
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
   return (
     <main className="doc-shell">
       <aside className="doc-sidebar" aria-label="Documentation navigation">
         {allDocs().map((item) => (
-          <a data-active={item.slug === doc.slug} href={`/docs/${item.slug}`} key={item.slug}>
+          <a data-active={item.slug === doc.slug} href={`${basePath}/docs/${item.slug}`} key={item.slug}>
             {item.title}
           </a>
         ))}
