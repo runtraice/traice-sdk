@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
+import packageMetadata from "../package.json";
 import * as fs from "fs";
 import * as readline from "readline";
 import chalk from "chalk";
@@ -143,7 +144,7 @@ const program = new Command();
 program
   .name("traice-sdk")
   .description("Per-feature, per-user cost attribution and reporting for LLM API calls")
-  .version("0.1.0");
+  .version(packageMetadata.version);
 
 program
   .command("report")

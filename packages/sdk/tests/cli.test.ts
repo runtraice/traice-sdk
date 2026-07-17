@@ -84,6 +84,13 @@ describe("CLI report", () => {
     });
   }
 
+  it("reports the published package version", () => {
+    const packageMetadata = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    const output = execSync(`node ${CLI_PATH} --version`, { encoding: "utf-8" });
+
+    expect(output.trim()).toBe(packageMetadata.version);
+  });
+
   it("default report shows features", () => {
     const output = runCli("");
     expect(output).toContain("chat");
