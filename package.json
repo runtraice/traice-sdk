@@ -23,7 +23,8 @@
     "docs:build": "npm run build --workspace apps/docs",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "npm run check && changeset publish"
+    "release": "npm run check && changeset publish",
+    "release:prepare": "bash scripts/prepare-release.sh"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
