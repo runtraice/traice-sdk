@@ -38,7 +38,7 @@
     "build": "tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm pack --dry-run"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@traice/protocol": "0.1.0",

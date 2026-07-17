@@ -43,7 +43,7 @@
     "test": "npm run build && jest",
     "test:smoke": "tsx tests/smoke.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm pack --dry-run"
+    "prepack": "npm run build"
   },
   "keywords": [
     "llm",

@@ -10,10 +10,11 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @traice/protocol && npm run build --workspace @traice/sdk && npm run build --workspace @traice/collector && npm run docs:build",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run public:verify",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run pack:check && npm run public:verify",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "pack:check": "npm pack --dry-run --workspace @traice/protocol && npm pack --dry-run --workspace @traice/collector && npm pack --dry-run --workspace @traice/sdk",
     "prepare": "husky",
     "public:verify": "node scripts/verify-public-surface.mjs",
     "test": "npm run test --workspace @traice/protocol && npm run test --workspace @traice/collector && npm run test --workspace @traice/sdk",
