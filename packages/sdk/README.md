@@ -66,6 +66,33 @@ npx @traice/sdk anomalies --threshold 2
 - `webhook`: send events to an HTTP endpoint.
 - `otel`: emit OpenTelemetry metrics.
 
+## Active exact-cache guardrails
+
+An active `CACHE_EXACT` rule in trAIce can short-circuit identical non-streaming
+requests through a bounded, process-local cache:
+
+```ts
+import { CloudAdapter } from "@traice/sdk";
+
+const cloud = new CloudAdapter({ apiKey: process.env.TRAICE_API_KEY! });
+const request = { model: "gpt-4o-mini", messages, temperature: 0 };
+
+const response = await cloud.enforceExactCache(request, () => openai.chat.completions.create(request), {
+  feature: "support",
+  provider: "openai",
+});
+
+console.log(cloud.getExactCacheStats());
+```
+
+The request hash includes the complete normalized request and is scoped to the
+workspace API key and rule. Rule lookup, cache bookkeeping, and Decision Record
+telemetry fail open. Use `{ bypass: true }` or the
+`x-traice-cache-bypass: 1` header for a per-call bypass. Streaming requests are
+always passed through because provider stream objects cannot be replayed safely.
+Matched hits and misses are reported to trAIce so the Guardrails page can show
+the real cache hit rate; payloads remain process-local.
+
 ## Privacy
 
 Prompts and outputs are not required for cost attribution. Only pass `prompt` or `output` when your workspace has explicitly opted into sample capture.
