@@ -1,6 +1,6 @@
 {
   "name": "@traice/collector",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local coding-agent usage collector for trAIce Internal Spend.",
   "license": "MIT",
   "type": "module",
@@ -41,7 +41,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@traice/protocol": "0.1.0",
+    "@traice/protocol": "0.1.1",
     "commander": "^12.1.0"
   },
   "publishConfig": {
