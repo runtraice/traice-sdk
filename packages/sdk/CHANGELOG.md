@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- f086445: Clarify that the SDK package includes the command-line interface.
+
 ## 0.2.1
 
 ### Patch Changes
