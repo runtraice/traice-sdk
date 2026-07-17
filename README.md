@@ -63,8 +63,9 @@ npm install
 npm run check
 ```
 
-Published-package changes require a Changeset. Merges to `main` drive the
-version-PR/publish workflow; see [CONTRIBUTING.md](CONTRIBUTING.md#releases).
+Published-package changes require a Changeset. A reviewed version PR is the
+publish gate; ordinary merges do not publish. See
+[CONTRIBUTING.md](CONTRIBUTING.md#releases).
 
 This repository is intentionally curated from the private SaaS monorepo. Do not copy SaaS application code, environment files, database schemas, migrations, customer data, or Vercel configuration into this public repo.
 
