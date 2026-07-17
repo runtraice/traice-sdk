@@ -35,25 +35,24 @@ that changes a published package:
 npm run changeset
 ```
 
-After package PRs merge, a maintainer configures a granular npm token with
-read/write access to the `@traice` scope and bypass-2FA enabled, then prepares
-the reviewable version PR with the release helper:
+After package PRs merge, a maintainer prepares the reviewable version PR with
+the release helper:
 
 ```sh
 npm run release:prepare
 ```
 
-The helper prompts for the token without echoing or writing it to disk, stores
-it as the SDK repository's `NPM_TOKEN` Actions secret, verifies the secret is
-visible, runs the full package checks in a temporary worktree, and opens the
-version PR. Use `--secret-only` or `--prepare-only` to split those operations.
-It never merges the PR or publishes directly.
+The helper runs the full package checks in a temporary worktree and opens the
+version PR. It never merges the PR or publishes directly.
 
 The Release workflow sees pending Changesets on ordinary `main` merges and does
 not publish. Merging the version PR consumes those Changesets, bumps package
 versions, and automatically publishes the new versions to npm.
 `workflow_dispatch` reruns the same detection and is available as a recovery
 path; it does not bypass the version-PR gate. Publication requires the
-`@traice` npm scope and an Actions-visible `NPM_TOKEN` with publish access.
+`@traice` npm scope's trusted-publisher entries for
+`runtraice/traice-sdk/.github/workflows/release.yml`. GitHub Actions obtains a
+short-lived npm credential through OIDC for each release, so there is no npm
+publish token to store or rotate.
 SDK npm releases are independent of the private trAIce application's GCP Cloud
 Build and Terraform deployment pipeline.
