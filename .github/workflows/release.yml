@@ -10,25 +10,34 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
-  pull-requests: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run check
-      - uses: changesets/action@v1
-        with:
-          publish: npm run release
+      - name: Check for pending changesets
+        id: changesets
+        shell: bash
+        run: |
+          if find .changeset -maxdepth 1 -type f -name '*.md' ! -name 'README.md' | grep -q .; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+            echo "Pending changesets found; create and merge a version PR before publishing."
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish versioned packages
+        if: steps.changesets.outputs.pending == 'false'
+        run: npm run release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
