@@ -28,8 +28,15 @@ Open pull requests against `main`. Include:
 
 ## Releases
 
-Packages are released with Changesets.
+Packages are released from `main` with Changesets. Add a changeset to every PR
+that changes a published package:
 
 ```sh
 npm run changeset
 ```
+
+After the PR merges, the Release workflow creates or updates the Changesets
+version PR. Merging that version PR runs the workflow again and publishes the
+new package versions to npm. `workflow_dispatch` is available as a recovery
+path. Publication requires the `@traice` npm scope and an Actions-visible
+`NPM_TOKEN` with publish access.

@@ -25,12 +25,19 @@ describe("CloudAdapter", () => {
   let port: number;
   let receivedBodies: any[];
   let receivedHeaders: any;
+  let rulesResponse: Record<string, unknown>;
 
   beforeEach((done) => {
     receivedBodies = [];
     receivedHeaders = {};
+    rulesResponse = { ttlSeconds: 60, rules: [] };
     server = http.createServer((req, res) => {
       receivedHeaders = req.headers;
+      if (req.method === "GET" && req.url === "/v1/rules") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rulesResponse));
+        return;
+      }
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
@@ -366,5 +373,183 @@ describe("CloudAdapter", () => {
 
     await adapter.flush();
     expect(receivedBodies).toHaveLength(1);
+  });
+
+  describe("enforceExactCache", () => {
+    const request = {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hello" }],
+      temperature: 0,
+    };
+
+    function activeRule(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "rule-cache",
+        name: "Cache repeated chat",
+        state: "ACTIVE",
+        priority: 10,
+        condition: { type: "always" },
+        action: "CACHE_EXACT",
+        actionParams: { cacheTtlSec: 300 },
+        requireEquivalencePct: null,
+        modelAllowlist: [],
+        ...overrides,
+      };
+    }
+
+    function chatCompletionResponse() {
+      return {
+        object: "chat.completion",
+        model: "gpt-4o-mini",
+        usage: { prompt_tokens: 400, completion_tokens: 200 },
+        choices: [{ message: { role: "assistant", content: "Hi" } }],
+      };
+    }
+
+    it("short-circuits normalized requests and exposes hit-rate and savings metrics", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule()] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => chatCompletionResponse());
+
+      await adapter.enforceExactCache(request, provider);
+      await adapter.enforceExactCache({ temperature: 0, messages: request.messages, model: request.model }, provider);
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          ruleId: "rule-cache",
+          requestedModel: "gpt-4o-mini",
+          provider: "openai",
+          servedModel: "gpt-4o-mini",
+          inputTokens: 400,
+          outputTokens: 200,
+        }),
+      );
+      expect(adapter.getExactCacheStats()).toEqual({
+        hits: 1,
+        misses: 1,
+        bypasses: 0,
+        size: 1,
+        hitRate: 0.5,
+        savingsUsd: expect.any(Number),
+      });
+      expect(adapter.getExactCacheStats().savingsUsd).toBeGreaterThan(0);
+    });
+
+    it("prices OpenAI Responses API usage as OpenAI savings", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule()] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({
+        object: "response",
+        model: "gpt-4o-mini",
+        usage: {
+          input_tokens: 400,
+          output_tokens: 200,
+          input_tokens_details: { cached_tokens: 100 },
+        },
+        output: [],
+      }));
+
+      await adapter.enforceExactCache(request, provider);
+      await adapter.enforceExactCache(request, provider);
+      await adapter.flush();
+
+      const decision = receivedBodies.find((body) => body.ruleId === "rule-cache" && body.cacheOutcome === "hit");
+      expect(decision).toMatchObject({
+        provider: "openai",
+        servedModel: "gpt-4o-mini",
+        inputTokens: 400,
+        outputTokens: 200,
+        cacheReadTokens: 100,
+      });
+      expect(adapter.getExactCacheStats().savingsUsd).toBeGreaterThan(0);
+    });
+
+    it("always bypasses one-shot streaming responses", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule()] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ async *[Symbol.asyncIterator]() {} }));
+      const streamingRequest = { ...request, stream: true };
+
+      await adapter.enforceExactCache(streamingRequest, provider);
+      await adapter.enforceExactCache(streamingRequest, provider);
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(2);
+      expect(adapter.getExactCacheStats()).toEqual({
+        hits: 0,
+        misses: 0,
+        bypasses: 2,
+        size: 0,
+        hitRate: 0,
+        savingsUsd: 0,
+      });
+      expect(receivedBodies.some((body) => body.ruleId)).toBe(false);
+    });
+
+    it("honors explicit and header bypasses", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule()] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => chatCompletionResponse());
+
+      await adapter.enforceExactCache(request, provider);
+      await adapter.enforceExactCache(request, provider, { bypass: true });
+      await adapter.enforceExactCache(request, provider, { headers: { "X-Traice-Cache-Bypass": "1" } });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(3);
+      expect(adapter.getExactCacheStats().bypasses).toBe(2);
+    });
+
+    it("expires entries at the rule TTL", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule({ actionParams: { cacheTtlSec: 1 } })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => chatCompletionResponse());
+      const now = jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+
+      await adapter.enforceExactCache(request, provider);
+      now.mockReturnValue(1_001_001);
+      await adapter.enforceExactCache(request, provider);
+      await adapter.flush();
+      now.mockRestore();
+
+      expect(provider).toHaveBeenCalledTimes(2);
+      expect(adapter.getExactCacheStats().misses).toBe(2);
+    });
+
+    it("fails open and calls a failing provider exactly once", async () => {
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: "http://127.0.0.1:1/v1/events",
+        enforcementTimeoutMs: 100,
+      });
+      const provider = jest.fn(async () => {
+        throw new Error("provider failed");
+      });
+
+      await expect(adapter.enforceExactCache(request, provider)).rejects.toThrow("provider failed");
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
   });
 });
