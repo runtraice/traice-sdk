@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.2.3
+
+### Patch Changes
+
+- 44a55f6: Report the package version from the SDK CLI instead of a stale hard-coded value.
+
 ## 0.2.2
 
 ### Patch Changes
