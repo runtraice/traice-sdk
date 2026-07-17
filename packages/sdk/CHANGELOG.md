@@ -1,5 +1,12 @@
 # @traice/sdk Changelog
 
+## 0.2.0
+
+### Minor Changes
+
+- b2ac4ed: Add active exact-cache guardrails, safe streaming bypass, OpenAI Responses API
+  savings calculation, and process-local cache metrics.
+
 ## Unreleased
 
 - Add opt-in active exact-cache guardrails with deterministic request hashing,
