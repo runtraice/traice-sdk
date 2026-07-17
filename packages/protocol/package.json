@@ -1,6 +1,6 @@
 {
   "name": "@traice/protocol",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared trAIce event schemas and normalization helpers.",
   "license": "MIT",
   "type": "module",
