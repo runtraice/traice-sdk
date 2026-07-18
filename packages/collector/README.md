@@ -26,6 +26,10 @@ npx @traice/collector@latest install codex --server-url https://runtraice.com --
 npx @traice/collector@latest collect --agent codex
 ```
 
+The maintained collector forwards live OTLP telemetry only; it does not scan
+or replay an unbounded history of local session files. Stop any legacy Codex
+collector process before starting `@traice/collector`.
+
 ## JavaScript
 
 ```js
