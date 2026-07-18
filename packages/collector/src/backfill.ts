@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { InternalUsageEvent } from "@traice/protocol";
+import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
+import { readCollectorCredential } from "./credentials";
 import { resolveHome } from "./fs";
+import { forwardEvents } from "./run";
 
 interface TokenUsage {
   input_tokens?: unknown;
@@ -18,11 +22,21 @@ interface CodexSessionRow {
     type?: unknown;
     id?: unknown;
     session_id?: unknown;
-    info?: {
-      last_token_usage?: TokenUsage;
-      total_token_usage?: TokenUsage;
-    };
+    model?: unknown;
+    info?: { last_token_usage?: TokenUsage; total_token_usage?: TokenUsage };
   };
+}
+
+interface HistoricalUsageEvent {
+  sourceEventId: string;
+  occurredAt: string;
+  runId: string;
+  model?: string;
+  inputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reasoningOutputTokens: number;
 }
 
 export interface CodexBackfillDryRunOptions {
@@ -32,9 +46,13 @@ export interface CodexBackfillDryRunOptions {
   now?: Date;
 }
 
-export interface CodexBackfillDryRunSummary {
-  dryRun: true;
-  sendsData: false;
+export interface CodexBackfillOptions extends CodexBackfillDryRunOptions {
+  configPath?: string;
+  until: string;
+  onProgress?: (progress: { processed: number; total: number; accepted: number }) => void;
+}
+
+interface CodexBackfillScanSummary {
   since: string;
   until: string;
   filesDiscovered: number;
@@ -46,16 +64,92 @@ export interface CodexBackfillDryRunSummary {
   repeatedSnapshotsSkipped: number;
   earliestEventAt?: string;
   latestEventAt?: string;
-  tokens: {
-    input: number;
-    cachedInput: number;
-    output: number;
-    reasoningOutput: number;
-    total: number;
-  };
+  tokens: { input: number; cachedInput: number; output: number; reasoningOutput: number; total: number };
+}
+
+export interface CodexBackfillDryRunSummary extends CodexBackfillScanSummary {
+  dryRun: true;
+  sendsData: false;
+}
+
+export interface CodexBackfillSummary extends CodexBackfillScanSummary {
+  dryRun: false;
+  sendsData: true;
+  liveEventsInspected: number;
+  crossModeDuplicatesSkipped: number;
+  uploadCandidates: number;
+  accepted: number;
+  dropped: number;
 }
 
 export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexBackfillDryRunSummary {
+  const result = scanCodexHistory(options);
+  return { dryRun: true, sendsData: false, ...result.summary };
+}
+
+export async function backfillCodex(options: CodexBackfillOptions): Promise<CodexBackfillSummary> {
+  const result = scanCodexHistory(options);
+  const configPath = resolveConfigPath(options.configPath);
+  const config = loadCollectorConfig(configPath);
+  const apiKey =
+    process.env.TRAICE_API_KEY ??
+    (config.credential ? await readCollectorCredential(config.credential) : config.apiKey);
+  if (!apiKey) throw new Error("Missing collector API key. Re-run install before backfilling.");
+
+  const source = config.sources.codex ?? defaultSourceForAgent("codex");
+  const liveEvents = await fetchLiveEvents({
+    serverUrl: config.serverUrl,
+    apiKey,
+    since: result.summary.since,
+    until: result.summary.until,
+    sourceKey: source.sourceKey,
+  });
+  const liveKeys = countedSemanticKeys(liveEvents);
+  let crossModeDuplicatesSkipped = 0;
+  const events: InternalUsageEvent[] = [];
+
+  for (const event of result.events) {
+    const key = semanticUsageKey(event);
+    const remaining = liveKeys.get(key) ?? 0;
+    if (remaining > 0) {
+      liveKeys.set(key, remaining - 1);
+      crossModeDuplicatesSkipped += 1;
+      continue;
+    }
+    events.push({
+      ...source,
+      ...config.identity,
+      sourceEventId: event.sourceEventId,
+      occurredAt: event.occurredAt,
+      runId: event.runId,
+      ...(event.model ? { model: event.model } : {}),
+      inputTokens: event.inputTokens,
+      cacheReadTokens: event.cacheReadTokens,
+      outputTokens: event.outputTokens,
+      totalTokens: event.totalTokens,
+      costBasis: "usage_only",
+      status: "unknown",
+      metadata: { historySource: "codex-session-jsonl", reasoningOutputTokens: event.reasoningOutputTokens },
+    });
+  }
+
+  const accepted = await forwardEvents({ ...config, apiKey }, events, { batchSize: 50, onBatch: options.onProgress });
+  return {
+    dryRun: false,
+    sendsData: true,
+    ...result.summary,
+    liveEventsInspected: liveEvents.length,
+    crossModeDuplicatesSkipped,
+    uploadCandidates: events.length,
+    accepted,
+    dropped: events.length - accepted,
+  };
+}
+
+function scanCodexHistory(options: CodexBackfillDryRunOptions): {
+  summary: CodexBackfillScanSummary;
+  events: HistoricalUsageEvent[];
+} {
   const now = options.now ?? new Date();
   const since = parseBoundary(options.since, now, "since");
   const until = options.until ? parseBoundary(options.until, now, "until") : now;
@@ -66,8 +160,8 @@ export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexB
   const files = sessionFiles(sessionsRoot);
   const eventIds = new Set<string>();
   const sessions = new Set<string>();
+  const events: HistoricalUsageEvent[] = [];
   let filesWithUsage = 0;
-  let usageEvents = 0;
   let invalidLines = 0;
   let duplicateEventIds = 0;
   let repeatedSnapshotsSkipped = 0;
@@ -78,6 +172,7 @@ export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexB
   for (const file of files) {
     const lines = readFileSync(file, "utf8").split("\n");
     let sessionId: string | undefined;
+    let model: string | undefined;
     let previousTotalUsageKey: string | undefined;
     let previousTotalTokens: number | undefined;
     let resetEpoch = 0;
@@ -95,6 +190,10 @@ export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexB
 
       if (row.type === "session_meta") {
         sessionId = stringValue(row.payload?.id) ?? stringValue(row.payload?.session_id) ?? sessionId;
+        continue;
+      }
+      if (row.type === "turn_context") {
+        model = stringValue(row.payload?.model) ?? model;
         continue;
       }
       if (row.type !== "event_msg" || row.payload?.type !== "token_count") continue;
@@ -125,7 +224,17 @@ export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexB
 
       eventIds.add(sourceEventId);
       sessions.add(resolvedSessionId);
-      usageEvents += 1;
+      events.push({
+        sourceEventId,
+        occurredAt: occurredAt.toISOString(),
+        runId: resolvedSessionId,
+        ...(model ? { model } : {}),
+        inputTokens: normalized.input,
+        cacheReadTokens: normalized.cachedInput,
+        outputTokens: normalized.output,
+        totalTokens: normalized.total,
+        reasoningOutputTokens: normalized.reasoningOutput,
+      });
       fileHasUsage = true;
       tokens.input += normalized.input;
       tokens.cachedInput += normalized.cachedInput;
@@ -136,26 +245,92 @@ export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexB
       if (!earliestEventAt || timestamp < earliestEventAt) earliestEventAt = timestamp;
       if (!latestEventAt || timestamp > latestEventAt) latestEventAt = timestamp;
     }
-
     if (fileHasUsage) filesWithUsage += 1;
   }
 
   return {
-    dryRun: true,
-    sendsData: false,
-    since: since.toISOString(),
-    until: until.toISOString(),
-    filesDiscovered: files.length,
-    filesWithUsage,
-    sessionsWithUsage: sessions.size,
-    usageEvents,
-    invalidLines,
-    duplicateEventIds,
-    repeatedSnapshotsSkipped,
-    ...(earliestEventAt ? { earliestEventAt } : {}),
-    ...(latestEventAt ? { latestEventAt } : {}),
-    tokens,
+    summary: {
+      since: since.toISOString(),
+      until: until.toISOString(),
+      filesDiscovered: files.length,
+      filesWithUsage,
+      sessionsWithUsage: sessions.size,
+      usageEvents: events.length,
+      invalidLines,
+      duplicateEventIds,
+      repeatedSnapshotsSkipped,
+      ...(earliestEventAt ? { earliestEventAt } : {}),
+      ...(latestEventAt ? { latestEventAt } : {}),
+      tokens,
+    },
+    events,
   };
+}
+
+async function fetchLiveEvents(options: {
+  serverUrl: string;
+  apiKey: string;
+  since: string;
+  until: string;
+  sourceKey: string;
+}): Promise<HistoricalUsageEvent[]> {
+  const url = new URL("/api/v1/internal-usage", options.serverUrl);
+  url.searchParams.set("limit", "500");
+  url.searchParams.set("since", options.since);
+  url.searchParams.set("tool", "codex");
+  url.searchParams.set("sourceKey", options.sourceKey);
+  const response = await fetch(url, { headers: { authorization: `Bearer ${options.apiKey}` } });
+  if (!response.ok) throw new Error(`GET /api/v1/internal-usage returned ${response.status}`);
+  const body = (await response.json()) as { usage?: Array<Record<string, unknown>> };
+  const rows = Array.isArray(body.usage) ? body.usage : [];
+  const until = new Date(options.until);
+  const liveRows = rows.filter((row) => {
+    const occurredAt = dateValue(row.occurredAt);
+    const metadata = isRecord(row.metadata) ? row.metadata : {};
+    return occurredAt && occurredAt < until && metadata.historySource !== "codex-session-jsonl";
+  });
+  if (rows.length === 500 && liveRows.length > 0) {
+    throw new Error(
+      "Cross-mode deduplication found 500 server rows and cannot prove the overlap is complete. Choose an earlier --until boundary before live collection began.",
+    );
+  }
+  return liveRows.flatMap((row) => {
+    const occurredAt = dateValue(row.occurredAt);
+    const runId = stringValue(row.runId);
+    if (!occurredAt || !runId) return [];
+    return [
+      {
+        sourceEventId: "server-live-event",
+        occurredAt: occurredAt.toISOString(),
+        runId,
+        ...(stringValue(row.model) ? { model: stringValue(row.model) } : {}),
+        inputTokens: numberValue(row.inputTokens),
+        cacheReadTokens: numberValue(row.cacheReadTokens),
+        outputTokens: numberValue(row.outputTokens),
+        totalTokens: numberValue(row.totalTokens),
+        reasoningOutputTokens: 0,
+      },
+    ];
+  });
+}
+
+function countedSemanticKeys(events: HistoricalUsageEvent[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    const key = semanticUsageKey(event);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function semanticUsageKey(event: HistoricalUsageEvent): string {
+  return JSON.stringify({
+    runId: event.runId,
+    inputTokens: event.inputTokens,
+    cacheReadTokens: event.cacheReadTokens,
+    outputTokens: event.outputTokens,
+    totalTokens: event.totalTokens,
+  });
 }
 
 function sessionFiles(root: string): string[] {
@@ -204,6 +379,10 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function relativeSessionId(root: string, file: string): string {

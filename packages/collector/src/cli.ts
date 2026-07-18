@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { dryRunCodexBackfill } from "./backfill";
+import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { installAgent } from "./install";
 import { runCollector } from "./run";
 import type { AgentName } from "./types";
@@ -75,26 +75,31 @@ program
   .argument("<agent>", "agent history to inspect; currently codex")
   .requiredOption("--since <date-or-duration>", "earliest event, for example 14d or 2026-07-01")
   .option("--until <date-or-duration>", "exclusive upper boundary; defaults to now")
+  .option("--config <path>", "collector config path")
   .option("--codex-home <path>", "Codex home", "~/.codex")
   .option("--dry-run", "inspect local history without sending data")
-  .action((agent: string, options: Record<string, unknown>) => {
+  .action(async (agent: string, options: Record<string, unknown>) => {
     if (agent !== "codex") throw new Error(`Unsupported backfill agent "${agent}". Expected "codex".`);
-    if (!options.dryRun) {
-      throw new Error("Backfill ingestion is not enabled yet. Re-run with --dry-run to inspect local history safely.");
-    }
     const since = stringOption(options.since);
     if (!since) throw new Error("Missing required option --since.");
-    console.log(
-      JSON.stringify(
-        dryRunCodexBackfill({
+    const until = stringOption(options.until);
+    if (!options.dryRun && !until) {
+      throw new Error(
+        "Actual backfill requires an exclusive --until boundary so it cannot overlap unbounded live collection.",
+      );
+    }
+    const result = options.dryRun
+      ? dryRunCodexBackfill({ codexHome: stringOption(options.codexHome), since, until })
+      : await backfillCodex({
+          configPath: stringOption(options.config),
           codexHome: stringOption(options.codexHome),
           since,
-          until: stringOption(options.until),
-        }),
-        null,
-        2,
-      ),
-    );
+          until: until!,
+          onProgress: ({ processed, total, accepted }) => {
+            console.error(`[traice-collector] backfill ${processed}/${total}; accepted ${accepted}`);
+          },
+        });
+    console.log(JSON.stringify(result, null, 2));
   });
 
 program.parseAsync(process.argv).catch((error) => {

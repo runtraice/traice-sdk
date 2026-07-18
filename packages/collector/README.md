@@ -37,7 +37,15 @@ npx @traice/collector@latest backfill codex --since 14d --dry-run
 ```
 
 The dry run counts request-level `last_token_usage` records and never sends prompts, transcripts, credentials, or usage
-events. Actual history ingestion remains disabled until bounded replay and cross-mode deduplication are available.
+events. To upload a verified non-overlapping window, provide an exclusive upper boundary:
+
+```sh
+npx @traice/collector@latest backfill codex --since 14d --until 2026-07-18T14:30:00Z
+```
+
+Actual replay requires `--until`, uses stable event IDs so retries are idempotent, and checks existing live usage in
+the bounded window to skip cross-mode duplicates. If the live overlap is too large to audit completely, it refuses
+the replay and asks for an earlier cutoff.
 
 ## API key storage
 
