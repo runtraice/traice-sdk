@@ -1,5 +1,12 @@
 # @traice/collector
 
+## 0.2.3
+
+### Patch Changes
+
+- 311d902: Enable bounded Codex history uploads with stable replay IDs, live-event overlap checks, and batch progress. Prefer the
+  real Codex `event.timestamp` when OTLP exports a zero transport timestamp.
+
 ## 0.2.2
 
 ### Patch Changes
