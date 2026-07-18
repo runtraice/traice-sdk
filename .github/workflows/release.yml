@@ -39,15 +39,28 @@ jobs:
         if: steps.changesets.outputs.pending == 'false'
         run: npm run check
       - name: Publish versioned packages
+        id: publish
         if: steps.changesets.outputs.pending == 'false'
-        run: npm exec -- changeset publish
+        shell: bash
+        run: |
+          output="$(npm exec -- changeset publish 2>&1)"
+          printf '%s\n' "$output"
+          if grep -q 'packages published successfully' <<< "$output"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Notify Slack of published packages
-        if: steps.changesets.outputs.pending == 'false' && env.SLACK_SDK_RELEASES_WEBHOOK != ''
+        if: steps.publish.outputs.published == 'true' && env.SLACK_SDK_RELEASES_WEBHOOK != ''
         env:
           SLACK_SDK_RELEASES_WEBHOOK: ${{ secrets.SLACK_SDK_RELEASES_WEBHOOK }}
         shell: bash
         run: |
           version="$(node -p "require('./packages/collector/package.json').version")"
-          payload="$(node -e 'console.log(JSON.stringify({text: `Published @traice/collector@${process.argv[1]} to npm (latest).`}))' "$version")"
+          if [[ "$SLACK_SDK_RELEASES_WEBHOOK" != https://hooks.slack.com/services/* ]]; then
+            echo "::warning::SLACK_SDK_RELEASES_WEBHOOK must contain only a Slack webhook URL; skipping notification."
+            exit 0
+          fi
+          payload="$(node -e 'console.log(JSON.stringify({text: `Published @traice/sdk@${process.argv[1]} and @traice/collector@${process.argv[1]} to npm (latest).`}))' "$version")"
           curl -f -sS -X POST -H 'Content-type: application/json' \
-            -d "$payload" "$SLACK_SDK_RELEASES_WEBHOOK"
+            -d "$payload" --url "$SLACK_SDK_RELEASES_WEBHOOK"
