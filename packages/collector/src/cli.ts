@@ -15,6 +15,7 @@ program
   .option("--server-url <url>", "trAIce app URL", "https://runtraice.com")
   .option("--api-key <key>", "trAIce API key")
   .option("--api-key-stdin", "read trAIce API key from stdin")
+  .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
   .option("--employee-external-id <id>", "employee external ID")
@@ -35,6 +36,7 @@ program
       serverUrl: stringOption(options.serverUrl),
       apiKey: stringOption(options.apiKey),
       apiKeyStdin: Boolean(options.apiKeyStdin),
+      credentialStore: credentialStoreOption(options.credentialStore),
       employeeEmail: stringOption(options.employeeEmail),
       employeeName: stringOption(options.employeeName),
       employeeExternalId: stringOption(options.employeeExternalId),
@@ -86,4 +88,9 @@ function numberOption(value: unknown): number | undefined {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`Invalid number: ${String(value)}`);
   return parsed;
+}
+
+function credentialStoreOption(value: unknown): "auto" | "keyring" | "file" {
+  if (value === "auto" || value === "keyring" || value === "file") return value;
+  throw new Error(`Invalid credential store: ${String(value)}. Expected auto, keyring, or file.`);
 }

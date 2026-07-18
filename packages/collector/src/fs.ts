@@ -14,7 +14,13 @@ export function readJsonFile<T>(path: string): T | null {
 }
 
 export function writePrivateJson(path: string, value: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(directory, 0o700);
+  } catch {
+    // Windows uses the ACL inherited from the user's profile directory.
+  }
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   try {
     chmodSync(path, 0o600);

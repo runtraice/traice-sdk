@@ -30,6 +30,38 @@ The maintained collector forwards live OTLP telemetry only; it does not scan
 or replay an unbounded history of local session files. Stop any legacy Codex
 collector process before starting `@traice/collector`.
 
+## API key storage
+
+`install` stores the API key in the operating system credential manager by default:
+
+- macOS Keychain
+- Windows Credential Manager
+- Linux Secret Service (for example GNOME Keyring or KWallet)
+
+The non-secret collector config at `~/.traice/collector/config.json` contains only a credential reference. If an OS
+credential manager is unavailable—common on headless Linux—the default `auto` mode falls back to
+`~/.traice/collector/credentials.json` with user-only directory and file permissions (`0700`/`0600` on POSIX). The
+installer reports this fallback explicitly; it is protected from other OS users but is not encrypted at rest.
+
+Require native secure storage and fail instead of falling back:
+
+```sh
+npx @traice/collector@latest install codex --api-key-stdin --credential-store keyring
+```
+
+Force the protected-file backend for a headless or externally encrypted environment:
+
+```sh
+npx @traice/collector@latest install codex --api-key-stdin --credential-store file
+```
+
+Existing configs containing a plaintext `apiKey` migrate automatically on the next `install` or `collect`. For CI,
+containers, MDM, or an external secret manager, set `TRAICE_API_KEY` only in the collector process; `collect` uses that
+value without writing it to disk.
+
+The API key remains a bearer credential: a process running as the same OS user can ask the unlocked credential manager
+for it. Use a dedicated, revocable collector key and avoid copying the fallback file into backups or profile sync.
+
 ## JavaScript
 
 ```js
