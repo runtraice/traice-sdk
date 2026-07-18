@@ -51,7 +51,7 @@ describe("detectAnomalies", () => {
   it("respects custom threshold", () => {
     const events = [
       ...Array.from({ length: 7 }, (_, i) => makeEvent(`2025-04-${String(i + 1).padStart(2, "0")}`, "chat", 10)),
-      makeEvent("2025-04-08", "chat", 15), // 1.5x — below 2.0 threshold
+      makeEvent("2025-04-08", "chat", 15), // 1.5x: below 2.0 threshold
     ];
 
     expect(detectAnomalies(events, { threshold: 2.0 })).toHaveLength(0);

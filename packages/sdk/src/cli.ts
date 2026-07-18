@@ -87,7 +87,7 @@ function printTable(options: ReportOptions, events: CostEvent[]): void {
   const toDate = timestamps[timestamps.length - 1]?.substring(0, 10) ?? "";
 
   console.log("");
-  console.log(chalk.bold(`@traice/sdk report — ${fromDate} to ${toDate}`));
+  console.log(chalk.bold(`@traice/sdk report: ${fromDate} to ${toDate}`));
   console.log(chalk.gray(`Source: ${options.file ?? DEFAULT_FILE} (${formatNumber(filtered.length)} events)`));
   console.log("");
   console.log(chalk.bold(`By ${groupBy}:`));
@@ -125,7 +125,7 @@ function printTable(options: ReportOptions, events: CostEvent[]): void {
     chalk.bold("TOTAL"),
     chalk.bold(formatNumber(totalCalls)),
     chalk.bold(formatNumber(totalTokens)),
-    chalk.gray("—"),
+    chalk.gray("-"),
     chalk.bold(formatCost(totalCost)),
   ]);
 
@@ -456,7 +456,11 @@ program
     const results = optimizeModels(events);
 
     if (results.length === 0) {
-      console.log(chalk.green("No cheaper model alternatives found — you're already optimized!"));
+      console.log(
+        chalk.green(
+          "No cheaper model alternatives found. Current models are already the lowest-cost options in the pricing table.",
+        ),
+      );
       return;
     }
 

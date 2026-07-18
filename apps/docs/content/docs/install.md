@@ -98,7 +98,8 @@ curl -X POST "https://runtraice.com/api/v1/events" \
 
 ## 5. Track Internal AI-Tool Spend
 
-Internal Spend is separate from product events. Use it for tools like Claude Code, Codex, Cursor, Copilot, ChatGPT, or raw org APIs.
+Internal Spend is separate from product events. The maintained collector supports Claude Code and Codex today. Send
+other employee or team usage through the authenticated internal-usage API until native connectors are available.
 
 Install the local collector for Claude Code:
 

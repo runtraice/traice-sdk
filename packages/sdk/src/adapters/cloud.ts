@@ -370,7 +370,7 @@ export class CloudAdapter implements CostAdapter {
 
       if (!response.ok) {
         const body = await response.text().catch(() => "");
-        throw new Error(`CloudAdapter failed: ${response.status} ${response.statusText}${body ? ` — ${body}` : ""}`);
+        throw new Error(`CloudAdapter failed: ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`);
       }
     } catch (err) {
       // On failure, put events back at the front of the buffer

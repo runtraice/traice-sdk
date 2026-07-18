@@ -15,7 +15,7 @@ export class LocalAdapter implements CostAdapter {
   async write(event: CostEvent): Promise<void> {
     this.writeQueue = this.writeQueue.then(
       () => this.doWrite(event),
-      () => this.doWrite(event), // recover from previous failure — don't stall queue
+      () => this.doWrite(event), // recover from previous failure: don't stall queue
     );
     return this.writeQueue;
   }

@@ -8,7 +8,7 @@
  *   npm run dashboard
  *
  * Then open http://localhost:3000 in your browser.
- * Share the URL with your team — no login required.
+ * Share the URL with your team: no login required.
  */
 
 import * as http from "http";
@@ -24,7 +24,7 @@ function getArg(name: string, fallback: string): string {
 const PORT = parseInt(getArg("--port", "3000"), 10);
 const EVENTS_FILE = getArg("--file", "./.traice-costs/demo-events.ndjson");
 
-// Resolve dashboard HTML location — works from both src/ and dist/
+// Resolve dashboard HTML location: works from both src/ and dist/
 function findDashboardDir(): string {
   const candidates = [
     path.join(__dirname, "..", "dashboard"), // from dist/dashboard/server.js

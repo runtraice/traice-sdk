@@ -19,7 +19,9 @@ The collector stores private device configuration at:
 ~/.traice/collector/config.json
 ```
 
-The config includes the trAIce server URL, API key, employee/team mapping, enabled adapters, and local OTLP listener settings.
+The config includes the trAIce server URL, a credential reference, employee and team mapping, enabled adapters, and
+local OTLP listener settings. The API key is stored in the operating system credential manager when available, with a
+permission-restricted file fallback for headless systems.
 
 Agent adapters normalize telemetry into the shared `@traice/protocol` `InternalUsageEvent` shape.
 

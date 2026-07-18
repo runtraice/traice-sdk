@@ -31,7 +31,7 @@ describe("optimizeModels", () => {
 
   it("recommends cheaper model when available", () => {
     // gpt-4o costs $2.50/$10 per M tokens
-    // gpt-4o-mini costs $0.15/$0.60 per M tokens — 94% cheaper
+    // gpt-4o-mini costs $0.15/$0.60 per M tokens: 94% cheaper
     const events = Array.from({ length: 10 }, (_, i) =>
       makeEvent("classifier", "gpt-4o", "openai", 0.0075, `2025-04-${String(i + 1).padStart(2, "0")}`),
     );
@@ -59,7 +59,7 @@ describe("optimizeModels", () => {
   });
 
   it("recommends cross-provider alternatives", () => {
-    // claude-opus costs $15/$75 — very expensive
+    // claude-opus costs $15/$75: very expensive
     const events = Array.from({ length: 10 }, (_, i) =>
       makeEvent("chat", "claude-opus-4-20250514", "anthropic", 0.0525, `2025-04-${String(i + 1).padStart(2, "0")}`),
     );

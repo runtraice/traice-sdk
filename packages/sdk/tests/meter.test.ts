@@ -393,7 +393,7 @@ describe("meter()", () => {
     configure({ adapters: [slowAdapter], warnOnMissingModel: false });
 
     await meter(mockAnthropicResponse(), { feature: "test" });
-    expect(written).toBe(false); // Not yet — fire and forget
+    expect(written).toBe(false); // Not yet: fire and forget
   });
 });
 
