@@ -55,6 +55,7 @@ import { configure, meter } from "@traice/sdk";
 The CLI is bundled with `@traice/sdk`; no separate global package is required.
 
 ```sh
+npx @traice/sdk --version
 npx @traice/sdk report --file ./.traice-costs/events.ndjson
 npx @traice/sdk forecast
 npx @traice/sdk anomalies --threshold 2

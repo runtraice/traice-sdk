@@ -38,9 +38,33 @@ jobs:
       - name: Validate release
         if: steps.changesets.outputs.pending == 'false'
         run: npm run check
+      - name: Determine unpublished packages
+        id: release_plan
+        if: steps.changesets.outputs.pending == 'false'
+        shell: bash
+        run: |
+          packages=()
+          for package_dir in packages/protocol packages/collector packages/sdk; do
+            package_name="$(node -p "require('./${package_dir}/package.json').name")"
+            local_version="$(node -p "require('./${package_dir}/package.json').version")"
+            published_version="$(npm view "$package_name" version 2>/dev/null || true)"
+            if [[ "$local_version" != "$published_version" ]]; then
+              packages+=("${package_name}@${local_version}")
+            fi
+          done
+
+          if (( ${#packages[@]} > 0 )); then
+            printf -v package_list '%s, ' "${packages[@]}"
+            package_list="${package_list%, }"
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+            echo "message=Published ${package_list} to npm (latest)." >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+            echo "No unpublished package versions found."
+          fi
       - name: Publish versioned packages
         id: publish
-        if: steps.changesets.outputs.pending == 'false'
+        if: steps.release_plan.outputs.pending == 'true'
         shell: bash
         run: |
           output="$(npm exec -- changeset publish 2>&1)"
@@ -54,13 +78,13 @@ jobs:
         if: steps.publish.outputs.published == 'true' && env.SLACK_SDK_RELEASES_WEBHOOK != ''
         env:
           SLACK_SDK_RELEASES_WEBHOOK: ${{ secrets.SLACK_SDK_RELEASES_WEBHOOK }}
+          RELEASE_MESSAGE: ${{ steps.release_plan.outputs.message }}
         shell: bash
         run: |
-          version="$(node -p "require('./packages/collector/package.json').version")"
           if [[ "$SLACK_SDK_RELEASES_WEBHOOK" != https://hooks.slack.com/services/* ]]; then
             echo "::warning::SLACK_SDK_RELEASES_WEBHOOK must contain only a Slack webhook URL; skipping notification."
             exit 0
           fi
-          payload="$(node -e 'console.log(JSON.stringify({text: `Published @traice/sdk@${process.argv[1]} and @traice/collector@${process.argv[1]} to npm (latest).`}))' "$version")"
+          payload="$(node -e 'console.log(JSON.stringify({text: process.argv[1]}))' "$RELEASE_MESSAGE")"
           curl -f -sS -X POST -H 'Content-type: application/json' \
             -d "$payload" --url "$SLACK_SDK_RELEASES_WEBHOOK"
