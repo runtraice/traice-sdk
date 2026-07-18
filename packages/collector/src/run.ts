@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage } from "node:http";
 import type { InternalUsageEvent } from "@traice/protocol";
-import { defaultSourceForAgent, loadCollectorConfig } from "./config";
+import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
+import { readCollectorCredential, storeCollectorCredential } from "./credentials";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
@@ -19,13 +20,11 @@ export type ForwardDependencies = {
 const enqueueForward = createSerializedEventForwarder();
 
 export async function runCollector(options: CollectorRunOptions = {}): Promise<void> {
-  const config = loadCollectorConfig(options.configPath);
+  const configPath = resolveConfigPath(options.configPath);
+  const config = loadCollectorConfig(configPath);
   const listenHost = options.listenHost ?? config.listenHost;
   const listenPort = options.listenPort ?? config.listenPort;
-
-  if (!config.apiKey) {
-    throw new Error("Missing API key in collector config. Re-run install with TRAICE_API_KEY or --api-key-stdin.");
-  }
+  const apiKey = await resolveApiKey(config, configPath);
 
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
@@ -52,7 +51,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
 
     try {
       const events = normalizePayloadForRequest(req.url ?? "", payload, config, options.agent, receivedAt);
-      const sent = await enqueueForward(config, events);
+      const sent = await enqueueForward({ ...config, apiKey }, events);
       if (events.length > 0 || sent > 0) {
         console.log(JSON.stringify({ receivedAt, path: req.url, candidates: events.length, sent }));
       }
@@ -179,6 +178,20 @@ async function postBatch(
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+async function resolveApiKey(config: CollectorConfig, configPath: string): Promise<string> {
+  if (process.env.TRAICE_API_KEY) return process.env.TRAICE_API_KEY;
+  if (config.credential) return readCollectorCredential(config.credential);
+  if (config.apiKey) {
+    const stored = await storeCollectorCredential(configPath, config.apiKey);
+    config.credential = stored.credential;
+    delete config.apiKey;
+    writeCollectorConfig(config, configPath);
+    if (stored.warning) console.warn(`[traice-collector] ${stored.warning}`);
+    return readCollectorCredential(stored.credential);
+  }
+  throw new Error("Missing collector API key. Re-run install with TRAICE_API_KEY or --api-key-stdin.");
 }
 
 function toIngestEvent(event: InternalUsageEvent): Record<string, unknown> {
