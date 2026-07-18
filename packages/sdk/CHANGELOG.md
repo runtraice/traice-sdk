@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.2.5
+
+### Patch Changes
+
+- 584eb56: Document the bundled CLI version command and verify the reviewed npm OIDC release notification flow.
+
 ## 0.2.4
 
 ### Patch Changes
