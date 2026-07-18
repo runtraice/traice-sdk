@@ -58,7 +58,7 @@ export function codexTomlBlock(options: { listenHost: string; listenPort: number
     CODEX_BEGIN,
     "[otel]",
     'environment = "traice-device"',
-    `exporter = { otlp = { endpoint = "http://${options.listenHost}:${options.listenPort}/v1/logs", protocol = "http/json" } }`,
+    `exporter = { otlp-http = { endpoint = "http://${options.listenHost}:${options.listenPort}/v1/logs", protocol = "json" } }`,
     `log_user_prompt = ${options.includePrompts ? "true" : "false"}`,
     CODEX_END,
   ].join("\n");

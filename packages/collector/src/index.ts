@@ -7,6 +7,8 @@ export type {
 } from "./types";
 export { DEFAULT_CONFIG_PATH, loadCollectorConfig, writeCollectorConfig } from "./config";
 export { readCollectorCredential, storeCollectorCredential } from "./credentials";
+export { dryRunCodexBackfill } from "./backfill";
+export type { CodexBackfillDryRunOptions, CodexBackfillDryRunSummary } from "./backfill";
 export { installAgent } from "./install";
 export { runCollector } from "./run";
 export { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";

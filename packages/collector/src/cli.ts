@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { dryRunCodexBackfill } from "./backfill";
 import { installAgent } from "./install";
 import { runCollector } from "./run";
 import type { AgentName } from "./types";
@@ -67,6 +68,33 @@ program
       listenHost: stringOption(options.listenHost),
       listenPort: numberOption(options.listenPort),
     });
+  });
+
+program
+  .command("backfill")
+  .argument("<agent>", "agent history to inspect; currently codex")
+  .requiredOption("--since <date-or-duration>", "earliest event, for example 14d or 2026-07-01")
+  .option("--until <date-or-duration>", "exclusive upper boundary; defaults to now")
+  .option("--codex-home <path>", "Codex home", "~/.codex")
+  .option("--dry-run", "inspect local history without sending data")
+  .action((agent: string, options: Record<string, unknown>) => {
+    if (agent !== "codex") throw new Error(`Unsupported backfill agent "${agent}". Expected "codex".`);
+    if (!options.dryRun) {
+      throw new Error("Backfill ingestion is not enabled yet. Re-run with --dry-run to inspect local history safely.");
+    }
+    const since = stringOption(options.since);
+    if (!since) throw new Error("Missing required option --since.");
+    console.log(
+      JSON.stringify(
+        dryRunCodexBackfill({
+          codexHome: stringOption(options.codexHome),
+          since,
+          until: stringOption(options.until),
+        }),
+        null,
+        2,
+      ),
+    );
   });
 
 program.parseAsync(process.argv).catch((error) => {

@@ -1,0 +1,231 @@
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { resolveHome } from "./fs";
+
+interface TokenUsage {
+  input_tokens?: unknown;
+  cached_input_tokens?: unknown;
+  output_tokens?: unknown;
+  reasoning_output_tokens?: unknown;
+  total_tokens?: unknown;
+}
+
+interface CodexSessionRow {
+  timestamp?: unknown;
+  type?: unknown;
+  payload?: {
+    type?: unknown;
+    id?: unknown;
+    session_id?: unknown;
+    info?: {
+      last_token_usage?: TokenUsage;
+      total_token_usage?: TokenUsage;
+    };
+  };
+}
+
+export interface CodexBackfillDryRunOptions {
+  codexHome?: string;
+  since: string;
+  until?: string;
+  now?: Date;
+}
+
+export interface CodexBackfillDryRunSummary {
+  dryRun: true;
+  sendsData: false;
+  since: string;
+  until: string;
+  filesDiscovered: number;
+  filesWithUsage: number;
+  sessionsWithUsage: number;
+  usageEvents: number;
+  invalidLines: number;
+  duplicateEventIds: number;
+  repeatedSnapshotsSkipped: number;
+  earliestEventAt?: string;
+  latestEventAt?: string;
+  tokens: {
+    input: number;
+    cachedInput: number;
+    output: number;
+    reasoningOutput: number;
+    total: number;
+  };
+}
+
+export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexBackfillDryRunSummary {
+  const now = options.now ?? new Date();
+  const since = parseBoundary(options.since, now, "since");
+  const until = options.until ? parseBoundary(options.until, now, "until") : now;
+  if (since >= until)
+    throw new Error(`Backfill --since must be before --until (${since.toISOString()} >= ${until.toISOString()}).`);
+
+  const sessionsRoot = resolve(resolveHome(options.codexHome ?? "~/.codex"), "sessions");
+  const files = sessionFiles(sessionsRoot);
+  const eventIds = new Set<string>();
+  const sessions = new Set<string>();
+  let filesWithUsage = 0;
+  let usageEvents = 0;
+  let invalidLines = 0;
+  let duplicateEventIds = 0;
+  let repeatedSnapshotsSkipped = 0;
+  let earliestEventAt: string | undefined;
+  let latestEventAt: string | undefined;
+  const tokens = { input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, total: 0 };
+
+  for (const file of files) {
+    const lines = readFileSync(file, "utf8").split("\n");
+    let sessionId: string | undefined;
+    let previousTotalUsageKey: string | undefined;
+    let previousTotalTokens: number | undefined;
+    let resetEpoch = 0;
+    let fileHasUsage = false;
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let row: CodexSessionRow;
+      try {
+        row = JSON.parse(line) as CodexSessionRow;
+      } catch {
+        invalidLines += 1;
+        continue;
+      }
+
+      if (row.type === "session_meta") {
+        sessionId = stringValue(row.payload?.id) ?? stringValue(row.payload?.session_id) ?? sessionId;
+        continue;
+      }
+      if (row.type !== "event_msg" || row.payload?.type !== "token_count") continue;
+
+      const occurredAt = dateValue(row.timestamp);
+      const usage = row.payload.info?.last_token_usage;
+      const cumulativeUsage = row.payload.info?.total_token_usage;
+      if (!occurredAt || !usage || !cumulativeUsage) continue;
+
+      const cumulative = normalizedUsage(cumulativeUsage);
+      const cumulativeKey = JSON.stringify(cumulative);
+      if (cumulativeKey === previousTotalUsageKey) {
+        if (occurredAt >= since && occurredAt < until) repeatedSnapshotsSkipped += 1;
+        continue;
+      }
+      if (previousTotalTokens !== undefined && cumulative.total < previousTotalTokens) resetEpoch += 1;
+      previousTotalUsageKey = cumulativeKey;
+      previousTotalTokens = cumulative.total;
+      if (occurredAt < since || occurredAt >= until) continue;
+
+      const normalized = normalizedUsage(usage);
+      const resolvedSessionId = sessionId ?? relativeSessionId(sessionsRoot, file);
+      const sourceEventId = stableEventId(resolvedSessionId, resetEpoch, cumulative);
+      if (eventIds.has(sourceEventId)) {
+        duplicateEventIds += 1;
+        continue;
+      }
+
+      eventIds.add(sourceEventId);
+      sessions.add(resolvedSessionId);
+      usageEvents += 1;
+      fileHasUsage = true;
+      tokens.input += normalized.input;
+      tokens.cachedInput += normalized.cachedInput;
+      tokens.output += normalized.output;
+      tokens.reasoningOutput += normalized.reasoningOutput;
+      tokens.total += normalized.total;
+      const timestamp = occurredAt.toISOString();
+      if (!earliestEventAt || timestamp < earliestEventAt) earliestEventAt = timestamp;
+      if (!latestEventAt || timestamp > latestEventAt) latestEventAt = timestamp;
+    }
+
+    if (fileHasUsage) filesWithUsage += 1;
+  }
+
+  return {
+    dryRun: true,
+    sendsData: false,
+    since: since.toISOString(),
+    until: until.toISOString(),
+    filesDiscovered: files.length,
+    filesWithUsage,
+    sessionsWithUsage: sessions.size,
+    usageEvents,
+    invalidLines,
+    duplicateEventIds,
+    repeatedSnapshotsSkipped,
+    ...(earliestEventAt ? { earliestEventAt } : {}),
+    ...(latestEventAt ? { latestEventAt } : {}),
+    tokens,
+  };
+}
+
+function sessionFiles(root: string): string[] {
+  const files: string[] = [];
+  const visit = (directory: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
+    }
+  };
+  visit(root);
+  return files.sort();
+}
+
+function parseBoundary(value: string, now: Date, option: "since" | "until"): Date {
+  const duration = /^(\d+)([mhdw])$/.exec(value.trim());
+  if (duration) {
+    const amount = Number(duration[1]);
+    const unitMs = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[duration[2] as "m" | "h" | "d" | "w"];
+    return new Date(now.getTime() - amount * unitMs);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid --${option} value "${value}". Use an ISO date/time or a duration such as 14d.`);
+  }
+  return parsed;
+}
+
+function dateValue(value: unknown): Date | undefined {
+  if (typeof value !== "string") return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function relativeSessionId(root: string, file: string): string {
+  return file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file;
+}
+
+function normalizedUsage(
+  usage: TokenUsage,
+): Record<"input" | "cachedInput" | "output" | "reasoningOutput" | "total", number> {
+  return {
+    input: numberValue(usage.input_tokens),
+    cachedInput: numberValue(usage.cached_input_tokens),
+    output: numberValue(usage.output_tokens),
+    reasoningOutput: numberValue(usage.reasoning_output_tokens),
+    total: numberValue(usage.total_tokens),
+  };
+}
+
+function stableEventId(sessionId: string, resetEpoch: number, cumulativeUsage: Record<string, number>): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify({ sessionId, resetEpoch, cumulativeUsage }))
+    .digest("hex")
+    .slice(0, 32);
+  return `codex-jsonl-${digest}`;
+}
