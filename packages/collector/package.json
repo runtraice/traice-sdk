@@ -1,6 +1,6 @@
 {
   "name": "@traice/collector",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Local coding-agent usage collector for trAIce Internal Spend.",
   "license": "MIT",
   "type": "module",
@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@napi-rs/keyring": "^1.3.0",
-    "@traice/protocol": "0.1.1",
+    "@traice/protocol": "0.1.2",
     "commander": "^12.1.0"
   },
   "publishConfig": {

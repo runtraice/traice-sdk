@@ -1,5 +1,13 @@
 # @traice/collector
 
+## 0.2.5
+
+### Patch Changes
+
+- d7eea3c: Allow Codex backfill to snapshot its upper boundary at command start, and carry optional monthly seat commitments with internal usage events.
+- Updated dependencies [d7eea3c]
+  - @traice/protocol@0.1.2
+
 ## 0.2.4
 
 ### Patch Changes
