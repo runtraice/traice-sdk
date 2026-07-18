@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.2.2
+
+### Patch Changes
+
+- 4ee619d: Normalize token attributes emitted by current Codex OTLP log events.
+
 ## 0.2.1
 
 ### Patch Changes
