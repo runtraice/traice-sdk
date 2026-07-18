@@ -82,7 +82,7 @@ export function withMeteredAction<TArgs extends any[], TReturn>(
       });
 
     // Make meter available in the action scope via a global override isn't clean,
-    // so we just return the action result — users call meter() directly inside
+    // so we just return the action result: users call meter() directly inside
     return action(...args);
   };
 }

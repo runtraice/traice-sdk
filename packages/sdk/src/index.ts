@@ -143,7 +143,7 @@ setupUnknownModelHandler();
  */
 export function configure(config: Partial<GlobalConfig>): void {
   globalConfig = { ...globalConfig, ...config };
-  adapterCache = null; // invalidate — adapters may have changed
+  adapterCache = null; // invalidate: adapters may have changed
 }
 
 /**
@@ -464,7 +464,7 @@ export async function cachedMeter<T>(
 
   const cached = globalCache.get(key);
   if (cached !== undefined) {
-    // Cache hit — record $0 cost event
+    // Cache hit: record $0 cost event
     const provider = detectProvider(cached);
     const model = extractModel(cached);
     const event = buildEvent(provider, model, 0, 0, 0, 0, 0, options, globalConfig.defaultTags);
@@ -479,7 +479,7 @@ export async function cachedMeter<T>(
     return cached as T;
   }
 
-  // Cache miss — call and cache
+  // Cache miss: call and cache
   const startTime = Date.now();
   const response = await fn();
   const latencyMs = Date.now() - startTime;
@@ -805,7 +805,7 @@ function wrapStream<T extends AsyncIterable<any>>(
               chunks.push(result.value);
             }
             if (result.done) {
-              // Stream ended — record cost event
+              // Stream ended: record cost event
               const latencyMs = Date.now() - startTime;
               const usage = extractStreamUsage(stream, chunks);
               const provider = providerHint ?? usage.provider;
@@ -825,7 +825,7 @@ function wrapStream<T extends AsyncIterable<any>>(
             }
             return result;
           } catch (error) {
-            // Stream errored — record error event
+            // Stream errored: record error event
             const latencyMs = Date.now() - startTime;
             const event = buildEvent(
               providerHint ?? "custom",
@@ -887,7 +887,7 @@ function wrapStream<T extends AsyncIterable<any>>(
 
 /**
  * Wrap a streaming LLM API call to track cost and usage.
- * Returns the stream unchanged — cost is recorded after the stream completes.
+ * Returns the stream unchanged: cost is recorded after the stream completes.
  *
  * Works with both OpenAI and Anthropic streaming responses.
  *

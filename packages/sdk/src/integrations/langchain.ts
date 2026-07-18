@@ -2,7 +2,7 @@ import { CostEvent, MeterOptions } from "../types";
 import { v4 as uuidv4 } from "uuid";
 import { calculateCost } from "../pricing";
 
-// We don't import from @langchain/core — we duck-type the callback interface
+// We don't import from @langchain/core: we duck-type the callback interface
 // so users don't need to install LangChain just to import our types.
 
 export interface LangChainCostHandlerConfig {
@@ -100,10 +100,10 @@ export class LangChainCostHandler {
     try {
       const { configure: _, ...index } = require("../index");
       if ((index as any).getAdapters) {
-        // Internal function — dispatch through adapters
+        // Internal function: dispatch through adapters
       }
     } catch {
-      // Index not available — just store events locally
+      // Index not available: just store events locally
     }
   }
 

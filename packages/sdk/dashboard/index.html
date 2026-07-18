@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@traice/sdk — Dashboard</title>
+    <title>@traice/sdk Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
       :root {
@@ -556,7 +556,7 @@
         // Date range from data
         const timestamps = events.map((e) => e.timestamp).sort();
         const dateRange = timestamps.length
-          ? `${fmtDate(timestamps[0])} — ${fmtDate(timestamps[timestamps.length - 1])}`
+          ? `${fmtDate(timestamps[0])} to ${fmtDate(timestamps[timestamps.length - 1])}`
           : "";
 
         document.getElementById("app").innerHTML = `
@@ -631,12 +631,12 @@
             </div>
             <div class="kpi-card">
               <div class="kpi-label">Most Expensive</div>
-              <div class="kpi-value" style="color: var(--amber); font-size: 20px;">${featureRows[0]?.name || "—"}</div>
+              <div class="kpi-value" style="color: var(--amber); font-size: 20px;">${featureRows[0]?.name || "-"}</div>
               <div class="kpi-sub">${fmtCost(featureRows[0]?.cost || 0)} · ${totalCost > 0 ? (((featureRows[0]?.cost || 0) / totalCost) * 100).toFixed(0) : 0}% of total</div>
             </div>
             <div class="kpi-card">
               <div class="kpi-label">Costliest User</div>
-              <div class="kpi-value" style="color: var(--cyan); font-size: 20px;">${userRows[0]?.name || "—"}</div>
+              <div class="kpi-value" style="color: var(--cyan); font-size: 20px;">${userRows[0]?.name || "-"}</div>
               <div class="kpi-sub">${fmtCost(userRows[0]?.cost || 0)} · ${userRows[0]?.calls || 0} calls</div>
             </div>
           </div>
@@ -745,7 +745,7 @@
                   <div class="event-time">${new Date(e.timestamp).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
                   <div>${e.feature || "untagged"}</div>
                   <div><span class="pill pill-${e.provider}">${e.model}</span></div>
-                  <div style="color:var(--text-muted)">${e.userId || "—"}</div>
+                  <div style="color:var(--text-muted)">${e.userId || "-"}</div>
                   <div>${fmtNum(e.totalTokens)}</div>
                   <div><strong>${fmtCost(e.totalCostUSD)}</strong></div>
                 </div>`,
@@ -756,7 +756,7 @@
           </div>
         </div>
 
-        <div class="footer">@traice/sdk v0.1.0 — Per-feature, per-user LLM cost attribution</div>
+        <div class="footer">@traice/sdk: LLM cost attribution by feature and user</div>
       `;
 
         // ── Charts ──

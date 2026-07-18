@@ -1,7 +1,7 @@
 #!/usr/bin/env npx ts-node
 
 /**
- * @traice/sdk Smoke Test — Real API Calls
+ * @traice/sdk Smoke Test: Real API Calls
  *
  * Tests meter() against live LLM APIs to verify end-to-end cost tracking.
  * Uses the cheapest models to minimize cost (~$0.001 per run).
@@ -34,7 +34,7 @@ function assert(condition: boolean, message: string): void {
 }
 
 function skip(message: string): void {
-  console.log(`  �� ${message} (skipped — no API key)`);
+  console.log(`  �� ${message} (skipped: no API key)`);
   skipped++;
 }
 
@@ -183,7 +183,7 @@ async function testCostMeterRecord(): Promise<void> {
 
 async function main(): Promise<void> {
   console.log("╔═══��══════════════════════════════════════════╗");
-  console.log("║   @traice/sdk — Smoke Test               ║");
+  console.log("║   @traice/sdk: Smoke Test               ║");
   console.log("╚════════════��═════════════════════════════════╝");
 
   // Clean up previous smoke test data

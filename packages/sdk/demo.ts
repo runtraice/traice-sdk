@@ -60,7 +60,7 @@ async function main() {
 
   console.log("");
   console.log("╔══════════════════════════════════════════════════════════╗");
-  console.log("║             @traice/sdk — Live Demo                  ║");
+  console.log("║             @traice/sdk: Live Demo                  ║");
   console.log("╚══════════════════════════════════════════════════════════╝");
   console.log("");
 
@@ -89,7 +89,7 @@ async function main() {
   const users = ["user_alice", "user_bob", "user_charlie"];
   const sessions = ["sess_morning", "sess_afternoon"];
 
-  // Feature 1: Article Summarizer (Anthropic Claude Sonnet — moderate cost)
+  // Feature 1: Article Summarizer (Anthropic Claude Sonnet: moderate cost)
   for (let i = 0; i < 5; i++) {
     await meter(mockAnthropicResponse("claude-sonnet-4-20250514", randomBetween(800, 2000), randomBetween(200, 600)), {
       feature: "article-summarizer",
@@ -98,7 +98,7 @@ async function main() {
     });
   }
 
-  // Feature 2: Chat Assistant (Anthropic Claude Opus — expensive)
+  // Feature 2: Chat Assistant (Anthropic Claude Opus: expensive)
   for (let i = 0; i < 4; i++) {
     await meter(mockAnthropicResponse("claude-opus-4-20250514", randomBetween(2000, 5000), randomBetween(500, 2000)), {
       feature: "chat",
@@ -107,7 +107,7 @@ async function main() {
     });
   }
 
-  // Feature 3: Tag Classifier (OpenAI GPT-4o-mini — cheap)
+  // Feature 3: Tag Classifier (OpenAI GPT-4o-mini: cheap)
   for (let i = 0; i < 6; i++) {
     await meter(mockOpenAIResponse("gpt-4o-mini", randomBetween(100, 300), randomBetween(10, 50)), {
       feature: "tag-classifier",
@@ -120,7 +120,7 @@ async function main() {
 
   // ── Step 3: Show the CostMeter class ──────────────────────────
 
-  console.log("━━━ Step 3: CostMeter class — manual event recording ━━━");
+  console.log("━━━ Step 3: CostMeter class: manual event recording ━━━");
   console.log("");
 
   const costMeter = new CostMeter({

@@ -45,7 +45,7 @@ function withCostTracking(feature: string) {
   };
 }
 
-// Example route handlers (pseudocode — requires express)
+// Example route handlers (pseudocode: requires express)
 //
 // import express from 'express';
 // const app = express();

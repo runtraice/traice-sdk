@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import packageMetadata from "../package.json";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { installAgent } from "./install";
 import { runCollector } from "./run";
@@ -7,7 +8,10 @@ import type { AgentName } from "./types";
 
 const program = new Command();
 
-program.name("traice-collector").description("Collect local coding-agent usage for trAIce.").version("0.1.0");
+program
+  .name("traice-collector")
+  .description("Collect local coding-agent usage for trAIce.")
+  .version(packageMetadata.version);
 
 program
   .command("install")

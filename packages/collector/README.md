@@ -56,7 +56,7 @@ the replay and asks for an earlier cutoff.
 - Linux Secret Service (for example GNOME Keyring or KWallet)
 
 The non-secret collector config at `~/.traice/collector/config.json` contains only a credential reference. If an OS
-credential manager is unavailable—common on headless Linux—the default `auto` mode falls back to
+credential manager is unavailable (common on headless Linux), the default `auto` mode falls back to
 `~/.traice/collector/credentials.json` with user-only directory and file permissions (`0700`/`0600` on POSIX). The
 installer reports this fallback explicitly; it is protected from other OS users but is not encrypted at rest.
 

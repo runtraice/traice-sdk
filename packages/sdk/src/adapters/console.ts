@@ -8,6 +8,6 @@ export class ConsoleAdapter implements CostAdapter {
     const cost = `$${event.totalCostUSD.toFixed(5)}`;
     const tokens = `${event.totalTokens} tokens`;
     const latency = `${event.latencyMs}ms`;
-    console.log(`[trAIce SDK] ${feature} — ${cost} (${tokens}, ${latency})`);
+    console.log(`[trAIce SDK] ${feature}: ${cost} (${tokens}, ${latency})`);
   }
 }
