@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSourceForAgent } from "../src/config";
-import { dryRunCodexBackfill } from "../src/backfill";
+import { backfillCodex, dryRunCodexBackfill } from "../src/backfill";
 import { readCollectorCredential, storeCollectorCredential } from "../src/credentials";
 import { installAgent } from "../src/install";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "../src/adapters/claude-code";
@@ -82,6 +82,7 @@ describe("@traice/collector", () => {
     expect(events[0]).toMatchObject({
       sourceKey: "codex-local",
       tool: "codex",
+      occurredAt: "2026-07-18T14:33:35.712Z",
       model: "gpt-5.4",
       runId: "conversation-1",
       inputTokens: 16_151,
@@ -188,6 +189,67 @@ describe("@traice/collector", () => {
     expect(JSON.stringify(result)).not.toContain("must not appear");
   });
 
+  it("skips matching live events before uploading a bounded Codex backfill", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-backfill-upload-"));
+    temporaryDirectories.push(directory);
+    const sessions = join(directory, "codex", "sessions", "2026", "07", "10");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(
+      join(sessions, "rollout.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "session-1" } }),
+        JSON.stringify({ type: "turn_context", payload: { model: "gpt-5.4" } }),
+        JSON.stringify({
+          timestamp: "2026-07-10T12:00:00.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: 10, cached_input_tokens: 4, output_tokens: 3, total_tokens: 13 },
+              last_token_usage: { input_tokens: 10, cached_input_tokens: 4, output_tokens: 3, total_tokens: 13 },
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    const configPath = join(directory, "collector.json");
+    writeFileSync(configPath, JSON.stringify({ ...collectorConfig(), serverUrl: "https://example.test" }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json({
+        usage: [
+          {
+            occurredAt: "2026-07-10T11:59:59.500Z",
+            runId: "session-1",
+            model: "gpt-5.4",
+            inputTokens: 10,
+            cacheReadTokens: 4,
+            outputTokens: 3,
+            totalTokens: 13,
+            metadata: { eventName: "codex.sse_event" },
+          },
+        ],
+      }),
+    );
+
+    const result = await backfillCodex({
+      configPath,
+      codexHome: join(directory, "codex"),
+      since: "2026-07-10T00:00:00.000Z",
+      until: "2026-07-11T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      usageEvents: 1,
+      liveEventsInspected: 1,
+      crossModeDuplicatesSkipped: 1,
+      uploadCandidates: 0,
+      accepted: 0,
+      dropped: 0,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
   it("does not duplicate ambiguous payloads when multiple agents are enabled", () => {
     const config: CollectorConfig = {
       version: 1,
@@ -219,18 +281,25 @@ describe("@traice/collector", () => {
       return Response.json({ accepted: body.events.length });
     });
 
+    const onBatch = vi.fn();
     const sent = await forwardEvents(
       collectorConfig(),
       Array.from({ length: 23 }, (_, i) => usageEvent(i)),
       {
         fetchImpl,
         batchSize: 10,
+        onBatch,
       },
     );
 
     expect(sent).toBe(23);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(fetchImpl.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).events.length)).toEqual([10, 10, 3]);
+    expect(onBatch.mock.calls.map(([progress]) => progress)).toEqual([
+      { processed: 10, total: 23, accepted: 10 },
+      { processed: 20, total: 23, accepted: 20 },
+      { processed: 23, total: 23, accepted: 23 },
+    ]);
   });
 
   it("retries transient downstream failures with exponential backoff", async () => {
@@ -419,10 +488,11 @@ function currentCodexLogPayload() {
           {
             logRecords: [
               {
-                timeUnixNano: "1784332800000000000",
+                timeUnixNano: "0",
                 attributes: [
                   attribute("event.name", "codex.sse_event"),
                   attribute("event.kind", "response.completed"),
+                  attribute("event.timestamp", "2026-07-18T14:33:35.712Z"),
                   attribute("input_token_count", "16151"),
                   attribute("output_token_count", "23"),
                   attribute("cached_token_count", "2432"),

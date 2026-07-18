@@ -15,6 +15,7 @@ export type ForwardDependencies = {
   sleep?: (delayMs: number) => Promise<void>;
   batchSize?: number;
   maxAttempts?: number;
+  onBatch?: (progress: { processed: number; total: number; accepted: number }) => void;
 };
 
 const enqueueForward = createSerializedEventForwarder();
@@ -126,6 +127,11 @@ export async function forwardEvents(
     const batch = events.slice(i, i + batchSize).map(toIngestEvent);
     const body = await postBatch(config, batch, dependencies);
     sent += Number(body.accepted ?? batch.length);
+    dependencies.onBatch?.({
+      processed: Math.min(i + batch.length, events.length),
+      total: events.length,
+      accepted: sent,
+    });
   }
 
   return sent;

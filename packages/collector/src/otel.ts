@@ -139,7 +139,12 @@ export function otelRecordToUsageEvent(
     return null;
   }
 
-  const occurredAt = record.occurredAt ?? record.observedAt ?? defaults.receivedAt ?? new Date().toISOString();
+  const occurredAt =
+    pickString(attrs, ["event.timestamp"]) ??
+    record.occurredAt ??
+    record.observedAt ??
+    defaults.receivedAt ??
+    new Date().toISOString();
   const runId = pickString(attrs, ["session.id", "session_id", "conversation.id", "thread.id", "run.id", "runId"]);
   const stepId = pickString(attrs, ["message.id", "request.id", "span.id", "step.id", "stepId"]);
   const model = pickString(attrs, ["model", "gen_ai.request.model", "gen_ai.response.model", "ai.model"]);
