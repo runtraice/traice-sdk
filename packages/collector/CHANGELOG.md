@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.2.4
+
+### Patch Changes
+
+- f331b37: Report the installed collector version from package metadata and refresh SDK, CLI, dashboard, and documentation copy.
+
 ## 0.2.3
 
 ### Patch Changes
