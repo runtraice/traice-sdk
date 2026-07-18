@@ -6,7 +6,7 @@ Unified local collector for coding-agent usage.
 
 ```sh
 npx @traice/collector@latest install claude-code \
-  --server-url https://runtraice.com \
+  --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
   --team-name Engineering \
@@ -22,7 +22,7 @@ Prompt logging stays disabled unless you explicitly pass `--include-prompts`.
 ## Codex
 
 ```sh
-npx @traice/collector@latest install codex --server-url https://runtraice.com --api-key-stdin
+npx @traice/collector@latest install codex --server-url https://www.runtraice.com --api-key-stdin
 npx @traice/collector@latest collect --agent codex
 ```
 
@@ -37,13 +37,14 @@ npx @traice/collector@latest backfill codex --since 14d --dry-run
 ```
 
 The dry run counts request-level `last_token_usage` records and never sends prompts, transcripts, credentials, or usage
-events. To upload a verified non-overlapping window, provide an exclusive upper boundary:
+events. To upload the previous week through the time the command starts:
 
 ```sh
-npx @traice/collector@latest backfill codex --since 14d --until 2026-07-18T14:30:00Z
+npx @traice/collector@latest backfill codex --since 7d
 ```
 
-Actual replay requires `--until`, uses stable event IDs so retries are idempotent, and checks existing live usage in
+The collector snapshots an omitted `--until` boundary to the command start time. Replay uses stable event IDs so
+retries are idempotent and checks existing live usage in
 the bounded window to skip cross-mode duplicates. If the live overlap is too large to audit completely, it refuses
 the replay and asks for an earlier cutoff.
 

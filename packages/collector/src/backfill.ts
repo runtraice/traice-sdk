@@ -48,7 +48,6 @@ export interface CodexBackfillDryRunOptions {
 
 export interface CodexBackfillOptions extends CodexBackfillDryRunOptions {
   configPath?: string;
-  until: string;
   onProgress?: (progress: { processed: number; total: number; accepted: number }) => void;
 }
 

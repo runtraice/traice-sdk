@@ -16,7 +16,7 @@ stty echo
 printf "\n"
 printf "%s" "$TRAICE_API_KEY" | npx @traice/collector@latest install claude-code \
   --api-key-stdin \
-  --server-url https://runtraice.com \
+  --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
   --team-name Engineering
@@ -38,3 +38,9 @@ http://127.0.0.1:4318
 ```
 
 Prompt logging is off by default. Only pass `--include-prompts` when your organization has explicitly approved prompt collection.
+
+## Run continuously
+
+Use the native service definitions in the [Codex guide](codex#run-continuously-at-startup), replacing `--agent codex`
+with `--agent claude-code`. Credentials remain in Keychain, Credential Manager, Secret Service, or the protected-file
+fallback; never place the API key in a plist, systemd unit, or scheduled-task command.

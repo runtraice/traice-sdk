@@ -17,6 +17,7 @@ export interface InternalUsageEvent {
   employeeExternalId?: string;
   teamName?: string;
   teamExternalId?: string;
+  seatMonthlyUsd?: number;
   sourcePrincipal?: string;
   provider?: string;
   model?: string;

@@ -19,9 +19,13 @@ The collector stores private device configuration at:
 ~/.traice/collector/config.json
 ```
 
-The config includes the trAIce server URL, a credential reference, employee and team mapping, enabled adapters, and
-local OTLP listener settings. The API key is stored in the operating system credential manager when available, with a
-permission-restricted file fallback for headless systems.
+The config includes the trAIce server URL, a non-secret credential reference, employee/team mapping, enabled adapters,
+and local OTLP listener settings. The API key itself is stored in macOS Keychain, Windows Credential Manager, or Linux
+Secret Service. When no OS credential store is available, `auto` falls back to a user-only protected file (`0600` on
+POSIX); use `--credential-store file` explicitly on a headless host.
+
+After installation, unset any temporary shell variable used to pipe the key. The background service definitions in the
+[Codex guide](codex#run-continuously-at-startup) contain no API key and work for either adapter.
 
 Agent adapters normalize telemetry into the shared `@traice/protocol` `InternalUsageEvent` shape.
 

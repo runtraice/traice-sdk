@@ -235,7 +235,7 @@ describe("@traice/collector", () => {
       configPath,
       codexHome: join(directory, "codex"),
       since: "2026-07-10T00:00:00.000Z",
-      until: "2026-07-11T00:00:00.000Z",
+      now: new Date("2026-07-11T00:00:00.000Z"),
     });
 
     expect(result).toMatchObject({
