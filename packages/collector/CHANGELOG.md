@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.1.2
+
+### Patch Changes
+
+- b990422: Serialize downstream forwarding, use smaller batches, and retry transient ingest failures with exponential backoff.
+
 ## 0.1.1
 
 ### Patch Changes
