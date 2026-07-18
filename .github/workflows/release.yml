@@ -49,6 +49,5 @@ jobs:
         run: |
           version="$(node -p "require('./packages/collector/package.json').version")"
           payload="$(node -e 'console.log(JSON.stringify({text: `Published @traice/collector@${process.argv[1]} to npm (latest).`}))' "$version")"
-          curl --fail --silent --show-error \
-            -X POST -H 'Content-type: application/json' \
-            --data "$payload" "$SLACK_SDK_RELEASES_WEBHOOK"
+          curl -f -sS -X POST -H 'Content-type: application/json' \
+            -d "$payload" "$SLACK_SDK_RELEASES_WEBHOOK"
