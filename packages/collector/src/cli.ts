@@ -87,18 +87,13 @@ program
     const since = stringOption(options.since);
     if (!since) throw new Error("Missing required option --since.");
     const until = stringOption(options.until);
-    if (!options.dryRun && !until) {
-      throw new Error(
-        "Actual backfill requires an exclusive --until boundary so it cannot overlap unbounded live collection.",
-      );
-    }
     const result = options.dryRun
       ? dryRunCodexBackfill({ codexHome: stringOption(options.codexHome), since, until })
       : await backfillCodex({
           configPath: stringOption(options.config),
           codexHome: stringOption(options.codexHome),
           since,
-          until: until!,
+          until,
           onProgress: ({ processed, total, accepted }) => {
             console.error(`[traice-collector] backfill ${processed}/${total}; accepted ${accepted}`);
           },

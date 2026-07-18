@@ -19,11 +19,11 @@ You need:
 
 ## 1. Sign In
 
-Sign in at [runtraice.com](https://runtraice.com/login). A workspace is created automatically the first time you sign in.
+Sign in at [runtraice.com](https://www.runtraice.com/login). A workspace is created automatically the first time you sign in.
 
 ## 2. Create An API Key
 
-Open [API keys](https://runtraice.com/app/api-keys), create a key, and store it in your secret manager or `.env` file.
+Open [API keys](https://www.runtraice.com/app/api-keys), create a key, and store it in your secret manager or `.env` file.
 
 ```sh
 TRAICE_API_KEY=trc_...
@@ -80,7 +80,7 @@ const { configure, meter } = require("@traice/sdk");
 If you are not ready to use the SDK, send a product event directly:
 
 ```sh
-curl -X POST "https://runtraice.com/api/v1/events" \
+curl -X POST "https://www.runtraice.com/api/v1/events" \
   -H "authorization: Bearer $TRAICE_API_KEY" \
   -H "content-type: application/json" \
   -d '{
@@ -111,7 +111,7 @@ stty echo
 printf "\n"
 printf "%s" "$TRAICE_API_KEY" | npx @traice/collector@latest install claude-code \
   --api-key-stdin \
-  --server-url https://runtraice.com \
+  --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
   --team-name Engineering \
@@ -129,7 +129,7 @@ npx @traice/collector@latest collect --agent claude-code
 Send an internal usage row directly:
 
 ```sh
-curl -X POST "https://runtraice.com/api/v1/internal-usage" \
+curl -X POST "https://www.runtraice.com/api/v1/internal-usage" \
   -H "authorization: Bearer $TRAICE_API_KEY" \
   -H "content-type: application/json" \
   -d '{
@@ -154,7 +154,7 @@ Product events answer which customer or feature spent money. Internal Spend answ
 
 ## 6. Check The Dashboard
 
-After the first product event lands, open [the dashboard](https://runtraice.com/app/dashboard). For customer margin, add revenue rows under Settings -> Customer revenue.
+After the first product event lands, open [the dashboard](https://www.runtraice.com/app/dashboard). For customer margin, add revenue rows under Settings -> Customer revenue.
 
 For Internal Spend, open Dashboard -> Internal Spend after collector events arrive.
 
