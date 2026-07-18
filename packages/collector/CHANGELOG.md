@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.2.1
+
+### Patch Changes
+
+- 2ca521f: Generate Codex-compatible OTLP HTTP configuration and add a bounded, read-only Codex history backfill dry run.
+
 ## 0.2.0
 
 ### Minor Changes
