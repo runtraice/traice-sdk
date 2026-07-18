@@ -30,6 +30,15 @@ The maintained collector forwards live OTLP telemetry only; it does not scan
 or replay an unbounded history of local session files. Stop any legacy Codex
 collector process before starting `@traice/collector`.
 
+Inspect a bounded window of local Codex session history without sending data:
+
+```sh
+npx @traice/collector@latest backfill codex --since 14d --dry-run
+```
+
+The dry run counts request-level `last_token_usage` records and never sends prompts, transcripts, credentials, or usage
+events. Actual history ingestion remains disabled until bounded replay and cross-mode deduplication are available.
+
 ## API key storage
 
 `install` stores the API key in the operating system credential manager by default:

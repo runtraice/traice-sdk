@@ -1,14 +1,16 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defaultSourceForAgent } from "../src/config";
+import { dryRunCodexBackfill } from "../src/backfill";
 import { readCollectorCredential, storeCollectorCredential } from "../src/credentials";
 import { installAgent } from "../src/install";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "../src/adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "../src/adapters/codex";
 import { createSerializedEventForwarder, forwardEvents, normalizePayloadForRequest } from "../src/run";
+import { codexTomlBlock } from "../src/settings";
 import type { CollectorConfig } from "../src/types";
 
 const identity = {
@@ -67,6 +69,103 @@ describe("@traice/collector", () => {
       model: "gpt-5-codex",
       totalTokens: 9,
     });
+  });
+
+  it("generates a Codex-compatible OTLP HTTP exporter block", () => {
+    const block = codexTomlBlock({ listenHost: "127.0.0.1", listenPort: 4318, includePrompts: false });
+
+    expect(block).toContain(
+      'exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "json" } }',
+    );
+    expect(block).not.toContain("otlp =");
+  });
+
+  it("dry-runs a bounded Codex backfill without reading transcript content into the result", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-backfill-"));
+    temporaryDirectories.push(directory);
+    const sessions = join(directory, "sessions", "2026", "07", "10");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(
+      join(sessions, "rollout.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "session-1" } }),
+        JSON.stringify({
+          timestamp: "2026-07-09T23:59:00.000Z",
+          type: "event_msg",
+          payload: { type: "token_count", info: { last_token_usage: { total_tokens: 99 } } },
+        }),
+        JSON.stringify({
+          timestamp: "2026-07-10T12:00:00.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 10,
+                cached_input_tokens: 4,
+                output_tokens: 3,
+                reasoning_output_tokens: 2,
+                total_tokens: 13,
+              },
+              last_token_usage: {
+                input_tokens: 10,
+                cached_input_tokens: 4,
+                output_tokens: 3,
+                reasoning_output_tokens: 2,
+                total_tokens: 13,
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-07-10T12:00:00.500Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: {
+                input_tokens: 10,
+                cached_input_tokens: 4,
+                output_tokens: 3,
+                reasoning_output_tokens: 2,
+                total_tokens: 13,
+              },
+              last_token_usage: {
+                input_tokens: 10,
+                cached_input_tokens: 4,
+                output_tokens: 3,
+                reasoning_output_tokens: 2,
+                total_tokens: 13,
+              },
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-07-10T12:00:01.000Z",
+          type: "event_msg",
+          payload: { type: "user_message", message: "must not appear" },
+        }),
+      ].join("\n"),
+    );
+
+    const result = dryRunCodexBackfill({
+      codexHome: directory,
+      since: "2026-07-10T00:00:00.000Z",
+      until: "2026-07-11T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      dryRun: true,
+      sendsData: false,
+      filesDiscovered: 1,
+      filesWithUsage: 1,
+      sessionsWithUsage: 1,
+      usageEvents: 1,
+      duplicateEventIds: 0,
+      repeatedSnapshotsSkipped: 1,
+      tokens: { input: 10, cachedInput: 4, output: 3, reasoningOutput: 2, total: 13 },
+    });
+    expect(JSON.stringify(result)).not.toContain("must not appear");
   });
 
   it("does not duplicate ambiguous payloads when multiple agents are enabled", () => {
