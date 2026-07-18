@@ -11,12 +11,15 @@ import {
 } from "./config";
 import { normalizeUrl, parseMoney, parsePort, readJsonFile, readStdinSecret, resolveHome } from "./fs";
 import { patchClaudeSettings, patchCodexConfig, type SettingsPatchResult } from "./settings";
-import type { AgentName, CollectorConfig, CollectorInstallOptions } from "./types";
+import { storeCollectorCredential } from "./credentials";
+import type { AgentName, CollectorConfig, CollectorCredential, CollectorInstallOptions } from "./types";
 
 export interface InstallResult {
   ok: true;
   agent: AgentName;
   configPath: string;
+  credential: CollectorCredential;
+  credentialWarning?: string;
   settings: SettingsPatchResult;
   nextCommand: string;
 }
@@ -24,9 +27,19 @@ export interface InstallResult {
 export async function installAgent(options: CollectorInstallOptions): Promise<InstallResult> {
   const configPath = resolveConfigPath(options.configPath);
   const current = existsSync(configPath) ? readJsonFile<CollectorConfig>(configPath) : null;
-  const apiKey = options.apiKeyStdin
+  const providedApiKey = options.apiKeyStdin
     ? await readStdinSecret()
     : (options.apiKey ?? current?.apiKey ?? process.env.TRAICE_API_KEY);
+  let credential = current?.credential;
+  let credentialWarning: string | undefined;
+  if (providedApiKey) {
+    const stored = await storeCollectorCredential(configPath, providedApiKey, options.credentialStore);
+    credential = stored.credential;
+    credentialWarning = stored.warning;
+  }
+  if (!credential) {
+    throw new Error("Missing API key. Provide TRAICE_API_KEY or --api-key-stdin.");
+  }
   const listenHost = options.listenHost ?? current?.listenHost ?? "127.0.0.1";
   const listenPort = parsePort(options.listenPort ?? current?.listenPort, 4318);
   const includePrompts = Boolean(options.includePrompts ?? current?.includePrompts ?? false);
@@ -39,7 +52,7 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
 
   const next = mergeConfigForAgent(current, options.agent, {
     serverUrl: normalizeUrl(options.serverUrl ?? current?.serverUrl ?? DEFAULT_SERVER_URL),
-    apiKey,
+    credential,
     listenHost,
     listenPort,
     includePrompts,
@@ -57,6 +70,7 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
     },
     ...agentHomePatch,
   });
+  delete next.apiKey;
 
   writeCollectorConfig(next, configPath);
 
@@ -81,6 +95,8 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
     ok: true,
     agent: options.agent,
     configPath,
+    credential,
+    ...(credentialWarning ? { credentialWarning } : {}),
     settings,
     nextCommand: `npx @traice/collector@latest collect --config ${configPath}`,
   };

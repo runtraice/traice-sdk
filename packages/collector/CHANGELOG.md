@@ -1,5 +1,18 @@
 # @traice/collector
 
+## 0.2.0
+
+### Minor Changes
+
+- 3b7ea9f: Store collector API keys in macOS Keychain, Windows Credential Manager, or Linux Secret Service, with explicit strict
+  and protected-file modes plus automatic migration away from plaintext config.
+
+## 0.1.2
+
+### Patch Changes
+
+- b990422: Serialize downstream forwarding, use smaller batches, and retry transient ingest failures with exponential backoff.
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,20 +1,30 @@
 import { createServer, type IncomingMessage } from "node:http";
 import type { InternalUsageEvent } from "@traice/protocol";
-import { defaultSourceForAgent, loadCollectorConfig } from "./config";
+import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
+import { readCollectorCredential, storeCollectorCredential } from "./credentials";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
 
-const MAX_BATCH_SIZE = 50;
+const MAX_BATCH_SIZE = 10;
+const MAX_FORWARD_ATTEMPTS = 4;
+const BASE_RETRY_DELAY_MS = 250;
+
+export type ForwardDependencies = {
+  fetchImpl?: typeof fetch;
+  sleep?: (delayMs: number) => Promise<void>;
+  batchSize?: number;
+  maxAttempts?: number;
+};
+
+const enqueueForward = createSerializedEventForwarder();
 
 export async function runCollector(options: CollectorRunOptions = {}): Promise<void> {
-  const config = loadCollectorConfig(options.configPath);
+  const configPath = resolveConfigPath(options.configPath);
+  const config = loadCollectorConfig(configPath);
   const listenHost = options.listenHost ?? config.listenHost;
   const listenPort = options.listenPort ?? config.listenPort;
-
-  if (!config.apiKey) {
-    throw new Error("Missing API key in collector config. Re-run install with TRAICE_API_KEY or --api-key-stdin.");
-  }
+  const apiKey = await resolveApiKey(config, configPath);
 
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
@@ -41,7 +51,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
 
     try {
       const events = normalizePayloadForRequest(req.url ?? "", payload, config, options.agent, receivedAt);
-      const sent = await forwardEvents(config, events);
+      const sent = await enqueueForward({ ...config, apiKey }, events);
       if (events.length > 0 || sent > 0) {
         console.log(JSON.stringify({ receivedAt, path: req.url, candidates: events.length, sent }));
       }
@@ -90,31 +100,98 @@ export function normalizePayloadForRequest(
   return dedupeEvents(events);
 }
 
-async function forwardEvents(config: CollectorConfig, events: InternalUsageEvent[]): Promise<number> {
+export function createSerializedEventForwarder(dependencies: ForwardDependencies = {}) {
+  let tail: Promise<void> = Promise.resolve();
+
+  return (config: CollectorConfig, events: InternalUsageEvent[]): Promise<number> => {
+    const operation = tail.then(() => forwardEvents(config, events, dependencies));
+    tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  };
+}
+
+export async function forwardEvents(
+  config: CollectorConfig,
+  events: InternalUsageEvent[],
+  dependencies: ForwardDependencies = {},
+): Promise<number> {
   if (events.length === 0) return 0;
+  const batchSize = Math.max(1, dependencies.batchSize ?? MAX_BATCH_SIZE);
   let sent = 0;
 
-  for (let i = 0; i < events.length; i += MAX_BATCH_SIZE) {
-    const batch = events.slice(i, i + MAX_BATCH_SIZE).map(toIngestEvent);
-    const response = await fetch(`${config.serverUrl}/api/v1/internal-usage`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${config.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ events: batch }),
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`POST /api/v1/internal-usage returned ${response.status}: ${text.slice(0, 500)}`);
-    }
-
-    const body = (await response.json().catch(() => ({}))) as { accepted?: number };
+  for (let i = 0; i < events.length; i += batchSize) {
+    const batch = events.slice(i, i + batchSize).map(toIngestEvent);
+    const body = await postBatch(config, batch, dependencies);
     sent += Number(body.accepted ?? batch.length);
   }
 
   return sent;
+}
+
+async function postBatch(
+  config: CollectorConfig,
+  batch: Record<string, unknown>[],
+  dependencies: ForwardDependencies,
+): Promise<{ accepted?: number }> {
+  const fetchImpl = dependencies.fetchImpl ?? fetch;
+  const sleep = dependencies.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+  const maxAttempts = Math.max(1, dependencies.maxAttempts ?? MAX_FORWARD_ATTEMPTS);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(`${config.serverUrl}/api/v1/internal-usage`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${config.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ events: batch }),
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < maxAttempts) {
+        await sleep(BASE_RETRY_DELAY_MS * 2 ** attempt);
+      }
+      continue;
+    }
+
+    if (response.ok) {
+      return (await response.json().catch(() => ({}))) as { accepted?: number };
+    }
+
+    const text = await response.text().catch(() => "");
+    lastError = new Error(`POST /api/v1/internal-usage returned ${response.status}: ${text.slice(0, 500)}`);
+    if (!isRetryableStatus(response.status)) throw lastError;
+
+    if (attempt + 1 < maxAttempts) {
+      await sleep(BASE_RETRY_DELAY_MS * 2 ** attempt);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Internal usage forwarding failed");
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+async function resolveApiKey(config: CollectorConfig, configPath: string): Promise<string> {
+  if (process.env.TRAICE_API_KEY) return process.env.TRAICE_API_KEY;
+  if (config.credential) return readCollectorCredential(config.credential);
+  if (config.apiKey) {
+    const stored = await storeCollectorCredential(configPath, config.apiKey);
+    config.credential = stored.credential;
+    delete config.apiKey;
+    writeCollectorConfig(config, configPath);
+    if (stored.warning) console.warn(`[traice-collector] ${stored.warning}`);
+    return readCollectorCredential(stored.credential);
+  }
+  throw new Error("Missing collector API key. Re-run install with TRAICE_API_KEY or --api-key-stdin.");
 }
 
 function toIngestEvent(event: InternalUsageEvent): Record<string, unknown> {

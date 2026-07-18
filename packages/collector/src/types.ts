@@ -1,13 +1,19 @@
 import type { CollectorIdentity, CollectorSource, InternalUsageEvent } from "@traice/protocol";
 
 export type AgentName = "claude-code" | "codex";
+export type CredentialStoreMode = "auto" | "keyring" | "file";
+
+export type CollectorCredential =
+  { backend: "os-keyring"; service: string; account: string } | { backend: "protected-file"; path: string };
 
 export interface CollectorConfig {
   version: 1;
   createdAt: string;
   updatedAt: string;
   serverUrl: string;
+  /** @deprecated Migrated to credential on the next install or collect. */
   apiKey?: string;
+  credential?: CollectorCredential;
   listenHost: string;
   listenPort: number;
   includePrompts: boolean;
@@ -24,6 +30,7 @@ export interface CollectorInstallOptions {
   serverUrl?: string;
   apiKey?: string;
   apiKeyStdin?: boolean;
+  credentialStore?: CredentialStoreMode;
   employeeEmail?: string;
   employeeName?: string;
   employeeExternalId?: string;
