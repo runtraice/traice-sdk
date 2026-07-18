@@ -71,6 +71,26 @@ describe("@traice/collector", () => {
     });
   });
 
+  it("normalizes token attributes emitted by current Codex builds", () => {
+    const events = normalizeCodexOtlpLogs(currentCodexLogPayload(), {
+      source: defaultSourceForAgent("codex"),
+      identity,
+      receivedAt: "2026-07-18T00:00:00.000Z",
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      sourceKey: "codex-local",
+      tool: "codex",
+      model: "gpt-5.4",
+      runId: "conversation-1",
+      inputTokens: 16_151,
+      outputTokens: 23,
+      cacheReadTokens: 2_432,
+      totalTokens: 16_174,
+    });
+  });
+
   it("generates a Codex-compatible OTLP HTTP exporter block", () => {
     const block = codexTomlBlock({ listenHost: "127.0.0.1", listenPort: 4318, includePrompts: false });
 
@@ -381,6 +401,36 @@ function metricPayload(metricName: string, value: number) {
                     },
                   ],
                 },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function currentCodexLogPayload() {
+  const attribute = (key: string, value: string) => ({ key, value: { stringValue: value } });
+  return {
+    resourceLogs: [
+      {
+        scopeLogs: [
+          {
+            logRecords: [
+              {
+                timeUnixNano: "1784332800000000000",
+                attributes: [
+                  attribute("event.name", "codex.sse_event"),
+                  attribute("event.kind", "response.completed"),
+                  attribute("input_token_count", "16151"),
+                  attribute("output_token_count", "23"),
+                  attribute("cached_token_count", "2432"),
+                  attribute("reasoning_token_count", "14"),
+                  attribute("tool_token_count", "16174"),
+                  attribute("conversation.id", "conversation-1"),
+                  attribute("model", "gpt-5.4"),
+                ],
               },
             ],
           },

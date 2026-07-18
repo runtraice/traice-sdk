@@ -96,6 +96,7 @@ export function otelRecordToUsageEvent(
     "inputTokens",
     "prompt_tokens",
     "promptTokens",
+    "input_token_count",
     "gen_ai.usage.input_tokens",
     "gen_ai.usage.prompt_tokens",
   ]);
@@ -104,14 +105,21 @@ export function otelRecordToUsageEvent(
     "outputTokens",
     "completion_tokens",
     "completionTokens",
+    "output_token_count",
     "gen_ai.usage.output_tokens",
     "gen_ai.usage.completion_tokens",
   ]);
-  const totalTokens = pickNumber(attrs, ["total_tokens", "totalTokens", "gen_ai.usage.total_tokens"]);
+  const totalTokens = pickNumber(attrs, [
+    "total_tokens",
+    "totalTokens",
+    "tool_token_count",
+    "gen_ai.usage.total_tokens",
+  ]);
   const cacheReadTokens = pickNumber(attrs, [
     "cache_read_tokens",
     "cacheReadTokens",
     "cache_read_input_tokens",
+    "cached_token_count",
     "gen_ai.usage.cache_read_input_tokens",
   ]);
   const cacheWriteTokens = pickNumber(attrs, [
