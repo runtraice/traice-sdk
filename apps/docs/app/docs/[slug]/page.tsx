@@ -1,7 +1,19 @@
 import { notFound } from "next/navigation";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { LanguageSnippet } from "../../components/LanguageSnippet";
 import { allDocs, docBlocks, docBySlug } from "../../lib/docs";
+
+const markdownComponents: Components = {
+  table({ node, ...props }) {
+    void node;
+    return (
+      <div className="doc-table-wrap">
+        <table {...props} />
+      </div>
+    );
+  },
+};
 
 export function generateStaticParams() {
   return allDocs().map((doc) => ({ slug: doc.slug }));
@@ -34,7 +46,9 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
       <article className="doc-content">
         {docBlocks(doc.body).map((block, index) =>
           block.type === "markdown" ? (
-            <ReactMarkdown key={`markdown-${index}`}>{block.content}</ReactMarkdown>
+            <ReactMarkdown components={markdownComponents} key={`markdown-${index}`} remarkPlugins={[remarkGfm]}>
+              {block.content}
+            </ReactMarkdown>
           ) : (
             <LanguageSnippet key={`languages-${index}`} snippets={block.snippets} />
           ),
