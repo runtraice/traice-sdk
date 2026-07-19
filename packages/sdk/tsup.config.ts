@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     index: "src/index.ts",
+    pricing: "src/pricing/index.ts",
     cli: "src/cli.ts",
     "dashboard/server": "dashboard/server.ts",
   },

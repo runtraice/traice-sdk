@@ -13,6 +13,8 @@ export type {
   BlockingRuleAction,
   CloudAdapterConfig,
   EnforcementEvidence,
+  EnforcementErrorContext,
+  EnforcementStats,
   ExactCacheContext,
   ExactCacheRequest,
   ExactCacheStats,
