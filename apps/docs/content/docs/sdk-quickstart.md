@@ -116,18 +116,31 @@ curl -X POST "https://runtraice.com/api/v1/events" \
 
 See [Python SDK](python-sdk) for batching, errors, custom pricing, all attribution dimensions, and LangChain or LangGraph callbacks.
 
-## Exact-cache guardrails
+## Request enforcement
 
-To opt a request path into an active exact-cache rule, keep one `CloudAdapter`
-instance for the process and pass the request, provider call, and attribution to
-`cloud.enforceExactCache()`. Exact-cache enforcement is currently available in
-the TypeScript SDK only.
+Keep one `CloudAdapter` instance for the process and pass opted-in calls through
+`cloud.enforceRequest()`. The TypeScript SDK executes the wrapper-v1 actions:
+exact cache, deny, retry cap, evidence-gated swap or downgrade, and one-shot
+fallback.
 
-Only an active `CACHE_EXACT` rule can change the call. Cache misses, rule/API
-errors, explicit bypasses, and all streaming requests call the provider normally.
+Call `await cloud.warmEnforcement()` during startup. Wrapped requests never wait
+for a rule API read. A cold or expired rules cache passes through and starts a
+background refresh.
+
+Active deny and retry-cap rules throw `TraiceEnforcementError` without calling
+the provider. The error has a stable code, action, rule identifier, and
+structured reason. Shadow rules, unsupported actions, malformed rules, rule API
+errors, and explicit bypasses call the provider normally. Streaming requests
+can still be denied or retry-capped, but are never cached.
+
 Use `cloud.getExactCacheStats()` for process-local hits, misses, bypasses, hit
-rate, and realized savings. trAIce receives hit/miss outcomes and token cost
-bases, but not the cached request or response payload.
+rate, and realized savings. trAIce receives action outcomes and verifiable cost
+bases, but not request or response payloads.
+
+Swap and downgrade rules need a current experiment for the exact feature,
+source model, and target model. The measured equivalence and quality drop must
+meet both rule thresholds. Fallback calls the configured target once after the original
+provider call fails. If fallback also fails, the original error is preserved.
 
 ## Plan enforcement decisions
 
@@ -136,7 +149,6 @@ wrappers and deterministic rule tests. It evaluates state, priority,
 conditions, model allowlists, and supplied equivalence evidence without I/O,
 then returns `PASS_THROUGH` or a structured active/shadow decision.
 
-Planning does not call a model provider. `CloudAdapter.enforceExactCache()` is
-currently the only built-in executor. Swap, downgrade, deny, retry-cap,
-fallback, and route execution remain disabled until their guarded executors are
-released.
+Planning does not call a model provider. `CloudAdapter.enforceRequest()` executes
+the wrapper-v1 actions. Semantic-cache and route execution remain disabled until
+their guarded executors are released.

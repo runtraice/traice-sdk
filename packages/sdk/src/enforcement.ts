@@ -21,6 +21,7 @@ export interface EnforcementRule {
   actionParams: Record<string, unknown>;
   requireEquivalencePct: number | null;
   modelAllowlist: string[];
+  maxQualityDropPct?: number | null;
 }
 
 export interface EnforcementRequest {
@@ -34,6 +35,8 @@ export interface EnforcementContext {
   budgetPct?: Partial<Record<BudgetScope, number>>;
   /** Proven equivalence percentage for the candidate model, or null when no evidence exists. */
   equivalencePctFor?: (candidateModel: string) => number | null;
+  /** Experiment identifier backing the supplied equivalence percentage. */
+  experimentIdFor?: (candidateModel: string) => string | null;
 }
 
 export type EnforcementDecision =
@@ -51,7 +54,14 @@ export type EnforcementDecision =
       action: RuleAction;
       servedModel: string | null;
       reason: Record<string, unknown>;
-      evidence?: { requiredPct: number; actualPct: number | null; satisfied: boolean };
+      evidence?: {
+        requiredPct: number;
+        actualPct: number | null;
+        satisfied: boolean;
+        experimentId?: string;
+        qualityDropPct?: number;
+        maxQualityDropPct?: number;
+      };
     };
 
 const PASS_THROUGH: EnforcementDecision = {
@@ -61,7 +71,8 @@ const PASS_THROUGH: EnforcementDecision = {
   reason: { type: "no_match" },
 };
 
-const ROUTING_ACTIONS: ReadonlySet<RuleAction> = new Set(["SWAP", "DOWNGRADE", "ROUTE"]);
+const TARGETED_ACTIONS: ReadonlySet<RuleAction> = new Set(["SWAP", "DOWNGRADE", "FALLBACK", "ROUTE"]);
+const EVIDENCE_ACTIONS: ReadonlySet<RuleAction> = new Set(["SWAP", "DOWNGRADE", "ROUTE"]);
 
 /**
  * Select the first enforceable rule for a request without performing I/O.
@@ -85,10 +96,19 @@ export function decide(
     const match = matchCondition(rule.condition, request, context);
     if (!match) continue;
 
-    const isRouting = ROUTING_ACTIONS.has(rule.action);
+    const isTargeted = TARGETED_ACTIONS.has(rule.action);
+    const requiresEvidence = EVIDENCE_ACTIONS.has(rule.action);
     const targetModel = typeof rule.actionParams.targetModel === "string" ? rule.actionParams.targetModel : null;
 
-    if (isRouting && targetModel && rule.modelAllowlist.length > 0 && !rule.modelAllowlist.includes(targetModel)) {
+    if (rule.action === "CAP_RETRIES") {
+      const maxRetries = nonNegativeInteger(rule.actionParams.maxRetries);
+      const retryCount = request.retryCount ?? 0;
+      if (maxRetries == null || retryCount <= maxRetries) continue;
+    }
+
+    if (isTargeted && !targetModel) continue;
+
+    if (isTargeted && targetModel && rule.modelAllowlist.length > 0 && !rule.modelAllowlist.includes(targetModel)) {
       continue;
     }
 
@@ -98,17 +118,28 @@ export function decide(
       ruleName: rule.name,
       mode: rule.state === "ACTIVE" ? ("active" as const) : ("shadow" as const),
       action: rule.action,
-      servedModel: isRouting ? targetModel : null,
+      servedModel: isTargeted ? targetModel : null,
     };
 
-    if (isRouting && rule.requireEquivalencePct != null && targetModel) {
+    if (requiresEvidence && rule.requireEquivalencePct != null && targetModel) {
       const actualPct = context.equivalencePctFor?.(targetModel) ?? null;
-      const satisfied = actualPct != null && actualPct >= rule.requireEquivalencePct;
+      const qualityDropPct = actualPct == null ? null : Math.max(0, 100 - actualPct);
+      const qualitySatisfied =
+        rule.maxQualityDropPct == null || (qualityDropPct != null && qualityDropPct <= rule.maxQualityDropPct);
+      const satisfied = actualPct != null && actualPct >= rule.requireEquivalencePct && qualitySatisfied;
       if (!satisfied) continue;
+      const experimentId = context.experimentIdFor?.(targetModel) ?? undefined;
       return {
         ...base,
         reason: { ...match, targetModel },
-        evidence: { requiredPct: rule.requireEquivalencePct, actualPct, satisfied },
+        evidence: {
+          requiredPct: rule.requireEquivalencePct,
+          actualPct,
+          satisfied,
+          ...(experimentId ? { experimentId } : {}),
+          ...(qualityDropPct != null ? { qualityDropPct } : {}),
+          ...(rule.maxQualityDropPct != null ? { maxQualityDropPct: rule.maxQualityDropPct } : {}),
+        },
       };
     }
 
@@ -119,6 +150,11 @@ export function decide(
   }
 
   return PASS_THROUGH;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return null;
+  return value;
 }
 
 function matchCondition(
