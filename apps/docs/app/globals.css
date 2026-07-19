@@ -136,6 +136,10 @@ kbd {
   padding: 54px 0 80px;
 }
 
+.hero > * {
+  min-width: 0;
+}
+
 .eyebrow {
   color: var(--accent);
   font-weight: 700;
@@ -235,6 +239,7 @@ kbd {
 
 .language-panel pre {
   margin: 0;
+  overflow-x: auto;
   border: 0;
   border-radius: 0;
   padding-right: 72px;
