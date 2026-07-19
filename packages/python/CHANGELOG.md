@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Verify PyPI trusted publishing and linked Slack release notifications.
+
 ## 0.1.0
 
 - Add sync and async `track()` decorators and context managers.
