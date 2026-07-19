@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- c6f7dab: Add opt-in request-path execution for active exact-cache, deny, retry-cap, evidence-gated swap or downgrade, and one-shot fallback rules with structured blocking errors and fail-open rule evaluation.
+
 ## 0.3.1
 
 ### Patch Changes
