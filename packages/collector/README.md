@@ -30,6 +30,24 @@ npx @traice/collector@latest setup codex \
 Codex setup backfills the previous 7 days by default. Set `--backfill-days` from 1 to 30, use `--no-backfill` to skip
 history, or use `--no-service` when another process manager will run the collector.
 
+## Status and help
+
+Check the saved configuration, credential, background service, local listener, and authenticated server connection:
+
+```sh
+npx @traice/collector@latest status
+```
+
+The command exits with code 0 when collection is healthy and code 1 when a required check fails. Use `--json` for
+scripts and device management. Status output never includes the API key.
+
+List commands or open help for one command:
+
+```sh
+npx @traice/collector@latest help
+npx @traice/collector@latest help setup
+```
+
 The maintained collector forwards live OTLP telemetry only; it does not scan
 or replay an unbounded history of local session files. Stop any legacy Codex
 collector process before starting `@traice/collector`.

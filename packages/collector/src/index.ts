@@ -9,6 +9,8 @@ export { DEFAULT_CONFIG_PATH, loadCollectorConfig, writeCollectorConfig } from "
 export { readCollectorCredential, storeCollectorCredential } from "./credentials";
 export { installCollectorService } from "./service";
 export { setupAgent, verifyCollectorConnection } from "./setup";
+export { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "./status";
+export type { CollectorServiceState, CollectorStatusResult } from "./status";
 export { backfillCodex, dryRunCodexBackfill } from "./backfill";
 export type {
   CodexBackfillDryRunOptions,

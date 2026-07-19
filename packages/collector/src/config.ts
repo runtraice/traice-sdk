@@ -15,7 +15,7 @@ export function loadCollectorConfig(path = DEFAULT_CONFIG_PATH): CollectorConfig
   const resolved = resolveConfigPath(path);
   const config = readJsonFile<CollectorConfig>(resolved);
   if (!config)
-    throw new Error(`Collector config not found at ${resolved}. Run "traice-collector install <agent>" first.`);
+    throw new Error(`Collector config not found at ${resolved}. Run "traice-collector setup <agent>" first.`);
   return config;
 }
 
