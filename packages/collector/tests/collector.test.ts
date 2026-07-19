@@ -13,6 +13,7 @@ import { createSerializedEventForwarder, forwardEvents, normalizePayloadForReque
 import { installCollectorService } from "../src/service";
 import { setupAgent } from "../src/setup";
 import { codexTomlBlock } from "../src/settings";
+import { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "../src/status";
 import type { CollectorConfig } from "../src/types";
 
 const identity = {
@@ -487,6 +488,79 @@ describe("@traice/collector", () => {
     expect(promptSecret).toHaveBeenCalledWith("Stored trAIce API key was rejected. Enter a new API key: ");
     const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
     expect(await readCollectorCredential(config.credential!)).toBe("replacement-key");
+  });
+
+  it("reports a healthy collector without exposing its credential", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-status-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.json");
+    await installAgent({
+      agent: "codex",
+      configPath,
+      serverUrl: "https://runtraice.com",
+      apiKey: "status-secret-key",
+      credentialStore: "file",
+      codexHome: join(directory, "codex"),
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1:4318")) {
+        return Response.json({ ok: true, service: "traice-collector", agents: ["codex"] });
+      }
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer status-secret-key");
+      return Response.json({ usage: [] });
+    });
+
+    const result = await getCollectorStatus(
+      { configPath, timeoutMs: 500 },
+      {
+        fetchImpl,
+        checkService: () => ({ ok: true, platform: "darwin", state: "running" }),
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      config: { ok: true, serverUrl: "https://runtraice.com", agents: ["codex"] },
+      credential: { ok: true, backend: "protected-file" },
+      service: { ok: true, state: "running" },
+      listener: { ok: true },
+      server: { ok: true },
+    });
+    expect(JSON.stringify(result)).not.toContain("status-secret-key");
+    expect(formatCollectorStatus(result)).toContain("trAIce Collector: healthy");
+  });
+
+  it("returns actionable status when the config is missing", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-status-missing-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "missing.json");
+
+    const result = await getCollectorStatus(
+      { configPath },
+      { checkService: () => ({ ok: false, platform: "darwin", state: "not-installed" }) },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.config).toMatchObject({ ok: false, path: configPath });
+    expect(result.credential.message).toContain("Skipped");
+  });
+
+  it("distinguishes an installed but stopped macOS service", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-status-service-"));
+    temporaryDirectories.push(directory);
+    const definitionPath = join(directory, "Library/LaunchAgents/com.traice.collector.plist");
+    mkdirSync(join(directory, "Library/LaunchAgents"), { recursive: true });
+    writeFileSync(definitionPath, "<plist />");
+
+    const result = getCollectorServiceStatus({
+      platform: "darwin",
+      home: directory,
+      uid: 501,
+      run: () => ({ status: 113, stdout: "", stderr: "Could not find service" }),
+    });
+
+    expect(result).toMatchObject({ ok: false, state: "stopped", definitionPath });
   });
 });
 

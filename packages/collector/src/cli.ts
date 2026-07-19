@@ -5,6 +5,7 @@ import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { installAgent } from "./install";
 import { runCollector } from "./run";
 import { setupAgent } from "./setup";
+import { formatCollectorStatus, getCollectorStatus } from "./status";
 import type { AgentName } from "./types";
 
 const program = new Command();
@@ -12,7 +13,33 @@ const program = new Command();
 program
   .name("traice-collector")
   .description("Collect local coding-agent usage for trAIce.")
-  .version(packageMetadata.version);
+  .version(packageMetadata.version)
+  .showHelpAfterError("\nRun 'traice-collector help' for usage.")
+  .showSuggestionAfterError(true)
+  .addHelpText(
+    "after",
+    `
+Examples:
+  traice-collector setup codex --employee-email you@company.com --team-name Engineering
+  traice-collector status
+  traice-collector status --json
+  traice-collector help setup`,
+  );
+
+program
+  .command("status")
+  .description("Check configuration, credentials, background service, listener, and server access")
+  .option("--config <path>", "collector config path")
+  .option("--timeout <milliseconds>", "network check timeout from 250 to 30000 milliseconds", "3000")
+  .option("--json", "print machine-readable JSON")
+  .action(async (options: Record<string, unknown>) => {
+    const result = await getCollectorStatus({
+      configPath: stringOption(options.config),
+      timeoutMs: integerOption(options.timeout, "timeout"),
+    });
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatCollectorStatus(result));
+    if (!result.ok) process.exitCode = 1;
+  });
 
 program
   .command("setup")
@@ -67,6 +94,7 @@ program
 
 program
   .command("install")
+  .description("Configure one agent without installing a background service or running history backfill")
   .argument("<agent>", "agent to install: claude-code or codex")
   .option("--config <path>", "collector config path")
   .option("--server-url <url>", "trAIce app URL", "https://runtraice.com")
@@ -113,6 +141,7 @@ program
 
 program
   .command("collect")
+  .description("Run the local OTLP listener and forward normalized usage to trAIce")
   .option("--config <path>", "collector config path")
   .option("--agent <agent>", "only normalize this agent")
   .option("--listen-host <host>", "override local OTLP host")
@@ -128,6 +157,7 @@ program
 
 program
   .command("backfill")
+  .description("Inspect or upload a bounded window of Codex usage history")
   .argument("<agent>", "agent history to inspect; currently codex")
   .requiredOption("--since <date-or-duration>", "earliest event, for example 14d or 2026-07-01")
   .option("--until <date-or-duration>", "exclusive upper boundary; defaults to now")
@@ -153,9 +183,10 @@ program
     console.log(JSON.stringify(result, null, 2));
   });
 
-program.parseAsync(process.argv).catch((error) => {
+const cliArguments = process.argv.length <= 2 ? [...process.argv, "help"] : process.argv;
+program.parseAsync(cliArguments).catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  process.exitCode = 1;
 });
 
 function parseAgent(value: string): AgentName {
@@ -171,6 +202,12 @@ function numberOption(value: unknown): number | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`Invalid number: ${String(value)}`);
+  return parsed;
+}
+
+function integerOption(value: unknown, name: string): number | undefined {
+  const parsed = numberOption(value);
+  if (parsed !== undefined && !Number.isInteger(parsed)) throw new Error(`Invalid ${name}: ${String(value)}.`);
   return parsed;
 }
 
