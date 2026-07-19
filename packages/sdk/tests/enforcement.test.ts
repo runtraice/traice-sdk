@@ -93,6 +93,25 @@ describe("decide", () => {
     });
   });
 
+  it("scopes an experiment-derived model rule to its exact source model", () => {
+    const guarded = rule({
+      action: "SWAP",
+      actionParams: { sourceModel: "gpt-4o", targetModel: "gpt-4o-mini" },
+      requireEquivalencePct: 95,
+      modelAllowlist: ["gpt-4o-mini"],
+    });
+    const evidence = { equivalencePctFor: () => 98, experimentIdFor: () => "experiment-1" };
+
+    expect(decide({ model: "claude-3-5-sonnet", feature: "support" }, [guarded], evidence)).toMatchObject({
+      matched: false,
+    });
+    expect(decide({ model: "gpt-4o", feature: "support" }, [guarded], evidence)).toMatchObject({
+      matched: true,
+      servedModel: "gpt-4o-mini",
+      reason: expect.objectContaining({ sourceModel: "gpt-4o", targetModel: "gpt-4o-mini" }),
+    });
+  });
+
   it("honors the maximum allowed quality drop for model actions", () => {
     const guarded = rule({
       action: "DOWNGRADE",

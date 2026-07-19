@@ -99,6 +99,7 @@ export function decide(
     const isTargeted = TARGETED_ACTIONS.has(rule.action);
     const requiresEvidence = EVIDENCE_ACTIONS.has(rule.action);
     const targetModel = typeof rule.actionParams.targetModel === "string" ? rule.actionParams.targetModel : null;
+    const sourceModel = typeof rule.actionParams.sourceModel === "string" ? rule.actionParams.sourceModel : null;
 
     if (rule.action === "CAP_RETRIES") {
       const maxRetries = nonNegativeInteger(rule.actionParams.maxRetries);
@@ -107,6 +108,11 @@ export function decide(
     }
 
     if (isTargeted && !targetModel) continue;
+
+    // Rules created from a validated experiment are scoped to the exact source
+    // model that was replayed. A different source model must never inherit that
+    // experiment merely because the feature and candidate also have evidence.
+    if (isTargeted && sourceModel && request.model !== sourceModel) continue;
 
     if (isTargeted && targetModel && rule.modelAllowlist.length > 0 && !rule.modelAllowlist.includes(targetModel)) {
       continue;
@@ -131,7 +137,7 @@ export function decide(
       const experimentId = context.experimentIdFor?.(targetModel) ?? undefined;
       return {
         ...base,
-        reason: { ...match, targetModel },
+        reason: { ...match, ...(sourceModel ? { sourceModel } : {}), targetModel },
         evidence: {
           requiredPct: rule.requireEquivalencePct,
           actualPct,
@@ -145,7 +151,7 @@ export function decide(
 
     return {
       ...base,
-      reason: targetModel ? { ...match, targetModel } : match,
+      reason: targetModel ? { ...match, ...(sourceModel ? { sourceModel } : {}), targetModel } : match,
     };
   }
 

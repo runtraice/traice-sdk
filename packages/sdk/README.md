@@ -111,6 +111,10 @@ experiment must meet the required equivalence and maximum quality-drop limits. T
 the rewritten request to the callback and reports the experiment and verifiable
 token cost basis in the Decision Record.
 
+Experiment-derived rules also carry an explicit `sourceModel` guard. The SDK
+passes through when the live request model differs from the model that was
+validated, even if another experiment exists for the same feature and target.
+
 A fallback rule calls the original model first. After a provider error it makes
 one call with the configured fallback model. If that call also fails, the SDK
 rethrows the original provider error and does not add another retry.
