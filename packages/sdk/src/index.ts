@@ -89,6 +89,8 @@ export type { TokenAbuseOptions, TokenAbuseResult } from "./analytics/token-abus
 import { globalCache, hashKey } from "./cache";
 export { globalCache, LRUCache } from "./cache";
 export type { CacheStats } from "./cache";
+export { askTraice, DEFAULT_TRAICE_SERVER_URL, normalizeServerUrl } from "./ask";
+export type { AskTraiceResponse } from "./ask";
 
 // ── Default config ──────────────────────────────────────────────
 

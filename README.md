@@ -56,6 +56,20 @@ npx @traice/collector@latest collect
 
 Collectors send internal usage rows to `/api/v1/internal-usage`. Product-runtime SDK events still go to `/api/v1/events`.
 
+## Ask trAIce
+
+The SDK also ships the `traice` CLI. Save a workspace API key once in the operating system credential store, then query the same attributed data available through the dashboard and MCP endpoint:
+
+```sh
+npm install --global @traice/sdk
+export TRAICE_API_KEY="lm_live_..."
+traice auth login
+unset TRAICE_API_KEY
+traice ask "which customers are unprofitable this month?"
+```
+
+See the [Ask trAIce guide](apps/docs/content/docs/ask-traice.md) for Cursor, VS Code, MCP, and direct API setup.
+
 ## Development
 
 ```sh

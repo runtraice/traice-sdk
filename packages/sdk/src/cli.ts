@@ -15,6 +15,8 @@ import { detectAnomalies } from "./analytics/anomalies";
 import { comparePromptVersions } from "./analytics/compare";
 import { optimizeModels } from "./analytics/optimizer";
 import { detectTokenAbuse } from "./analytics/token-abuse";
+import { askTraice } from "./ask";
+import { deleteCliCredential, resolveCliCredential, storeCliCredential } from "./cli-credentials";
 
 const DEFAULT_FILE = "./.traice-costs/events.ndjson";
 
@@ -142,9 +144,68 @@ function printTable(options: ReportOptions, events: CostEvent[]): void {
 const program = new Command();
 
 program
-  .name("traice-sdk")
+  .name("traice")
   .description("Per-feature, per-user cost attribution and reporting for LLM API calls")
   .version(packageMetadata.version);
+
+const authCommand = program.command("auth").description("Manage the saved trAIce API credential");
+
+authCommand
+  .command("login")
+  .description("Save TRAICE_API_KEY in the operating system credential store")
+  .option("--server-url <url>", "trAIce server URL")
+  .action(async (opts) => {
+    const apiKey = process.env.TRAICE_API_KEY?.trim();
+    if (!apiKey) {
+      console.error(chalk.red("TRAICE_API_KEY is not set."));
+      console.error(chalk.gray("Export it for this command, then unset it after the credential is saved."));
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      const stored = await storeCliCredential(apiKey, opts.serverUrl ?? process.env.TRAICE_SERVER_URL);
+      console.log(
+        chalk.green(
+          `Saved trAIce credential in ${stored.backend === "os-keyring" ? "the OS keyring" : "a protected file"}.`,
+        ),
+      );
+      if (stored.warning) console.error(chalk.yellow(stored.warning));
+      console.log(chalk.gray("You can now unset TRAICE_API_KEY and use `traice ask`."));
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
+
+authCommand
+  .command("logout")
+  .description("Delete the saved trAIce API credential")
+  .action(async () => {
+    try {
+      const removed = await deleteCliCredential();
+      console.log(removed ? "Deleted the saved trAIce credential." : "No saved trAIce credential was found.");
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("ask")
+  .description("Ask a natural-language question about workspace spend, margin, waste, budgets, or alerts")
+  .argument("<question>", "Question to ask")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--json", "Print the structured response as JSON")
+  .action(async (question: string, opts) => {
+    try {
+      const credential = await resolveCliCredential(opts.serverUrl);
+      const result = await askTraice(question, credential);
+      console.log(opts.json ? JSON.stringify(result, null, 2) : result.answer);
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
 
 program
   .command("report")

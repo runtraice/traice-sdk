@@ -91,6 +91,14 @@ describe("CLI report", () => {
     expect(output.trim()).toBe(packageMetadata.version);
   });
 
+  it("ships the traice alias and ask command", () => {
+    const packageMetadata = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    const output = execSync(`node ${CLI_PATH} ask --help`, { encoding: "utf-8" });
+
+    expect(packageMetadata.bin.traice).toBe("./dist/cli.cjs");
+    expect(output).toContain("Ask a natural-language question");
+  });
+
   it("default report shows features", () => {
     const output = runCli("");
     expect(output).toContain("chat");

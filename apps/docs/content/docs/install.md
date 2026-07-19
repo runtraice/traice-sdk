@@ -148,6 +148,20 @@ After the first product event lands, open [the dashboard](https://www.runtraice.
 
 For Internal Spend, open Dashboard -> Internal Spend after collector events arrive.
 
+## 7. Ask From The CLI Or An MCP Client
+
+Save the same workspace API key in the operating system credential store, then ask a question:
+
+```sh
+npm install --global @traice/sdk
+export TRAICE_API_KEY="lm_live_..."
+traice auth login
+unset TRAICE_API_KEY
+traice ask "top spend by feature in the last 7 days"
+```
+
+See [Ask trAIce](/docs/ask-traice) for Cursor, VS Code, MCP, and direct API setup.
+
 ## Next Steps
 
 - [SDK Quickstart](sdk-quickstart)
