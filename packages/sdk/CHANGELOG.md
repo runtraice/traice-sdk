@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.4.2
+
+### Patch Changes
+
+- 470beaf: Add workspace kill-switch support, cached budget conditions, user-scoped enforcement context, and observable fail-open control-plane metrics for request-path enforcement.
+
 ## 0.4.1
 
 ### Patch Changes
