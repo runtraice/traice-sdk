@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.2.7
+
+### Patch Changes
+
+- 3ccb8bb: Add secure collector status checks, machine-readable output, explicit help examples, and safer CLI failure handling.
+
 ## 0.2.6
 
 ### Patch Changes
