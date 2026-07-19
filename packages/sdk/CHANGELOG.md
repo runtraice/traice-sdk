@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- Verify npm release automation and linked Slack release notifications.
+
 ## 0.3.0
 
 ### Minor Changes
