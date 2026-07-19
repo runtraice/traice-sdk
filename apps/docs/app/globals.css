@@ -353,6 +353,43 @@ kbd {
   color: var(--accent);
 }
 
+.doc-table-wrap {
+  margin: 20px 0 28px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+.doc-content table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.doc-content th,
+.doc-content td {
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.doc-content th {
+  background: var(--panel-strong);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.doc-content td {
+  color: var(--muted);
+}
+
+.doc-content tbody tr:last-child td {
+  border-bottom: 0;
+}
+
 .doc-content pre {
   overflow-x: auto;
   border: 1px solid var(--line);
