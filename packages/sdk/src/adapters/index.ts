@@ -23,6 +23,8 @@ export type {
   ExactCacheStats,
   ModelRuleAction,
   RequestEnforcementContext,
+  SemanticCacheConfig,
+  SemanticCacheStats,
 } from "./cloud";
 
 export interface AdapterResolveOptions {

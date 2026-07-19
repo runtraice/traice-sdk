@@ -66,6 +66,8 @@ export type {
   ExactCacheStats,
   ModelRuleAction,
   RequestEnforcementContext,
+  SemanticCacheConfig,
+  SemanticCacheStats,
 } from "./adapters";
 
 // Re-export the pure, I/O-free enforcement decision core

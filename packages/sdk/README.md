@@ -117,9 +117,10 @@ fail-open counters.
 
 ## Active request enforcement
 
-`CloudAdapter.enforceRequest()` executes the wrapper-v1 actions: exact cache,
-deny, retry cap, evidence-gated swap or downgrade, and one-shot fallback. Keep
-one adapter per process and pass the effective request to the provider callback:
+`CloudAdapter.enforceRequest()` executes the wrapper actions: exact and semantic
+cache, deny, retry cap, evidence-gated swap, downgrade, or route, and one-shot
+fallback. Keep one adapter per process and pass the effective request to the
+provider callback:
 
 ```ts
 import { CloudAdapter, TraiceEnforcementError } from "@traice/sdk";
@@ -157,6 +158,10 @@ experiment must meet the required equivalence and maximum quality-drop limits. T
 the rewritten request to the callback and reports the experiment and verifiable
 token cost basis in the Decision Record.
 
+Route rules have the same evidence contract and additionally require a non-empty
+model allowlist containing the one configured target. The SDK never chooses a
+model autonomously and is not a provider gateway.
+
 Experiment-derived rules also carry an explicit `sourceModel` guard. The SDK
 passes through when the live request model differs from the model that was
 validated, even if another experiment exists for the same feature and target.
@@ -187,6 +192,29 @@ request enforcement, or the `x-traice-cache-bypass: 1` header for a cache-only
 bypass. Streaming requests are never cached. The existing
 `enforceExactCache()` method remains available for cache-only integrations.
 
+Semantic caching is opt-in and process-local. Supply an embedding function that
+uses infrastructure and credentials controlled by your application:
+
+```ts
+const cloud = new CloudAdapter({
+  apiKey: process.env.TRAICE_API_KEY!,
+  semanticCache: {
+    embed: async (text) => myEmbeddingClient.embed(text),
+    timeoutMs: 1_000,
+    maxEntries: 250,
+  },
+});
+```
+
+The SDK sends no request text or response content to trAIce. By default the
+embedder receives the normalized request; set `semanticCacheText` in the
+enforcement context to supply a smaller approved representation. Entries are
+scoped to the workspace, rule, and requested model, bounded by an LRU limit,
+and governed by the rule TTL and similarity threshold. Streaming, explicit
+bypass, missing configuration, invalid input, embedding errors, and embedding
+timeouts call the provider normally. `getSemanticCacheStats()` exposes local
+hits, misses, bypasses, failures, size, hit rate, and estimated savings.
+
 ## Enforcement decision core
 
 `decide(request, rules, context)` is the pure, synchronous rule planner used by
@@ -197,9 +225,9 @@ reason. The SDK exports its request, rule, context, and decision types for
 custom wrappers and deterministic tests.
 
 This API plans a decision; it does not itself call a model provider.
-`CloudAdapter.enforceRequest()` executes exact-cache, deny, retry-cap, swap,
-downgrade, and fallback decisions. Semantic-cache and route execution remain
-disabled until their safety contracts are released.
+`CloudAdapter.enforceRequest()` executes exact-cache, semantic-cache, deny,
+retry-cap, swap, downgrade, route, and fallback decisions under the contracts
+described above.
 
 ## Privacy
 

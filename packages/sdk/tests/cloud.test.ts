@@ -683,7 +683,7 @@ describe("CloudAdapter", () => {
     };
 
     function activeRule(
-      action: "DENY" | "CAP_RETRIES" | "SWAP" | "DOWNGRADE" | "FALLBACK",
+      action: "DENY" | "CAP_RETRIES" | "SWAP" | "DOWNGRADE" | "FALLBACK" | "CACHE_SEMANTIC" | "ROUTE",
       actionParams: Record<string, unknown> = {},
       overrides: Record<string, unknown> = {},
     ) {
@@ -953,6 +953,166 @@ describe("CloudAdapter", () => {
 
       expect(provider).toHaveBeenCalledWith(sourceRequest);
       expect(receivedBodies.some((body) => body.action === "SWAP")).toBe(false);
+    });
+
+    it("routes only to the explicit allowlisted target with current evidence", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "ROUTE",
+            { targetModel: "gpt-4o-mini" },
+            { requireEquivalencePct: 95, maxQualityDropPct: 5, modelAllowlist: ["gpt-4o-mini"] },
+          ),
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-route",
+            feature: "support",
+            sourceModel: "gpt-4o",
+            candidateModel: "gpt-4o-mini",
+            equivalencePct: 97,
+            sampleCount: 40,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async (effectiveRequest: typeof request) => ({
+        object: "chat.completion",
+        model: effectiveRequest.model,
+        usage: { prompt_tokens: 400, completion_tokens: 100 },
+      }));
+      await adapter.warmEnforcement();
+
+      await adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, {
+        feature: "support",
+        provider: "openai",
+      });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o-mini" }));
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          action: "ROUTE",
+          requestedModel: "gpt-4o",
+          servedModel: "gpt-4o-mini",
+          experimentId: "experiment-route",
+        }),
+      );
+    });
+
+    it("serves a similar response from the opt-in process-local semantic cache", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("CACHE_SEMANTIC", { cacheTtlSec: 300, similarityThreshold: 0.92 })],
+      };
+      const embed = jest.fn(async (text: string) => (text === "reset password" ? [1, 0] : ([0.96, 0.28] as const)));
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+        semanticCache: { embed },
+      });
+      const provider = jest.fn(async () => ({
+        object: "chat.completion",
+        model: "gpt-4o-mini",
+        answer: "Use the reset link",
+        usage: { prompt_tokens: 400, completion_tokens: 100 },
+      }));
+      await adapter.warmEnforcement();
+
+      const first = await adapter.enforceRequest(request, provider, {
+        feature: "support",
+        provider: "openai",
+        semanticCacheText: "reset password",
+      });
+      const second = await adapter.enforceRequest(
+        { ...request, messages: [{ role: "user", content: "forgot password" }] },
+        provider,
+        { feature: "support", provider: "openai", semanticCacheText: "forgot password" },
+      );
+      await adapter.flush();
+
+      expect(second).toEqual(first);
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(embed).toHaveBeenCalledTimes(2);
+      expect(adapter.getSemanticCacheStats()).toMatchObject({ hits: 1, misses: 1, size: 1, hitRate: 0.5 });
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          action: "CACHE_SEMANTIC",
+          cacheOutcome: "hit",
+          similarity: expect.closeTo(0.96, 5),
+        }),
+      );
+    });
+
+    it("calls the provider when semantic similarity is below the rule threshold", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("CACHE_SEMANTIC", { cacheTtlSec: 300, similarityThreshold: 0.95 })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+        semanticCache: { embed: async (text) => (text === "first" ? [1, 0] : [0, 1]) },
+      });
+      const provider = jest.fn(async () => ({
+        object: "chat.completion",
+        model: "gpt-4o-mini",
+        usage: { prompt_tokens: 10, completion_tokens: 5 },
+      }));
+      await adapter.warmEnforcement();
+
+      await adapter.enforceRequest(request, provider, { semanticCacheText: "first" });
+      await adapter.enforceRequest(request, provider, { semanticCacheText: "different" });
+
+      expect(provider).toHaveBeenCalledTimes(2);
+      expect(adapter.getSemanticCacheStats()).toMatchObject({ hits: 0, misses: 2, size: 2 });
+    });
+
+    it("fails open exactly once when the semantic embedder fails", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("CACHE_SEMANTIC", { similarityThreshold: 0.92 })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+        semanticCache: { embed: async () => Promise.reject(new Error("embedding unavailable")) },
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
+
+      await expect(adapter.enforceRequest(request, provider)).resolves.toEqual({ ok: true });
+
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(adapter.getSemanticCacheStats()).toMatchObject({ embeddingFailures: 1, hits: 0, misses: 0 });
+      expect(adapter.getEnforcementStats().failOpenRequests).toBe(1);
+    });
+
+    it("bypasses semantic caching for a request that cannot be normalized", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("CACHE_SEMANTIC", { similarityThreshold: 0.92 })],
+      };
+      const embed = jest.fn(async () => [1, 0]);
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+        semanticCache: { embed },
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+      const cyclicRequest = { ...request, metadata: {} } as typeof request & { metadata: Record<string, unknown> };
+      cyclicRequest.metadata.self = cyclicRequest;
+      await adapter.warmEnforcement();
+
+      await expect(adapter.enforceRequest(cyclicRequest, provider)).resolves.toEqual({ ok: true });
+
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(embed).not.toHaveBeenCalled();
+      expect(adapter.getSemanticCacheStats()).toMatchObject({ bypasses: 1, hits: 0, misses: 0 });
     });
 
     it("uses one fallback call after a primary error and records success", async () => {

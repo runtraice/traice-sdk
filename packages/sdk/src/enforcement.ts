@@ -114,9 +114,15 @@ export function decide(
     // experiment merely because the feature and candidate also have evidence.
     if (isTargeted && sourceModel && request.model !== sourceModel) continue;
 
+    if (rule.action === "ROUTE" && (!targetModel || rule.modelAllowlist.length === 0)) {
+      continue;
+    }
+
     if (isTargeted && targetModel && rule.modelAllowlist.length > 0 && !rule.modelAllowlist.includes(targetModel)) {
       continue;
     }
+
+    if (rule.action === "ROUTE" && rule.requireEquivalencePct == null) continue;
 
     const base = {
       matched: true as const,
@@ -135,6 +141,7 @@ export function decide(
       const satisfied = actualPct != null && actualPct >= rule.requireEquivalencePct && qualitySatisfied;
       if (!satisfied) continue;
       const experimentId = context.experimentIdFor?.(targetModel) ?? undefined;
+      if (rule.action === "ROUTE" && !experimentId) continue;
       return {
         ...base,
         reason: { ...match, ...(sourceModel ? { sourceModel } : {}), targetModel },
