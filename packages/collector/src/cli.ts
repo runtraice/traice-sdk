@@ -3,6 +3,7 @@ import { Command } from "commander";
 import packageMetadata from "../package.json";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { installAgent } from "./install";
+import { resolveFirstRunSetupIdentity } from "./identity";
 import { runCollector } from "./run";
 import { setupAgent } from "./setup";
 import { formatCollectorStatus, getCollectorStatus } from "./status";
@@ -65,7 +66,14 @@ program
   .option("--backfill-days <days>", "Codex history window from 1 to 30 days", "7")
   .option("--no-backfill", "skip historical Codex usage")
   .option("--no-service", "skip background service installation")
+  .option("--yes", "accept provided or inferred identity defaults without prompting")
   .action(async (agent: string, options: Record<string, unknown>) => {
+    const identity = await resolveFirstRunSetupIdentity({
+      configPath: stringOption(options.config),
+      employeeEmail: stringOption(options.employeeEmail),
+      teamName: stringOption(options.teamName),
+      acceptDefaults: Boolean(options.yes),
+    });
     const result = await setupAgent({
       agent: parseAgent(agent),
       configPath: stringOption(options.config),
@@ -73,10 +81,10 @@ program
       apiKey: stringOption(options.apiKey),
       apiKeyStdin: Boolean(options.apiKeyStdin),
       credentialStore: credentialStoreOption(options.credentialStore),
-      employeeEmail: stringOption(options.employeeEmail),
+      employeeEmail: identity.employeeEmail,
       employeeName: stringOption(options.employeeName),
       employeeExternalId: stringOption(options.employeeExternalId),
-      teamName: stringOption(options.teamName),
+      teamName: identity.teamName,
       teamExternalId: stringOption(options.teamExternalId),
       sourcePrincipal: stringOption(options.sourcePrincipal),
       seatMonthlyUsd: numberOption(options.seatMonthlyUsd),
