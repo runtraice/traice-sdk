@@ -112,6 +112,21 @@ export type {
   ConfirmAskActionResponse,
   PrepareAskActionResponse,
 } from "./ask";
+export {
+  importLangfuse,
+  importLiteLlm,
+  mapLangfuseObservation,
+  mapLiteLlmSpendLog,
+  parseImportRange,
+} from "./vendor-imports";
+export type {
+  ImportedEvent,
+  ImportCredential,
+  ImportRange,
+  LangfuseImportOptions,
+  LiteLlmImportOptions,
+  VendorImportResult,
+} from "./vendor-imports";
 
 // ── Default config ──────────────────────────────────────────────
 

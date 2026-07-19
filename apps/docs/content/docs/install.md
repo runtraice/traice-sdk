@@ -181,6 +181,7 @@ Workspace owners and admins can connect Slack from Settings -> Ask trAIce -> Add
 - [TypeScript and Node.js SDK](typescript-sdk)
 - [Python SDK](python-sdk)
 - [HTTP and cURL](http-api)
+- [OpenTelemetry and vendor imports](integrations)
 - [Collector Overview](collector-overview)
 - [Claude Code](claude-code)
 - [Codex](codex)

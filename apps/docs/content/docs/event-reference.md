@@ -23,6 +23,8 @@ This is the HTTP transport shape used by the maintained product SDKs.
 | Field              | Type                   | Meaning                                                               |
 | ------------------ | ---------------------- | --------------------------------------------------------------------- |
 | `ts`               | `string`               | ISO 8601 event time                                                   |
+| `source`           | `string?`              | Stable integration type; must be paired with `externalId`             |
+| `externalId`       | `string?`              | Stable source record ID; must be paired with `source`                 |
 | `provider`         | `string`               | Provider identifier such as `openai`, `anthropic`, or `google-vertex` |
 | `model`            | `string`               | Provider model identifier                                             |
 | `promptTokens`     | `number`               | Total input tokens                                                    |
@@ -47,6 +49,8 @@ This is the HTTP transport shape used by the maintained product SDKs.
 | `prompt`, `output` | `string?`              | Optional samples when explicitly supplied and approved                |
 
 The TypeScript cloud adapter maps local error, cache, prompt-version, session, environment, and legacy tags into `metadata`. The Python client adds `metadata.sdk` and `metadata.sdkVersion`.
+
+When both `source` and `externalId` are present, retries are idempotent within a workspace. A duplicate is reported as `deduplicated`, is not written again, does not update product rollups or alerts, and does not consume another ingest event. Use a stable source configuration namespace when two installations of the same integration can emit the same upstream identifier.
 
 ## Local `CostEvent`
 

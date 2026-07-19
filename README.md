@@ -78,6 +78,10 @@ Team workspaces can prepare budgets, alert snoozes, and evidence-gated shadow gu
 traice action prepare-budget --name "Support" --limit-usd 500
 ```
 
+## Existing telemetry and gateways
+
+trAIce accepts OTLP HTTP/JSON GenAI spans and the CLI can backfill normalized LiteLLM or Langfuse cost data. Vendor credentials remain local, input/output fields are not imported, and repeated backfills use stable source IDs instead of creating duplicate usage. See [OpenTelemetry and vendor imports](apps/docs/content/docs/integrations.md).
+
 ## Development
 
 ```sh
