@@ -134,3 +134,17 @@ jobs:
       - run: python -m build
         working-directory: packages/python
       - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Notify Slack of published Python package
+        if: env.SLACK_SDK_RELEASES_WEBHOOK != ''
+        env:
+          SLACK_SDK_RELEASES_WEBHOOK: ${{ secrets.SLACK_SDK_RELEASES_WEBHOOK }}
+          RELEASE_MESSAGE: Published traice-sdk==${{ needs.python-release-check.outputs.version }} to PyPI.
+        shell: bash
+        run: |
+          if [[ "$SLACK_SDK_RELEASES_WEBHOOK" != https://hooks.slack.com/services/* ]]; then
+            echo "::warning::SLACK_SDK_RELEASES_WEBHOOK must contain only a Slack webhook URL; skipping notification."
+            exit 0
+          fi
+          payload="$(python -c 'import json, os; print(json.dumps({"text": os.environ["RELEASE_MESSAGE"]}))')"
+          curl -f -sS -X POST -H 'Content-type: application/json' \
+            -d "$payload" --url "$SLACK_SDK_RELEASES_WEBHOOK"
