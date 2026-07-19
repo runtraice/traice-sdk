@@ -239,7 +239,7 @@ export function resetBudget(): void {
 
 // ── Internal helpers ────────────────────────────────────────────
 
-function detectProvider(response: any): "openai" | "anthropic" | "custom" {
+function detectProvider(response: any): string {
   if (response?.type === "message" && response?.usage?.input_tokens !== undefined) {
     return "anthropic";
   }
@@ -261,6 +261,10 @@ type TokenUsage = {
 };
 
 function extractTokens(response: any, provider: string): TokenUsage {
+  const aiSdkUsageValue = response?.totalUsage ?? response?.usage;
+  if (aiSdkUsageValue?.inputTokens !== undefined || aiSdkUsageValue?.outputTokens !== undefined) {
+    return aiSdkUsage(aiSdkUsageValue);
+  }
   if (provider === "anthropic") {
     return anthropicUsage(response?.usage);
   }
@@ -268,6 +272,21 @@ function extractTokens(response: any, provider: string): TokenUsage {
     return openAIUsage(response?.usage);
   }
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+}
+
+function aiSdkUsage(usage: any): TokenUsage {
+  const inputTokens = nonNegativeInt(usage?.inputTokens);
+  const cache = normalizeCacheTokens(
+    inputTokens,
+    nonNegativeInt(usage?.inputTokenDetails?.cacheReadTokens),
+    nonNegativeInt(usage?.inputTokenDetails?.cacheWriteTokens),
+  );
+  return {
+    inputTokens,
+    outputTokens: nonNegativeInt(usage?.outputTokens),
+    cacheReadTokens: cache.cacheReadTokens,
+    cacheWriteTokens: cache.cacheWriteTokens,
+  };
 }
 
 function anthropicUsage(usage: any): TokenUsage {
@@ -322,7 +341,7 @@ async function emitEvent(
 }
 
 function buildEvent(
-  provider: "openai" | "anthropic" | "custom",
+  provider: string,
   model: string,
   inputTokens: number,
   outputTokens: number,
@@ -421,7 +440,7 @@ export async function meter<T>(fn: () => Promise<T>, options: MeterOptions = {})
     // Track the failed call, then re-throw
     const latencyMs = Date.now() - startTime;
     const event = buildEvent(
-      "custom",
+      options.provider ?? "custom",
       "unknown",
       0,
       0,
@@ -439,7 +458,7 @@ export async function meter<T>(fn: () => Promise<T>, options: MeterOptions = {})
   }
 
   const latencyMs = Date.now() - startTime;
-  const provider = detectProvider(response);
+  const provider = options.provider ?? detectProvider(response);
   const model = extractModel(response);
   const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = extractTokens(response, provider);
 
@@ -490,7 +509,7 @@ export async function cachedMeter<T>(
   const cached = globalCache.get(key);
   if (cached !== undefined) {
     // Cache hit: record $0 cost event
-    const provider = detectProvider(cached);
+    const provider = options.provider ?? detectProvider(cached);
     const model = extractModel(cached);
     const event = buildEvent(provider, model, 0, 0, 0, 0, 0, options, globalConfig.defaultTags);
     event.cached = true;
@@ -509,7 +528,7 @@ export async function cachedMeter<T>(
   const response = await fn();
   const latencyMs = Date.now() - startTime;
 
-  const provider = detectProvider(response);
+  const provider = options.provider ?? detectProvider(response);
   const model = extractModel(response);
   const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = extractTokens(response, provider);
   const { inputCostUSD, outputCostUSD, totalCostUSD } = calculateCost(
@@ -579,7 +598,7 @@ export class CostMeter {
     } catch (error) {
       const latencyMs = Date.now() - startTime;
       const event = buildEvent(
-        this.config.provider ?? "custom",
+        options.provider ?? this.config.provider ?? "custom",
         "unknown",
         0,
         0,
@@ -597,7 +616,7 @@ export class CostMeter {
     }
 
     const latencyMs = Date.now() - startTime;
-    const provider = this.config.provider ?? detectProvider(response);
+    const provider = options.provider ?? this.config.provider ?? detectProvider(response);
     const model = extractModel(response);
     const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = extractTokens(response, provider);
 
@@ -620,7 +639,7 @@ export class CostMeter {
 
   record(data: {
     model: string;
-    provider?: "openai" | "anthropic" | "custom";
+    provider?: string;
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens?: number;
@@ -709,7 +728,7 @@ export class CostMeter {
       options,
       adapters,
       config.defaultTags ?? {},
-      config.provider,
+      options.provider ?? config.provider,
       config.onError,
       config.verbose,
     ) as T;
@@ -730,7 +749,7 @@ function extractStreamUsage(
   streamObj: any,
   chunks: any[],
 ): {
-  provider: "openai" | "anthropic" | "custom";
+  provider: string;
   model: string;
   inputTokens: number;
   outputTokens: number;
@@ -771,7 +790,7 @@ function extractStreamUsage(
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
-  let provider: "openai" | "anthropic" | "custom" = "custom";
+  let provider = "custom";
 
   for (const chunk of chunks) {
     if (chunk?.model) model = chunk.model;
@@ -812,7 +831,7 @@ function wrapStream<T extends AsyncIterable<any>>(
   options: MeterOptions,
   adapters: CostAdapter[],
   defaultTags: Record<string, string>,
-  providerHint?: "openai" | "anthropic" | "custom",
+  providerHint?: string,
   onError?: ErrorHandler,
   verbose?: boolean,
 ): AsyncIterable<any> {
@@ -941,7 +960,7 @@ export async function meterStream<T extends AsyncIterable<any>>(
   } catch (error) {
     const latencyMs = Date.now() - startTime;
     const event = buildEvent(
-      "custom",
+      options.provider ?? "custom",
       "unknown",
       0,
       0,
@@ -964,7 +983,7 @@ export async function meterStream<T extends AsyncIterable<any>>(
     options,
     adapters,
     globalConfig.defaultTags,
-    undefined,
+    options.provider,
     globalConfig.onError,
     globalConfig.verbose,
   ) as T;
