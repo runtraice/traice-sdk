@@ -69,6 +69,31 @@ npx @traice/sdk anomalies --threshold 2
 - `webhook`: send events to an HTTP endpoint.
 - `otel`: emit OpenTelemetry metrics.
 
+## Advisory workspace budgets
+
+Before opting into active rules, applications can consume workspace budget
+policy as synchronous advice. Warm the cache at startup, then decide how your
+own code responds:
+
+```ts
+const cloud = new CloudAdapter({ apiKey: process.env.TRAICE_API_KEY! });
+await cloud.warmPolicy();
+
+const budget = cloud.getBudgetAdvice({ feature: "support", userId });
+if (budget.isBlocked) return fallbackWithoutAnLlm();
+
+const model = budget.shouldDowngrade ? "gpt-4o-mini" : "gpt-4o";
+const response = await openai.chat.completions.create({ model, messages });
+```
+
+`shouldDowngrade()` becomes true at 80% utilization and `isBlocked()` at
+100%, based on matching workspace, feature, and user budgets. The methods read
+only a TTL-bound memory cache. A cold, expired, or failed policy refresh returns
+false for both helpers and refreshes in the background, so policy never adds
+request latency or blocks traffic by accident. `getBudgetAdvice()` includes the
+matched scopes and reason; `getEnforcementStats()` exposes policy refresh and
+fail-open counters.
+
 ## Active request enforcement
 
 `CloudAdapter.enforceRequest()` executes the wrapper-v1 actions: exact cache,

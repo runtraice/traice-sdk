@@ -14,6 +14,8 @@ export interface CloudAdapterConfig {
   enforcementTimeoutMs?: number;
   /** Reports enforcement control-plane failures without changing fail-open behavior. */
   onEnforcementError?: (error: Error, context: EnforcementErrorContext) => void;
+  /** Background refresh interval for advisory workspace budget policy. Default: 60000. */
+  budgetPolicyPollIntervalMs?: number;
 }
 
 export interface ExactCacheRequest {
@@ -39,7 +41,7 @@ export interface ExactCacheContext {
 export type RequestEnforcementContext = ExactCacheContext;
 
 export type EnforcementErrorContext = {
-  operation: "rules_refresh" | "decision_post";
+  operation: "rules_refresh" | "policy_refresh" | "decision_post";
   status?: number;
 };
 
@@ -49,6 +51,32 @@ export type EnforcementStats = {
   decisionPosts: number;
   decisionPostFailures: number;
   failOpenRequests: number;
+  policyRefreshes: number;
+  policyRefreshFailures: number;
+  policyChecks: number;
+  policyFailOpenChecks: number;
+  policyDowngradeRecommendations: number;
+  policyBlocks: number;
+};
+
+export type BudgetPolicyContext = {
+  feature?: string;
+  userId?: string;
+};
+
+export type BudgetPolicyMatch = {
+  scope: "WORKSPACE" | "FEATURE" | "USER";
+  scopeValue: string | null;
+  utilizationPct: number;
+};
+
+export type BudgetAdvice = {
+  available: boolean;
+  shouldDowngrade: boolean;
+  isBlocked: boolean;
+  maxUtilizationPct: number | null;
+  reason: "policy_unavailable" | "within_budget" | "approaching_limit" | "budget_exceeded";
+  matches: BudgetPolicyMatch[];
 };
 
 export type BlockingRuleAction = "DENY" | "CAP_RETRIES";
@@ -178,6 +206,7 @@ export class CloudAdapter implements CostAdapter {
   private batchSize: number;
   private buffer: CostEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
+  private policyTimer: ReturnType<typeof setInterval> | null = null;
   private exactCache = new Map<string, ExactCacheEntry>();
   private exactCacheMaxEntries: number;
   private enforcementTimeoutMs: number;
@@ -185,6 +214,9 @@ export class CloudAdapter implements CostAdapter {
   private rules: EnforcementRule[] = [];
   private evidence: EnforcementEvidence[] = [];
   private budgets: EnforcementBudgetSnapshot[] = [];
+  private policyFetchedAt = 0;
+  private policyTtlMs = 60_000;
+  private policyRefresh: Promise<boolean> | null = null;
   private enforcementEnabled = true;
   private rulesFetchedAt = 0;
   private rulesTtlMs = 60_000;
@@ -200,6 +232,12 @@ export class CloudAdapter implements CostAdapter {
     decisionPosts: 0,
     decisionPostFailures: 0,
     failOpenRequests: 0,
+    policyRefreshes: 0,
+    policyRefreshFailures: 0,
+    policyChecks: 0,
+    policyFailOpenChecks: 0,
+    policyDowngradeRecommendations: 0,
+    policyBlocks: 0,
   };
 
   constructor(config: CloudAdapterConfig) {
@@ -210,9 +248,12 @@ export class CloudAdapter implements CostAdapter {
     this.enforcementTimeoutMs = Math.max(100, Math.floor(config.enforcementTimeoutMs ?? 2000));
     this.onEnforcementError = config.onEnforcementError;
     const flushMs = config.flushIntervalMs ?? 5000;
+    const policyPollMs = Math.max(1000, Math.floor(config.budgetPolicyPollIntervalMs ?? 60_000));
 
     this.timer = setInterval(() => this.flushBuffer(), flushMs);
     if (this.timer.unref) this.timer.unref();
+    this.policyTimer = setInterval(() => this.refreshPolicyInBackground(), policyPollMs);
+    if (this.policyTimer.unref) this.policyTimer.unref();
   }
 
   async write(event: CostEvent): Promise<void> {
@@ -227,8 +268,15 @@ export class CloudAdapter implements CostAdapter {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.policyTimer) {
+      clearInterval(this.policyTimer);
+      this.policyTimer = null;
+    }
     if (this.buffer.length > 0) {
       await this.flushBuffer();
+    }
+    if (this.policyRefresh) {
+      await Promise.allSettled([this.policyRefresh]);
     }
     await Promise.allSettled(Array.from(this.pendingDecisions));
   }
@@ -236,6 +284,64 @@ export class CloudAdapter implements CostAdapter {
   /** Fetch and cache the current rules and experiment evidence before serving traffic. */
   async warmEnforcement(): Promise<boolean> {
     return this.refreshRules();
+  }
+
+  /** Fetch and cache workspace budget policy before serving advisory checks. */
+  async warmPolicy(): Promise<boolean> {
+    return this.refreshPolicy();
+  }
+
+  /**
+   * Read cached workspace budget advice without adding network latency.
+   *
+   * A cold or expired cache returns an explicitly unavailable, fail-open
+   * result and starts a best-effort background refresh.
+   */
+  getBudgetAdvice(context: BudgetPolicyContext = {}): BudgetAdvice {
+    this.enforcementStats.policyChecks++;
+    if (!this.policyIsFresh()) {
+      this.enforcementStats.policyFailOpenChecks++;
+      this.refreshPolicyInBackground();
+      return {
+        available: false,
+        shouldDowngrade: false,
+        isBlocked: false,
+        maxUtilizationPct: null,
+        reason: "policy_unavailable",
+        matches: [],
+      };
+    }
+
+    const matches = this.matchingBudgets(context)
+      .map((budget) => ({
+        scope: budget.scope,
+        scopeValue: budget.scopeValue,
+        utilizationPct: budget.pct,
+      }))
+      .sort((left, right) => right.utilizationPct - left.utilizationPct);
+    const maxUtilizationPct = matches[0]?.utilizationPct ?? 0;
+    const isBlocked = maxUtilizationPct >= 100;
+    const shouldDowngrade = maxUtilizationPct >= 80;
+    if (isBlocked) this.enforcementStats.policyBlocks++;
+    else if (shouldDowngrade) this.enforcementStats.policyDowngradeRecommendations++;
+    return {
+      available: true,
+      shouldDowngrade,
+      isBlocked,
+      maxUtilizationPct,
+      reason: isBlocked ? "budget_exceeded" : shouldDowngrade ? "approaching_limit" : "within_budget",
+      matches,
+    };
+  }
+
+  /** Return true when a matching cached budget is at or above 80%. */
+  shouldDowngrade(context: BudgetPolicyContext = {}): boolean {
+    return this.getBudgetAdvice(context).shouldDowngrade;
+  }
+
+  /** Return true when a matching cached budget is at or above 100%. */
+  isBlocked(context: BudgetPolicyContext = {}): boolean {
+    return this.getBudgetAdvice(context).isBlocked;
   }
 
   /**
@@ -387,6 +493,49 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
+  private async refreshPolicy(): Promise<boolean> {
+    if (this.policyIsFresh()) return true;
+    if (this.policyRefresh) return this.policyRefresh;
+
+    const refresh = this.fetchPolicy();
+    this.policyRefresh = refresh;
+    try {
+      return await refresh;
+    } finally {
+      if (this.policyRefresh === refresh) this.policyRefresh = null;
+    }
+  }
+
+  private async fetchPolicy(): Promise<boolean> {
+    this.enforcementStats.policyRefreshes++;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
+    try {
+      const response = await fetch(this.siblingEndpoint("policy"), {
+        headers: { Authorization: `Bearer ${this.apiKey}`, "X-Source": "traice-sdk" },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        this.reportEnforcementFailure(new Error(`Policy refresh failed with HTTP ${response.status}`), {
+          operation: "policy_refresh",
+          status: response.status,
+        });
+        return false;
+      }
+      const json = (await response.json()) as { budgets?: unknown; ttlSeconds?: unknown };
+      this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
+      const ttlSeconds = Number(json.ttlSeconds ?? 60);
+      this.policyTtlMs = Number.isFinite(ttlSeconds) ? Math.max(1000, ttlSeconds * 1000) : 60_000;
+      this.policyFetchedAt = Date.now();
+      return true;
+    } catch (error) {
+      this.reportEnforcementFailure(asError(error), { operation: "policy_refresh" });
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private async fetchRules(): Promise<boolean> {
     this.enforcementStats.ruleRefreshes++;
     const controller = new AbortController();
@@ -432,6 +581,22 @@ export class CloudAdapter implements CostAdapter {
 
   private refreshRulesInBackground(): void {
     void this.refreshRules().catch(() => false);
+  }
+
+  private policyIsFresh(): boolean {
+    return this.policyFetchedAt > 0 && Date.now() - this.policyFetchedAt < this.policyTtlMs;
+  }
+
+  private refreshPolicyInBackground(): void {
+    void this.refreshPolicy().catch(() => false);
+  }
+
+  private matchingBudgets(context: BudgetPolicyContext): EnforcementBudgetSnapshot[] {
+    return this.budgets.filter((budget) => {
+      if (budget.scope === "WORKSPACE") return true;
+      if (budget.scope === "FEATURE") return Boolean(context.feature) && budget.scopeValue === context.feature;
+      return Boolean(context.userId) && budget.scopeValue === context.userId;
+    });
   }
 
   private matchExactCacheRule(request: ExactCacheRequest, context: ExactCacheContext): EnforcementRule | undefined {
@@ -685,6 +850,7 @@ export class CloudAdapter implements CostAdapter {
 
   private reportEnforcementFailure(error: Error, context: EnforcementErrorContext): void {
     if (context.operation === "rules_refresh") this.enforcementStats.ruleRefreshFailures++;
+    else if (context.operation === "policy_refresh") this.enforcementStats.policyRefreshFailures++;
     else this.enforcementStats.decisionPostFailures++;
     try {
       this.onEnforcementError?.(error, context);
@@ -693,7 +859,7 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
-  private siblingEndpoint(resource: "rules" | "decisions"): string {
+  private siblingEndpoint(resource: "rules" | "policy" | "decisions"): string {
     const url = new URL(this.endpoint);
     url.pathname = url.pathname.replace(/\/events\/?$/, `/${resource}`);
     return url.toString();

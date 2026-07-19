@@ -11,6 +11,9 @@ export { CloudAdapter } from "./cloud";
 export { TraiceEnforcementError } from "./cloud";
 export type {
   BlockingRuleAction,
+  BudgetAdvice,
+  BudgetPolicyContext,
+  BudgetPolicyMatch,
   CloudAdapterConfig,
   EnforcementEvidence,
   EnforcementErrorContext,
