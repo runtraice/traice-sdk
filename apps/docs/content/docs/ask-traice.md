@@ -8,7 +8,7 @@ order: 1
 
 # Ask trAIce
 
-Ask trAIce is a read-only agent surface over the same attributed cost and financial data shown in the trAIce dashboard. Every answer states how the question was interpreted and links back to the relevant dashboard view.
+Ask trAIce exposes the same attributed cost and financial data shown in the trAIce dashboard. Every answer states how the question was interpreted and links back to the relevant dashboard view. Team workspaces can also prepare a small set of write actions that require a separate, explicit confirmation before anything changes.
 
 Supported reads:
 
@@ -17,6 +17,14 @@ Supported reads:
 - Feature-attributed AI cost. Feature margin is not calculated because feature revenue is not mapped.
 - Top detected waste and cost-validated savings recommendations.
 - Current budget status and active alerts.
+
+Confirmed Team actions:
+
+- Create a workspace, feature, user, or tenant budget.
+- Snooze a non-system alert for a bounded period.
+- Create an evidence-gated guardrail from an eligible experiment in shadow mode.
+
+Preparing an action does not execute it. trAIce returns a summary, a short-lived token, and an exact confirmation phrase. The token expires after 10 minutes, is bound to the same workspace API key, and can be confirmed only with that exact phrase. Repeating a successful confirmation returns the stored result instead of executing the action again.
 
 ## CLI
 
@@ -42,6 +50,29 @@ Ask a question:
 traice ask "which customers are unprofitable this month?"
 traice ask "top spend by model in the last 7 days"
 traice ask "what is our biggest waste and what should we change?"
+```
+
+Prepare a budget, review the printed summary, then run the confirmation command printed by the CLI:
+
+```sh
+traice action prepare-budget \
+  --name "Support monthly budget" \
+  --limit-usd 500 \
+  --scope FEATURE \
+  --scope-value support-assistant
+```
+
+Other supported preparations:
+
+```sh
+traice action prepare-alert-snooze ALERT_ID --hours 24 --reason "Investigating"
+traice action prepare-shadow-guardrail EXPERIMENT_ID
+```
+
+The CLI never confirms during preparation. Confirmation is a separate command containing the returned token and exact phrase:
+
+```sh
+traice action confirm --token 'SHORT_LIVED_TOKEN' --phrase 'CONFIRM ABC123'
 ```
 
 Use `--json` for automation. Use `traice auth logout` to delete the saved credential.
@@ -85,7 +116,7 @@ Set `TRAICE_API_KEY` in the environment that launches Cursor. Then create `.curs
 }
 ```
 
-Restart or reload Cursor, open MCP settings, and confirm these read-only tools appear: `spend_by`, `margin_by_customer`, `margin_by_feature`, `top_waste`, `savings_recommendations`, `budget_status`, and `active_alerts`.
+Restart or reload Cursor, open MCP settings, and confirm the seven read tools appear: `spend_by`, `margin_by_customer`, `margin_by_feature`, `top_waste`, `savings_recommendations`, `budget_status`, and `active_alerts`. Team workspaces also expose `prepare_write_action` and `confirm_write_action`. An MCP client must show the prepared summary and ask the user to repeat the exact confirmation phrase before calling `confirm_write_action`.
 
 If Cursor was launched from a desktop icon on Linux or macOS, it might not inherit shell environment variables. Launch it once from a terminal where `TRAICE_API_KEY` is available, or configure the variable in the desktop session environment. See the [Cursor MCP documentation](https://docs.cursor.com/context/model-context-protocol).
 
@@ -128,4 +159,34 @@ curl -X POST "https://www.runtraice.com/api/v1/ask" \
   -d '{"question":"top spend by customer in the last 30 days"}'
 ```
 
-Questions are limited to fixed read-only tools. Ask trAIce does not run freeform SQL and cannot mutate budgets, alerts, rules, or workspace data.
+Questions are limited to fixed read tools. Ask trAIce does not run freeform SQL.
+
+Team workspaces can prepare an action through a separate endpoint:
+
+```sh
+curl -X POST "https://www.runtraice.com/api/v1/ask/actions/prepare" \
+  -H "authorization: Bearer $TRAICE_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "action": "create_budget",
+    "name": "Support monthly budget",
+    "limitUsd": 500,
+    "scope": "FEATURE",
+    "scopeValue": "support-assistant",
+    "period": "MONTHLY"
+  }'
+```
+
+After a person reviews the returned summary, confirm it with the returned token and exact phrase:
+
+```sh
+curl -X POST "https://www.runtraice.com/api/v1/ask/actions/confirm" \
+  -H "authorization: Bearer $TRAICE_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "confirmationToken": "SHORT_LIVED_TOKEN",
+    "confirmationPhrase": "CONFIRM ABC123"
+  }'
+```
+
+Confirmation tokens expire after 10 minutes and must be used with the same API key that prepared the action. A confirmed request is replay-safe: retrying it returns the original result. Experiment guardrails are always created in shadow mode and still require the normal evidence and eligibility checks.

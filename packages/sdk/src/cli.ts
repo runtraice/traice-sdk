@@ -15,7 +15,7 @@ import { detectAnomalies } from "./analytics/anomalies";
 import { comparePromptVersions } from "./analytics/compare";
 import { optimizeModels } from "./analytics/optimizer";
 import { detectTokenAbuse } from "./analytics/token-abuse";
-import { askTraice } from "./ask";
+import { askTraice, confirmAskAction, prepareAskAction, type AskActionInput } from "./ask";
 import { deleteCliCredential, resolveCliCredential, storeCliCredential } from "./cli-credentials";
 
 const DEFAULT_FILE = "./.traice-costs/events.ndjson";
@@ -206,6 +206,98 @@ program
       process.exitCode = 1;
     }
   });
+
+const actionCommand = program
+  .command("action")
+  .description("Prepare and explicitly confirm Team-plan Ask trAIce actions");
+
+actionCommand
+  .command("prepare-budget")
+  .description("Prepare a budget without creating it")
+  .requiredOption("--name <name>", "Budget name")
+  .requiredOption("--limit-usd <amount>", "Budget limit in USD", Number)
+  .option("--scope <scope>", "WORKSPACE, FEATURE, USER, or TENANT", "WORKSPACE")
+  .option("--scope-value <value>", "Feature, user, or tenant identifier")
+  .option("--period <period>", "DAILY, WEEKLY, or MONTHLY", "MONTHLY")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--json", "Print the structured response as JSON")
+  .action(async (opts) => {
+    await runPrepareAction(
+      {
+        action: "create_budget",
+        name: opts.name,
+        limitUsd: opts.limitUsd,
+        scope: String(opts.scope).toUpperCase() as Extract<AskActionInput, { action: "create_budget" }>["scope"],
+        scopeValue: opts.scopeValue,
+        period: String(opts.period).toUpperCase() as Extract<AskActionInput, { action: "create_budget" }>["period"],
+      },
+      opts,
+    );
+  });
+
+actionCommand
+  .command("prepare-alert-snooze")
+  .description("Prepare a reversible alert snooze")
+  .argument("<alert-id>", "Active alert ID")
+  .option("--hours <hours>", "Snooze duration from 1 to 720 hours", Number, 24)
+  .option("--reason <reason>", "Audit reason")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--json", "Print the structured response as JSON")
+  .action(async (alertId: string, opts) => {
+    await runPrepareAction({ action: "snooze_alert", alertId, hours: opts.hours, reason: opts.reason }, opts);
+  });
+
+actionCommand
+  .command("prepare-shadow-guardrail")
+  .description("Prepare an evidence-gated shadow guardrail from an experiment")
+  .argument("<experiment-id>", "Eligible experiment ID")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--json", "Print the structured response as JSON")
+  .action(async (experimentId: string, opts) => {
+    await runPrepareAction({ action: "create_shadow_guardrail", experimentId }, opts);
+  });
+
+actionCommand
+  .command("confirm")
+  .description("Execute a prepared action after reviewing its summary")
+  .requiredOption("--token <token>", "Short-lived confirmation token")
+  .requiredOption("--phrase <phrase>", "Exact confirmation phrase, including CONFIRM")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--json", "Print the structured response as JSON")
+  .action(async (opts) => {
+    try {
+      const credential = await resolveCliCredential(opts.serverUrl);
+      const result = await confirmAskAction(opts.token, opts.phrase, credential);
+      console.log(opts.json ? JSON.stringify(result, null, 2) : chalk.green(JSON.stringify(result.result, null, 2)));
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
+
+async function runPrepareAction(action: AskActionInput, opts: { serverUrl?: string; json?: boolean }) {
+  try {
+    const credential = await resolveCliCredential(opts.serverUrl);
+    const result = await prepareAskAction(action, credential);
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(result.summary);
+    console.log(
+      chalk.yellow(`No change has been made. Review the summary, then confirm with ${result.confirmationPhrase}.`),
+    );
+    console.log(
+      chalk.gray(
+        `traice action confirm --token '${result.confirmationToken}' --phrase '${result.confirmationPhrase}'${opts.serverUrl ? ` --server-url '${opts.serverUrl}'` : ""}`,
+      ),
+    );
+    console.log(chalk.gray(`Expires ${result.expiresAt}.`));
+  } catch (error) {
+    console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+    process.exitCode = 1;
+  }
+}
 
 program
   .command("report")

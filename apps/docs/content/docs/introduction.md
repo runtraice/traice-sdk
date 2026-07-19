@@ -18,7 +18,7 @@ Product usage and internal AI-tool usage are separate data streams. Choose the p
 | ------------------------ | ------------------------------------------------------------- | ------------------------ | ---------------------------------------------- |
 | Product SDKs             | LLM calls made by your application for customers or end users | `/api/v1/events`         | [Product SDKs](/docs/sdk-quickstart)           |
 | Internal Spend collector | Claude Code and Codex usage by employees and teams            | `/api/v1/internal-usage` | [Collector overview](/docs/collector-overview) |
-| Ask trAIce               | Read-only spend, margin, waste, budget, and alert questions   | `/api/v1/ask` or MCP     | [Ask trAIce](/docs/ask-traice)                 |
+| Ask trAIce               | Spend questions and explicitly confirmed Team actions         | `/api/v1/ask` or MCP     | [Ask trAIce](/docs/ask-traice)                 |
 
 Do not send employee coding-agent usage as a product event. Do not use customer identifiers as employee identifiers. Keeping the two paths separate preserves clear allocation and reporting.
 
