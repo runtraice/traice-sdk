@@ -53,6 +53,19 @@ export {
 export { ConsoleAdapter, LocalAdapter, WebhookAdapter, OTelAdapter, CloudAdapter, createAdapter } from "./adapters";
 export type { CloudAdapterConfig, ExactCacheContext, ExactCacheRequest, ExactCacheStats } from "./adapters";
 
+// Re-export the pure, I/O-free enforcement decision core
+export { decide } from "./enforcement";
+export type {
+  BudgetScope as EnforcementBudgetScope,
+  EnforcementContext,
+  EnforcementDecision,
+  EnforcementRequest,
+  EnforcementRule,
+  RuleAction,
+  RuleCondition,
+  RuleState,
+} from "./enforcement";
+
 // Re-export middleware
 export { createExpressMiddleware } from "./middleware/express";
 

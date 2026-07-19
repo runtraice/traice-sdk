@@ -96,6 +96,20 @@ always passed through because provider stream objects cannot be replayed safely.
 Matched hits and misses are reported to trAIce so the Guardrails page can show
 the real cache hit rate; payloads remain process-local.
 
+## Enforcement decision core
+
+`decide(request, rules, context)` is the pure, synchronous rule planner used by
+the exact-cache wrapper. It evaluates rule state, priority, request conditions,
+model allowlists, and optional equivalence evidence without network or file I/O.
+It returns either `PASS_THROUGH` or an active/shadow decision with a structured
+reason. The SDK exports its request, rule, context, and decision types for
+custom wrappers and deterministic tests.
+
+This API plans a decision; it does not itself call a model provider. In this
+release, `CloudAdapter.enforceExactCache()` is still the only built-in executor.
+Swap, downgrade, deny, retry-cap, fallback, and route execution are not yet
+enabled.
+
 ## Privacy
 
 Prompts and outputs are not required for cost attribution. Only pass `prompt` or `output` when your workspace has explicitly opted into sample capture.

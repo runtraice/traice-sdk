@@ -72,3 +72,15 @@ errors, explicit bypasses, and all streaming requests call the provider normally
 Use `cloud.getExactCacheStats()` for process-local hits, misses, bypasses, hit
 rate, and realized savings. trAIce receives hit/miss outcomes and token cost
 bases, but not the cached request or response payload.
+
+## Plan enforcement decisions
+
+The SDK exports a pure `decide(request, rules, context)` function for custom
+wrappers and deterministic rule tests. It evaluates state, priority,
+conditions, model allowlists, and supplied equivalence evidence without I/O,
+then returns `PASS_THROUGH` or a structured active/shadow decision.
+
+Planning does not call a model provider. `CloudAdapter.enforceExactCache()` is
+currently the only built-in executor. Swap, downgrade, deny, retry-cap,
+fallback, and route execution remain disabled until their guarded executors are
+released.
