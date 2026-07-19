@@ -51,7 +51,17 @@ export async function prepareAskAction(
   action: AskActionInput,
   options: AskClientOptions,
 ): Promise<PrepareAskActionResponse> {
-  return postAskJson<PrepareAskActionResponse>("/api/v1/ask/actions/prepare", action, options, "action");
+  const payload = await postAskJson<PrepareAskActionResponse>("/api/v1/ask/actions/prepare", action, options, "action");
+  if (
+    payload.status !== "confirmation_required" ||
+    !payload.confirmationToken ||
+    !payload.confirmationPhrase ||
+    !payload.summary ||
+    !payload.expiresAt
+  ) {
+    throw new Error("trAIce action returned an invalid preparation response");
+  }
+  return payload;
 }
 
 export async function confirmAskAction(
@@ -59,12 +69,16 @@ export async function confirmAskAction(
   confirmationPhrase: string,
   options: AskClientOptions,
 ): Promise<ConfirmAskActionResponse> {
-  return postAskJson<ConfirmAskActionResponse>(
+  const payload = await postAskJson<ConfirmAskActionResponse>(
     "/api/v1/ask/actions/confirm",
     { confirmationToken, confirmationPhrase },
     options,
     "action",
   );
+  if (!(["confirmed", "already_confirmed"] as const).includes(payload.status) || !payload.confirmationId) {
+    throw new Error("trAIce action returned an invalid confirmation response");
+  }
+  return payload;
 }
 
 async function postAskJson<T>(

@@ -96,6 +96,19 @@ describe("askTraice", () => {
     );
   });
 
+  it("rejects malformed action responses", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "confirmation_required" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      prepareAskAction({ action: "create_budget", name: "Support", limitUsd: 500 }, { apiKey: "lm_live_secret" }),
+    ).rejects.toThrow("invalid preparation response");
+  });
+
   it("requires HTTPS except for local development", () => {
     expect(() => normalizeServerUrl("http://example.com")).toThrow("must use HTTPS");
     expect(normalizeServerUrl("http://localhost:3000/")).toBe("http://localhost:3000");

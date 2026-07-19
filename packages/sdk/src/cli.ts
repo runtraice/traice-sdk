@@ -289,7 +289,7 @@ async function runPrepareAction(action: AskActionInput, opts: { serverUrl?: stri
     );
     console.log(
       chalk.gray(
-        `traice action confirm --token '${result.confirmationToken}' --phrase '${result.confirmationPhrase}'${opts.serverUrl ? ` --server-url '${opts.serverUrl}'` : ""}`,
+        `traice action confirm --token ${shellQuote(result.confirmationToken)} --phrase ${shellQuote(result.confirmationPhrase)}${opts.serverUrl ? ` --server-url ${shellQuote(opts.serverUrl)}` : ""}`,
       ),
     );
     console.log(chalk.gray(`Expires ${result.expiresAt}.`));
@@ -297,6 +297,10 @@ async function runPrepareAction(action: AskActionInput, opts: { serverUrl?: stri
     console.error(chalk.red(error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
   }
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 program
