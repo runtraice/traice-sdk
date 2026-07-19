@@ -1,5 +1,12 @@
 # @traice/sdk Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- 002a0d1: Add the `traice ask` command, cross-platform secure credential storage, the read-only ask API client, and MCP client setup documentation.
+- 77dc155: Export the pure enforcement decision core and use it for active exact-cache rule selection.
+
 ## 0.2.5
 
 ### Patch Changes
