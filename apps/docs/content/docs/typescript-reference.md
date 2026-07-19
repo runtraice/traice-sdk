@@ -133,6 +133,12 @@ Every adapter implements `CostAdapter` with an asynchronous `write(event)` metho
 | `mapLangfuseObservation` | `(value: unknown) => ImportedEvent \| null`                       | Normalize one Langfuse observation                                       | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts) |
 | `parseImportRange`       | `(since, until?, now?) => ImportRange`                            | Parse an ISO boundary or duration such as `7d`                           | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts) |
 
+## Portable policy API
+
+| API            | Signature                                                         | Behavior                                                                       | Source                                                                                    |
+| -------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `exportPolicy` | `(options: ExportPolicyOptions) => Promise<PortablePolicyBundle>` | Fetch and validate user-authored rules, evidence, and budget snapshots as JSON | [policy.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/policy.ts) |
+
 ## Exported types
 
 | Group                   | Public types                                                                                                                                               | Source                                                                                                                                                                                    |
@@ -147,6 +153,7 @@ Every adapter implements `CostAdapter` with an asynchronous `write(event)` metho
 | Analytics               | `ForecastResult`, `AnomalyResult`, `AnomalyOptions`, `VersionComparison`, `ModelRecommendation`, `TokenAbuseOptions`, `TokenAbuseResult`                   | [analytics](https://github.com/runtraice/traice-sdk/tree/main/packages/sdk/src/analytics)                                                                                                 |
 | Ask trAIce              | `AskTraiceResponse`                                                                                                                                        | [ask.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/ask.ts)                                                                                                       |
 | Vendor imports          | `ImportCredential`, `ImportRange`, `ImportedEvent`, `LiteLlmImportOptions`, `LangfuseImportOptions`, `VendorImportResult`                                  | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts)                                                                                 |
+| Portable policy         | `ExportPolicyOptions`, `PortablePolicyBundle`, `PortablePolicyBudget`, `PortablePolicyEvidence`                                                            | [policy.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/policy.ts)                                                                                                 |
 
 ## Related guides
 
