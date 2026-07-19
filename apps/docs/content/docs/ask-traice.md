@@ -1,6 +1,6 @@
 ---
 title: Ask trAIce
-excerpt: Query workspace spend, AI contribution margin, waste, budgets, recommendations, and alerts from the CLI or any MCP client.
+excerpt: Query workspace spend, AI contribution margin, waste, budgets, recommendations, and alerts from Slack, the CLI, or any MCP client.
 section: Tools
 sectionOrder: 4
 order: 1
@@ -45,6 +45,28 @@ traice ask "what is our biggest waste and what should we change?"
 ```
 
 Use `--json` for automation. Use `traice auth logout` to delete the saved credential.
+
+## Slack
+
+A trAIce workspace owner or admin can connect Ask trAIce to a Slack workspace:
+
+1. Sign in to [trAIce](https://www.runtraice.com/login) and select the intended workspace.
+2. Open **Settings**, then **Ask trAIce**.
+3. Select **Add to Slack**.
+4. Choose the Slack workspace and approve the requested read and reply permissions.
+
+Use the app after installation:
+
+```text
+/traice top spend by model in the last 7 days
+/traice which customers are unprofitable this month?
+```
+
+You can also mention Ask trAIce in a channel where the app is present. Slash-command answers include a link to the relevant trAIce dashboard view; mention answers are posted in a thread.
+
+The Slack app is available for OAuth installation in any workspace. If your Slack organization restricts app installation, a Slack workspace or organization admin must approve it. One Slack workspace can be connected to only one trAIce workspace at a time.
+
+Install through trAIce Settings rather than a copied Slack authorization URL. The Settings flow securely binds the Slack authorization to the selected trAIce workspace.
 
 ## Cursor
 
