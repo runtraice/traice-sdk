@@ -5,26 +5,30 @@ Unified local collector for coding-agent usage.
 ## Claude Code
 
 ```sh
-npx @traice/collector@latest install claude-code \
+npx @traice/collector@latest setup claude-code \
   --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
-  --team-name Engineering \
-  --api-key-stdin
-
-npx @traice/collector@latest collect
+  --team-name Engineering
 ```
 
-By default, the installer prints the Claude Code settings snippet instead of modifying your settings file. Add `--patch-settings` to patch `~/.claude/settings.json`.
+`setup` prompts for the API key only when a valid saved credential is unavailable, patches the agent settings, and
+installs a background user service. It is safe to rerun.
 
 Prompt logging stays disabled unless you explicitly pass `--include-prompts`.
 
 ## Codex
 
 ```sh
-npx @traice/collector@latest install codex --server-url https://www.runtraice.com --api-key-stdin
-npx @traice/collector@latest collect --agent codex
+npx @traice/collector@latest setup codex \
+  --server-url https://www.runtraice.com \
+  --employee-email you@company.com \
+  --team-name Engineering \
+  --backfill-days 7
 ```
+
+Codex setup backfills the previous 7 days by default. Set `--backfill-days` from 1 to 30, use `--no-backfill` to skip
+history, or use `--no-service` when another process manager will run the collector.
 
 The maintained collector forwards live OTLP telemetry only; it does not scan
 or replay an unbounded history of local session files. Stop any legacy Codex
@@ -50,7 +54,7 @@ the replay and asks for an earlier cutoff.
 
 ## API key storage
 
-`install` stores the API key in the operating system credential manager by default:
+`setup` and `install` store the API key in the operating system credential manager by default:
 
 - macOS Keychain
 - Windows Credential Manager

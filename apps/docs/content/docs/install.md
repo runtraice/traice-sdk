@@ -104,27 +104,17 @@ other employee or team usage through the authenticated internal-usage API until 
 Install the local collector for Claude Code:
 
 ```sh
-printf "trAIce API key: "
-stty -echo
-IFS= read -r TRAICE_API_KEY
-stty echo
-printf "\n"
-printf "%s" "$TRAICE_API_KEY" | npx @traice/collector@latest install claude-code \
-  --api-key-stdin \
+npx @traice/collector@latest setup claude-code \
   --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
   --team-name Engineering \
-  --seat-monthly-usd 200 \
-  --patch-settings
-unset TRAICE_API_KEY
+  --seat-monthly-usd 200
 ```
 
-Start the collector:
-
-```sh
-npx @traice/collector@latest collect --agent claude-code
-```
+The command prompts for an API key when needed, verifies it, saves it in the operating system credential manager,
+patches the agent settings, and installs a background user service. Rerunning it updates the existing setup and reuses
+the saved key when it is still valid. Add `--no-service` if another process manager will run the collector.
 
 Send an internal usage row directly:
 

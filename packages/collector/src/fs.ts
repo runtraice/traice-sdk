@@ -62,6 +62,45 @@ export async function readStdinSecret(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
+export async function readHiddenSecret(prompt = "trAIce API key: "): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || typeof process.stdin.setRawMode !== "function") {
+    throw new Error("No stored API key is available. Run setup in a terminal or provide --api-key-stdin.");
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    let value = "";
+    const stdin = process.stdin;
+    const finish = (error?: Error) => {
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      process.stdout.write("\n");
+      if (error) reject(error);
+      else if (!value.trim()) reject(new Error("API key cannot be empty."));
+      else resolve(value.trim());
+    };
+    const onData = (chunk: Buffer | string) => {
+      for (const character of String(chunk)) {
+        if (character === "\u0003") {
+          finish(new Error("Setup cancelled."));
+          return;
+        }
+        if (character === "\r" || character === "\n") {
+          finish();
+          return;
+        }
+        if (character === "\u007f" || character === "\b") value = value.slice(0, -1);
+        else value += character;
+      }
+    };
+
+    process.stdout.write(prompt);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+  });
+}
+
 export function normalizeUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
