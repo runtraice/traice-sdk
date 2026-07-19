@@ -3,7 +3,8 @@ export type EventMetadata = Record<string, unknown>;
 export interface CostEvent {
   id: string;
   timestamp: string;
-  provider: "openai" | "anthropic" | "custom";
+  /** Provider identifier, for example openai, anthropic, or google-vertex. */
+  provider: string;
   model: string;
   inputTokens: number;
   outputTokens: number;
@@ -54,6 +55,8 @@ export interface CostEvent {
 export type ErrorHandler = (error: Error, event?: CostEvent) => void;
 
 export interface MeterOptions {
+  /** Explicit provider identifier for responses whose shape cannot identify the provider. */
+  provider?: string;
   feature?: string;
   userId?: string;
   tenantId?: string;
@@ -77,7 +80,7 @@ export interface MeterOptions {
 }
 
 export interface CostMeterConfig {
-  provider?: "openai" | "anthropic" | "custom";
+  provider?: string;
   adapters?: Array<string | CostAdapter>;
   localPath?: string;
   defaultTags?: Record<string, string>;

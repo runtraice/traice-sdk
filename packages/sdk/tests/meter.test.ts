@@ -664,6 +664,32 @@ describe("configurePricing integration", () => {
     expect(event.inputCostUSD).toBeCloseTo(0.01, 6);
     expect(event.outputCostUSD).toBeCloseTo(0.015, 6);
   });
+
+  it("uses an explicit provider with AI SDK token usage", async () => {
+    configurePricing("google-vertex", "gemini-2.5-flash-lite", { input: 0.1, output: 0.4 });
+    const adapter = new TestAdapter();
+    configure({ adapters: [adapter], warnOnMissingModel: false });
+
+    await meter(
+      async () => ({
+        model: "gemini-2.5-flash-lite",
+        usage: {
+          inputTokens: 1_000,
+          outputTokens: 250,
+          inputTokenDetails: { cacheReadTokens: 100 },
+        },
+      }),
+      { provider: "google-vertex", feature: "ask", awaitWrites: true },
+    );
+
+    const event = adapter.events[0];
+    expect(event.provider).toBe("google-vertex");
+    expect(event.inputTokens).toBe(1_000);
+    expect(event.outputTokens).toBe(250);
+    expect(event.cacheReadTokens).toBe(100);
+    expect(event.inputCostUSD).toBeCloseTo(0.0001, 8);
+    expect(event.outputCostUSD).toBeCloseTo(0.0001, 8);
+  });
 });
 
 describe("meter() when wrapped function throws (P1)", () => {
