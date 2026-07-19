@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.4.3
+
+### Patch Changes
+
+- 959bcb3: Require experiment-derived model rules to match the exact validated source model before enforcement.
+
 ## 0.4.2
 
 ### Patch Changes
