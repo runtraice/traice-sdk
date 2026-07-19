@@ -93,6 +93,40 @@ describe("decide", () => {
     });
   });
 
+  it("selects an explicit allowlisted route only with passing evidence", () => {
+    const routed = rule({
+      action: "ROUTE",
+      actionParams: { targetModel: "gpt-4o-mini" },
+      requireEquivalencePct: 95,
+      maxQualityDropPct: 5,
+      modelAllowlist: ["gpt-4o-mini"],
+    });
+
+    expect(decide({ model: "gpt-4o", feature: "support" }, [routed])).toMatchObject({ matched: false });
+    expect(
+      decide({ model: "gpt-4o", feature: "support" }, [{ ...routed, modelAllowlist: [] }], {
+        equivalencePctFor: () => 97,
+        experimentIdFor: () => "experiment-route",
+      }),
+    ).toMatchObject({ matched: false });
+    expect(
+      decide({ model: "gpt-4o", feature: "support" }, [routed], {
+        equivalencePctFor: () => 97,
+      }),
+    ).toMatchObject({ matched: false });
+    expect(
+      decide({ model: "gpt-4o", feature: "support" }, [routed], {
+        equivalencePctFor: () => 97,
+        experimentIdFor: () => "experiment-route",
+      }),
+    ).toMatchObject({
+      matched: true,
+      action: "ROUTE",
+      servedModel: "gpt-4o-mini",
+      evidence: { experimentId: "experiment-route", satisfied: true },
+    });
+  });
+
   it("scopes an experiment-derived model rule to its exact source model", () => {
     const guarded = rule({
       action: "SWAP",

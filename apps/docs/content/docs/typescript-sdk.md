@@ -232,7 +232,7 @@ fail-open checks.
 
 ## Active request enforcement
 
-`CloudAdapter.enforceRequest()` executes supported active request rules for an explicitly wrapped path: exact cache, deny, retry cap, evidence-gated swap or downgrade, and one-shot fallback.
+`CloudAdapter.enforceRequest()` executes supported active request rules for an explicitly wrapped path: exact or semantic cache, deny, retry cap, evidence-gated swap, downgrade, or route, and one-shot fallback.
 
 Keep one adapter for the process and warm its rules before serving traffic. A cold or expired rules cache passes through and refreshes in the background.
 
@@ -266,6 +266,36 @@ try {
 Active deny and retry-cap rules throw `TraiceEnforcementError` before the provider call. Shadow rules, unsupported actions, malformed rules, unavailable evidence, rule API errors, and explicit bypasses pass through. Streaming requests can be denied or retry-capped but are never cached.
 
 Swap and downgrade require current experiment evidence for the exact feature, source model, and target model. Fallback makes one configured fallback call after the original provider call fails. If it also fails, the original provider error is preserved.
+
+Route rules require the same current evidence plus a non-empty model allowlist
+that contains the one configured target. The SDK does not select models
+autonomously and does not proxy provider traffic.
+
+### Opt in to semantic caching
+
+Semantic caching uses a bounded, process-local LRU and a customer-supplied
+embedding function. Your application owns the embedding infrastructure and its
+credentials.
+
+```typescript
+const cloud = new CloudAdapter({
+  apiKey: process.env.TRAICE_API_KEY!,
+  semanticCache: {
+    embed: async (text) => myEmbeddingClient.embed(text),
+    timeoutMs: 1_000,
+    maxEntries: 250,
+  },
+});
+```
+
+The SDK sends no request text or response content to trAIce. The embedder gets
+the normalized request by default. Pass `semanticCacheText` in the enforcement
+context when you want to embed a smaller, approved representation. Entries are
+isolated by workspace, rule, and requested model, then governed by the rule TTL
+and similarity threshold. Streams and explicit bypasses are never cached.
+Missing configuration, invalid input, embedding errors, and embedding timeouts
+fail open to one normal provider call. Use `getSemanticCacheStats()` for local
+cache health and savings metrics.
 
 ## Privacy and failure behavior
 

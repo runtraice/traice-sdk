@@ -16,6 +16,17 @@ export interface CloudAdapterConfig {
   onEnforcementError?: (error: Error, context: EnforcementErrorContext) => void;
   /** Background refresh interval for advisory workspace budget policy. Default: 60000. */
   budgetPolicyPollIntervalMs?: number;
+  /** Opt-in process-local semantic cache. No prompt content is sent to trAIce. */
+  semanticCache?: SemanticCacheConfig;
+}
+
+export interface SemanticCacheConfig {
+  /** Produce an embedding with infrastructure and credentials controlled by the consuming application. */
+  embed: (text: string) => Promise<readonly number[]>;
+  /** Maximum semantic responses retained by this process. Default: 250. */
+  maxEntries?: number;
+  /** Hard embedding latency budget before the request fails open. Default: 1000. */
+  timeoutMs?: number;
 }
 
 export interface ExactCacheRequest {
@@ -36,6 +47,8 @@ export interface ExactCacheContext {
   bypass?: boolean;
   /** A `true`/`1` x-traice-cache-bypass header bypasses lookup and storage. */
   headers?: Headers | Record<string, string | string[] | undefined>;
+  /** Optional text passed to the customer-supplied semantic embedder instead of the normalized request. */
+  semanticCacheText?: string;
 }
 
 export type RequestEnforcementContext = ExactCacheContext;
@@ -80,7 +93,7 @@ export type BudgetAdvice = {
 };
 
 export type BlockingRuleAction = "DENY" | "CAP_RETRIES";
-export type ModelRuleAction = "SWAP" | "DOWNGRADE" | "FALLBACK";
+export type ModelRuleAction = "SWAP" | "DOWNGRADE" | "FALLBACK" | "ROUTE";
 
 export interface EnforcementEvidence {
   experimentId: string;
@@ -128,6 +141,16 @@ export interface ExactCacheStats {
   savingsUsd: number;
 }
 
+export interface SemanticCacheStats {
+  hits: number;
+  misses: number;
+  bypasses: number;
+  embeddingFailures: number;
+  size: number;
+  hitRate: number;
+  savingsUsd: number;
+}
+
 type ExactCacheEntry = {
   response: unknown;
   expiresAt: number;
@@ -142,6 +165,15 @@ type ExactCacheCostBasis = {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   savingsUsdMicros: number;
+};
+
+type SemanticCacheEntry = {
+  ruleId: string;
+  requestedModel: string;
+  vector: number[];
+  response: unknown;
+  expiresAt: number;
+  costBasis: ExactCacheCostBasis;
 };
 
 type EnforcementBudgetSnapshot = {
@@ -209,6 +241,10 @@ export class CloudAdapter implements CostAdapter {
   private policyTimer: ReturnType<typeof setInterval> | null = null;
   private exactCache = new Map<string, ExactCacheEntry>();
   private exactCacheMaxEntries: number;
+  private semanticCache = new Map<string, SemanticCacheEntry>();
+  private semanticCacheConfig?: SemanticCacheConfig;
+  private semanticCacheMaxEntries: number;
+  private semanticCacheTimeoutMs: number;
   private enforcementTimeoutMs: number;
   private onEnforcementError?: CloudAdapterConfig["onEnforcementError"];
   private rules: EnforcementRule[] = [];
@@ -226,6 +262,11 @@ export class CloudAdapter implements CostAdapter {
   private exactCacheMisses = 0;
   private exactCacheBypasses = 0;
   private exactCacheSavingsUsdMicros = 0;
+  private semanticCacheHits = 0;
+  private semanticCacheMisses = 0;
+  private semanticCacheBypasses = 0;
+  private semanticCacheEmbeddingFailures = 0;
+  private semanticCacheSavingsUsdMicros = 0;
   private enforcementStats: EnforcementStats = {
     ruleRefreshes: 0,
     ruleRefreshFailures: 0,
@@ -245,6 +286,9 @@ export class CloudAdapter implements CostAdapter {
     this.endpoint = config.endpoint ?? "https://runtraice.com/api/v1/events";
     this.batchSize = config.batchSize ?? 50;
     this.exactCacheMaxEntries = Math.max(1, Math.floor(config.exactCacheMaxEntries ?? 1000));
+    this.semanticCacheConfig = config.semanticCache;
+    this.semanticCacheMaxEntries = Math.max(1, Math.floor(config.semanticCache?.maxEntries ?? 250));
+    this.semanticCacheTimeoutMs = Math.max(10, Math.floor(config.semanticCache?.timeoutMs ?? 1000));
     this.enforcementTimeoutMs = Math.max(100, Math.floor(config.enforcementTimeoutMs ?? 2000));
     this.onEnforcementError = config.onEnforcementError;
     const flushMs = config.flushIntervalMs ?? 5000;
@@ -381,12 +425,12 @@ export class CloudAdapter implements CostAdapter {
   /**
    * Run a request through the currently supported in-path rule actions.
    *
-   * Active exact-cache rules may return a cached response. Active deny and
-   * retry-cap rules throw a structured TraiceEnforcementError. Active swap and
-   * downgrade rules rewrite the model only with passing experiment evidence.
-   * Active fallback rules make at most one configured fallback call after a
-   * provider error. Shadow, unsupported, unavailable, or malformed rules pass
-   * through unchanged.
+   * Active exact- or semantic-cache rules may return a cached response. Active
+   * deny and retry-cap rules throw a structured TraiceEnforcementError. Active
+   * swap, downgrade, and route rules rewrite the model only with passing
+   * experiment evidence. Active fallback rules make at most one configured
+   * fallback call after a provider error. Shadow, unsupported, unavailable, or
+   * malformed rules pass through unchanged.
    */
   async enforceRequest<T, R extends ExactCacheRequest>(
     request: R,
@@ -421,6 +465,10 @@ export class CloudAdapter implements CostAdapter {
       return this.executeExactCacheRule(request, () => providerCall(request), context, rule);
     }
 
+    if (decision.action === "CACHE_SEMANTIC") {
+      return this.executeSemanticCacheRule(request, () => providerCall(request), context, rule);
+    }
+
     if (decision.action === "DENY" || decision.action === "CAP_RETRIES") {
       this.trackDecision(
         this.postBlockingDecision(rule, request.model, decision.action, context.retryCount, decision.reason),
@@ -434,7 +482,7 @@ export class CloudAdapter implements CostAdapter {
       );
     }
 
-    if (decision.action === "SWAP" || decision.action === "DOWNGRADE") {
+    if (decision.action === "SWAP" || decision.action === "DOWNGRADE" || decision.action === "ROUTE") {
       if (!decision.servedModel || !decision.evidence?.satisfied || !decision.evidence.experimentId) {
         return providerCall(request);
       }
@@ -472,6 +520,20 @@ export class CloudAdapter implements CostAdapter {
       size: this.exactCache.size,
       hitRate: attempts > 0 ? this.exactCacheHits / attempts : 0,
       savingsUsd: this.exactCacheSavingsUsdMicros / 1_000_000,
+    };
+  }
+
+  /** Process-local metrics for active semantic-cache rules. */
+  getSemanticCacheStats(): SemanticCacheStats {
+    const attempts = this.semanticCacheHits + this.semanticCacheMisses;
+    return {
+      hits: this.semanticCacheHits,
+      misses: this.semanticCacheMisses,
+      bypasses: this.semanticCacheBypasses,
+      embeddingFailures: this.semanticCacheEmbeddingFailures,
+      size: this.semanticCache.size,
+      hitRate: attempts > 0 ? this.semanticCacheHits / attempts : 0,
+      savingsUsd: this.semanticCacheSavingsUsdMicros / 1_000_000,
     };
   }
 
@@ -677,6 +739,59 @@ export class CloudAdapter implements CostAdapter {
     return response;
   }
 
+  private async executeSemanticCacheRule<T>(
+    request: ExactCacheRequest,
+    providerCall: () => Promise<T>,
+    context: RequestEnforcementContext,
+    rule: EnforcementRule,
+  ): Promise<T> {
+    if (!this.semanticCacheConfig || request.stream === true || cacheBypassed(context)) {
+      this.semanticCacheBypasses++;
+      return providerCall();
+    }
+
+    const text = semanticCacheText(request, context);
+    if (!text) {
+      this.semanticCacheBypasses++;
+      return providerCall();
+    }
+    const vector = await boundedEmbedding(this.semanticCacheConfig.embed, text, this.semanticCacheTimeoutMs);
+    if (!vector) {
+      this.semanticCacheEmbeddingFailures++;
+      this.enforcementStats.failOpenRequests++;
+      return providerCall();
+    }
+
+    const threshold = boundedSimilarityThreshold(rule.actionParams.similarityThreshold);
+    const cached = this.getSemanticCache(rule.id, request.model, vector, threshold);
+    if (cached.entry) {
+      this.semanticCacheHits++;
+      this.semanticCacheSavingsUsdMicros += cached.entry.costBasis.savingsUsdMicros;
+      this.trackDecision(
+        this.postSemanticCacheDecision(rule, request.model, "hit", cached.similarity, cached.entry.costBasis),
+      );
+      return cached.entry.response as T;
+    }
+
+    this.semanticCacheMisses++;
+    this.trackDecision(this.postSemanticCacheDecision(rule, request.model, "miss", cached.similarity));
+    const response = await providerCall();
+    try {
+      const key = semanticCacheKey(this.apiKey, rule.id, request.model, text);
+      this.setSemanticCache(key, {
+        ruleId: rule.id,
+        requestedModel: request.model,
+        vector,
+        response,
+        expiresAt: Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
+        costBasis: responseCostBasis(response, context.provider),
+      });
+    } catch {
+      // A cache write/costing failure does not affect the provider response.
+    }
+    return response;
+  }
+
   private async executeFallbackRule<T, R extends ExactCacheRequest>(
     request: R,
     providerCall: (effectiveRequest: R) => Promise<T>,
@@ -726,6 +841,48 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
+  private getSemanticCache(
+    ruleId: string,
+    requestedModel: string,
+    vector: number[],
+    threshold: number,
+  ): { entry?: SemanticCacheEntry; similarity: number | null } {
+    let bestKey: string | null = null;
+    let bestEntry: SemanticCacheEntry | undefined;
+    let bestSimilarity = -1;
+    for (const [key, entry] of this.semanticCache) {
+      if (entry.expiresAt <= Date.now()) {
+        this.semanticCache.delete(key);
+        continue;
+      }
+      if (entry.ruleId !== ruleId || entry.requestedModel !== requestedModel || entry.vector.length !== vector.length) {
+        continue;
+      }
+      const similarity = dotProduct(vector, entry.vector);
+      if (similarity > bestSimilarity) {
+        bestKey = key;
+        bestEntry = entry;
+        bestSimilarity = similarity;
+      }
+    }
+    if (!bestEntry || !bestKey || bestSimilarity < threshold) {
+      return { similarity: bestSimilarity >= 0 ? bestSimilarity : null };
+    }
+    this.semanticCache.delete(bestKey);
+    this.semanticCache.set(bestKey, bestEntry);
+    return { entry: bestEntry, similarity: bestSimilarity };
+  }
+
+  private setSemanticCache(key: string, entry: SemanticCacheEntry): void {
+    this.semanticCache.delete(key);
+    this.semanticCache.set(key, entry);
+    while (this.semanticCache.size > this.semanticCacheMaxEntries) {
+      const oldest = this.semanticCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.semanticCache.delete(oldest);
+    }
+  }
+
   private postExactCacheDecision(
     rule: EnforcementRule,
     requestedModel: string,
@@ -749,6 +906,32 @@ export class CloudAdapter implements CostAdapter {
       ruleId: rule.id,
       cacheOutcome: "miss",
       requestedModel,
+    });
+  }
+
+  private postSemanticCacheDecision(
+    rule: EnforcementRule,
+    requestedModel: string,
+    cacheOutcome: "hit" | "miss",
+    similarity: number | null,
+    costBasis?: ExactCacheCostBasis,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: rule.id,
+      action: "CACHE_SEMANTIC",
+      cacheOutcome,
+      requestedModel,
+      similarity,
+      ...(costBasis
+        ? {
+            provider: costBasis.provider,
+            servedModel: costBasis.model,
+            inputTokens: costBasis.inputTokens,
+            outputTokens: costBasis.outputTokens,
+            cacheReadTokens: costBasis.cacheReadTokens,
+            cacheWriteTokens: costBasis.cacheWriteTokens,
+          }
+        : {}),
     });
   }
 
@@ -981,6 +1164,67 @@ function cacheBypassed(context: ExactCacheContext): boolean {
 function exactCacheKey(apiKey: string, ruleId: string, request: ExactCacheRequest): string {
   const workspaceScope = crypto.createHash("sha256").update(apiKey).digest("hex");
   return crypto.createHash("sha256").update(stableStringify({ workspaceScope, ruleId, request })).digest("hex");
+}
+
+function semanticCacheKey(apiKey: string, ruleId: string, requestedModel: string, text: string): string {
+  const workspaceScope = crypto.createHash("sha256").update(apiKey).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(stableStringify({ workspaceScope, ruleId, requestedModel, text }))
+    .digest("hex");
+}
+
+function semanticCacheText(request: ExactCacheRequest, context: RequestEnforcementContext): string | null {
+  if (context.semanticCacheText !== undefined) return context.semanticCacheText.trim();
+  try {
+    return stableStringify(request);
+  } catch {
+    return null;
+  }
+}
+
+async function boundedEmbedding(
+  embed: SemanticCacheConfig["embed"],
+  text: string,
+  timeoutMs: number,
+): Promise<number[] | null> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutResult = new Promise<null>((resolve) => {
+    timeout = setTimeout(() => resolve(null), timeoutMs);
+    if (timeout.unref) timeout.unref();
+  });
+  const embedding = Promise.resolve()
+    .then(() => embed(text))
+    .then(normalizeEmbedding)
+    .catch(() => null);
+  try {
+    return await Promise.race([embedding, timeoutResult]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function normalizeEmbedding(value: readonly number[]): number[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 8192) return null;
+  let magnitudeSquared = 0;
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isFinite(item)) return null;
+    magnitudeSquared += item * item;
+  }
+  if (!Number.isFinite(magnitudeSquared) || magnitudeSquared <= 0) return null;
+  const magnitude = Math.sqrt(magnitudeSquared);
+  return value.map((item) => item / magnitude);
+}
+
+function dotProduct(left: readonly number[], right: readonly number[]): number {
+  let sum = 0;
+  for (let index = 0; index < left.length; index++) sum += left[index] * right[index];
+  return Math.max(-1, Math.min(1, sum));
+}
+
+function boundedSimilarityThreshold(value: unknown): number {
+  const threshold = Number(value);
+  return Number.isFinite(threshold) ? Math.max(0.5, Math.min(1, threshold)) : 0.92;
 }
 
 function stableStringify(value: unknown): string {
