@@ -5,8 +5,23 @@ export interface DocSummary {
   slug: string;
   title: string;
   excerpt: string;
+  section: string;
+  sectionOrder: number;
   body: string;
   order: number;
+  headings: DocHeading[];
+  sourcePath: string;
+}
+
+export interface DocHeading {
+  level: 2 | 3;
+  text: string;
+  id: string;
+}
+
+export interface DocSection {
+  title: string;
+  docs: DocSummary[];
 }
 
 export type DocBlock =
@@ -23,7 +38,23 @@ export function allDocs(): DocSummary[] {
   return readdirSync(docsDir)
     .filter((file) => file.endsWith(".md"))
     .map((file) => parseDoc(file.replace(/\.md$/, ""), readFileSync(join(docsDir, file), "utf8")))
-    .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+    .sort(
+      (a, b) =>
+        a.sectionOrder - b.sectionOrder ||
+        a.section.localeCompare(b.section) ||
+        a.order - b.order ||
+        a.title.localeCompare(b.title),
+    );
+}
+
+export function groupedDocs(docs = allDocs()): DocSection[] {
+  const sections = new Map<string, DocSummary[]>();
+  for (const doc of docs) {
+    const section = sections.get(doc.section) ?? [];
+    section.push(doc);
+    sections.set(doc.section, section);
+  }
+  return Array.from(sections, ([title, sectionDocs]) => ({ title, docs: sectionDocs }));
 }
 
 export function docBySlug(slug: string): DocSummary | null {
@@ -86,13 +117,51 @@ export function docBlocks(body: string): DocBlock[] {
 function parseDoc(slug: string, raw: string): DocSummary {
   const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   const frontmatter = match?.[1] ?? "";
-  const body = (match?.[2] ?? raw).trim();
-  const title = frontmatter.match(/^title:\s*(.+)$/m)?.[1]?.trim() ?? titleFromBody(body) ?? slug;
+  const rawBody = (match?.[2] ?? raw).trim();
+  const title = frontmatter.match(/^title:\s*(.+)$/m)?.[1]?.trim() ?? titleFromBody(rawBody) ?? slug;
   const excerpt = frontmatter.match(/^excerpt:\s*(.+)$/m)?.[1]?.trim() ?? "";
+  const section = frontmatter.match(/^section:\s*(.+)$/m)?.[1]?.trim() ?? "Project";
+  const sectionOrder = Number(frontmatter.match(/^sectionOrder:\s*(\d+)$/m)?.[1] ?? "999");
   const order = Number(frontmatter.match(/^order:\s*(\d+)$/m)?.[1] ?? "999");
-  return { slug, title, excerpt, body, order };
+  const body = rawBody.replace(/^#\s+.+(?:\n+|$)/, "").trim();
+  return {
+    slug,
+    title,
+    excerpt,
+    section,
+    sectionOrder,
+    body,
+    order,
+    headings: extractHeadings(body),
+    sourcePath: `apps/docs/content/docs/${slug}.md`,
+  };
 }
 
 function titleFromBody(body: string): string | null {
   return body.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? null;
+}
+
+function extractHeadings(body: string): DocHeading[] {
+  const headings: DocHeading[] = [];
+  for (const match of body.matchAll(/^(##|###)\s+(.+)$/gm)) {
+    const text = markdownText(match[2]);
+    headings.push({ level: match[1].length as 2 | 3, text, id: headingId(text) });
+  }
+  return headings;
+}
+
+export function headingId(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
+function markdownText(value: string): string {
+  return value
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[✨*_~]/g, "")
+    .trim();
 }

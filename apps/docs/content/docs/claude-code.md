@@ -1,31 +1,32 @@
 ---
 title: Claude Code
 excerpt: Configure Claude Code telemetry for trAIce Internal Spend.
-order: 4
+section: Internal spend
+sectionOrder: 3
+order: 2
 ---
 
 # Claude Code
 
-Install:
+Run the complete setup:
 
 ```sh
-printf "trAIce API key: "
-stty -echo
-IFS= read -r TRAICE_API_KEY
-stty echo
-printf "\n"
-printf "%s" "$TRAICE_API_KEY" | npx @traice/collector@latest install claude-code \
-  --api-key-stdin \
+npx @traice/collector@latest setup claude-code \
   --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --employee-name "Your Name" \
   --team-name Engineering
-unset TRAICE_API_KEY
 ```
 
-The installer prints the settings snippet by default. Add `--patch-settings` to patch `~/.claude/settings.json`.
+The command prompts for an API key only when a valid saved key is unavailable. It verifies and saves the key, patches user-level `~/.claude/settings.json`, installs a background user service, and reports the result. It is safe to rerun. Add `--no-service` if another process manager will run collection.
 
-Start the collector:
+Verify configuration, credentials, service state, the local listener, and server access:
+
+```sh
+npx @traice/collector@latest status
+```
+
+To run the collector in the foreground instead:
 
 ```sh
 npx @traice/collector@latest collect --agent claude-code
@@ -37,10 +38,10 @@ Claude Code should export OTLP HTTP JSON to:
 http://127.0.0.1:4318
 ```
 
-Prompt logging is off by default. Only pass `--include-prompts` when your organization has explicitly approved prompt collection.
+Prompt logging is off by default. Only pass `--include-prompts` when your organization has explicitly approved prompt collection. See [Privacy](/docs/privacy).
 
 ## Run continuously
 
-Use the native service definitions in the [Codex guide](codex#run-continuously-at-startup), replacing `--agent codex`
+Use the native service definitions in the [Codex guide](/docs/codex#background-service), replacing `--agent codex`
 with `--agent claude-code`. Credentials remain in Keychain, Credential Manager, Secret Service, or the protected-file
 fallback; never place the API key in a plist, systemd unit, or scheduled-task command.

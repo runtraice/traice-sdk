@@ -1,12 +1,28 @@
 ---
-title: SDK Quickstart
-excerpt: Send product-runtime LLM cost events from TypeScript, Python, or any HTTP client.
-order: 2
+title: Product SDKs
+excerpt: Choose the TypeScript SDK, Python SDK, or HTTP API for product-runtime cost attribution.
+section: Product SDKs
+sectionOrder: 2
+order: 1
 ---
 
-# SDK Quickstart
+# Product SDKs
 
-Choose a language. TypeScript is selected by default, and every tab sends the same attribution fields to `/api/v1/events`.
+Use a product integration when your application calls an LLM on behalf of a customer or end user. Every integration sends the same attribution dimensions to `/api/v1/events`, but installation, usage extraction, cost calculation, and delivery differ by runtime.
+
+## Choose an integration
+
+| Integration                                    | Best for                                                                             | Usage extraction                     | Delivery                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------ | ------------------------------------------------------- |
+| [TypeScript and Node.js](/docs/typescript-sdk) | Node.js services, Next.js, Express, streams, adapters, and active request guardrails | OpenAI and Anthropic response shapes | Configurable adapters, including batched cloud delivery |
+| [Python](/docs/python-sdk)                     | Python services, scripts, OpenAI, Anthropic, LangChain, and LangGraph                | OpenAI and Anthropic response shapes | Bounded background queue with batched cloud delivery    |
+| [HTTP and cURL](/docs/http-api)                | Other runtimes or existing telemetry pipelines                                       | Supplied by your application         | Your application owns delivery and retries              |
+
+The TypeScript SDK requires Node.js 20.9 or newer. The Python SDK requires Python 3.9 or newer and has no required runtime dependencies.
+
+## Send a first event
+
+TypeScript is selected by default. Choose the tab for your runtime.
 
 :::language-snippet
 
@@ -38,10 +54,12 @@ await flush();
 ```
 
 ```python install="pip install traice-sdk openai"
+import os
+
 from openai import OpenAI
 from traice import configure, flush, track
 
-configure(api_key="lm_live_YOUR_API_KEY")
+configure(api_key=os.environ["TRAICE_API_KEY"])
 openai = OpenAI()
 
 @track(
@@ -61,7 +79,7 @@ flush(timeout=2.0)
 ```
 
 ```curl
-curl -X POST "https://runtraice.com/api/v1/events" \
+curl -X POST "https://www.runtraice.com/api/v1/events" \
   -H "authorization: Bearer $TRAICE_API_KEY" \
   -H "content-type: application/json" \
   -d '{
@@ -81,74 +99,33 @@ curl -X POST "https://runtraice.com/api/v1/events" \
 
 :::
 
-`tenantId` is the key field for customer margin. Pass the customer or account identifier you bill on every product event.
+## Shared attribution fields
 
-The TypeScript and Python SDKs read model and token usage from the provider response, calculate known-model cost locally, and batch events in the background. Call `flush()` before a short-lived script or serverless invocation exits. Long-running processes flush on an interval and at shutdown.
+| Dimension    | Purpose                         | Example             |
+| ------------ | ------------------------------- | ------------------- |
+| `tenantId`   | Paying customer or account      | `customer_42`       |
+| `userId`     | End user                        | `user_123`          |
+| `feature`    | Product feature or request path | `support-summary`   |
+| `workflowId` | Workflow definition             | `support`           |
+| `runId`      | One workflow or agent execution | `run_01J...`        |
+| `stepId`     | Step within a run               | `retrieve-context`  |
+| `agentId`    | Agent identity                  | `support-agent`     |
+| `toolName`   | Tool used by an agent           | `search-tickets`    |
+| `retryCount` | Retry attempt number            | `1`                 |
+| `outcome`    | Product or workflow result      | `resolved`          |
+| `metadata`   | Additional structured context   | `{ "plan": "pro" }` |
 
-## Python decorators and context managers
+Pass `tenantId` on every customer-facing event. Missing customer attribution prevents customer-level margin analysis.
 
-`@track()` works with sync and async functions. When a decorator does not fit, use `track()` as a sync or async context manager and attach the provider response with `span.record()`:
+## Cost and delivery behavior
 
-:::language-snippet
+The TypeScript and Python SDKs extract token usage from supported provider responses and calculate known-model cost locally. Unknown models keep their token counts and use zero cost until you configure local pricing.
 
-```typescript
-const completion = await meter(() => openai.responses.create({ model: "gpt-4o-mini", input: "Hello" }), {
-  feature: "answer",
-  tenantId: "customer_42",
-});
-```
+Both SDKs are designed to keep collection failures out of the provider-call result. Explicitly flush short-lived scripts, jobs, and serverless handlers before the process exits. The HTTP integration leaves extraction, pricing, batching, retries, and shutdown behavior to your application.
 
-```python
-with track(feature="answer", tenant_id="customer_42") as span:
-    completion = span.record(
-        openai.responses.create(model="gpt-4o-mini", input="Hello")
-    )
-```
+## Continue with one language
 
-```curl
-curl -X POST "https://runtraice.com/api/v1/events" \
-  -H "authorization: Bearer $TRAICE_API_KEY" \
-  -H "content-type: application/json" \
-  -d '{"provider":"openai","model":"gpt-4o-mini","feature":"answer","tenantId":"customer_42","promptTokens":10,"outputTokens":2,"costUsd":0.0000027}'
-```
-
-:::
-
-See [Python SDK](python-sdk) for batching, errors, custom pricing, all attribution dimensions, and LangChain or LangGraph callbacks.
-
-## Request enforcement
-
-Keep one `CloudAdapter` instance for the process and pass opted-in calls through
-`cloud.enforceRequest()`. The TypeScript SDK executes the wrapper-v1 actions:
-exact cache, deny, retry cap, evidence-gated swap or downgrade, and one-shot
-fallback.
-
-Call `await cloud.warmEnforcement()` during startup. Wrapped requests never wait
-for a rule API read. A cold or expired rules cache passes through and starts a
-background refresh.
-
-Active deny and retry-cap rules throw `TraiceEnforcementError` without calling
-the provider. The error has a stable code, action, rule identifier, and
-structured reason. Shadow rules, unsupported actions, malformed rules, rule API
-errors, and explicit bypasses call the provider normally. Streaming requests
-can still be denied or retry-capped, but are never cached.
-
-Use `cloud.getExactCacheStats()` for process-local hits, misses, bypasses, hit
-rate, and realized savings. trAIce receives action outcomes and verifiable cost
-bases, but not request or response payloads.
-
-Swap and downgrade rules need a current experiment for the exact feature,
-source model, and target model. The measured equivalence and quality drop must
-meet both rule thresholds. Fallback calls the configured target once after the original
-provider call fails. If fallback also fails, the original error is preserved.
-
-## Plan enforcement decisions
-
-The SDK exports a pure `decide(request, rules, context)` function for custom
-wrappers and deterministic rule tests. It evaluates state, priority,
-conditions, model allowlists, and supplied equivalence evidence without I/O,
-then returns `PASS_THROUGH` or a structured active/shadow decision.
-
-Planning does not call a model provider. `CloudAdapter.enforceRequest()` executes
-the wrapper-v1 actions. Semantic-cache and route execution remain disabled until
-their guarded executors are released.
+- [TypeScript and Node.js guide](/docs/typescript-sdk)
+- [Python guide](/docs/python-sdk)
+- [HTTP and cURL guide](/docs/http-api)
+- [API reference](/docs/api-reference)

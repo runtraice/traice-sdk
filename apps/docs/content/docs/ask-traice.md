@@ -1,7 +1,9 @@
 ---
 title: Ask trAIce
 excerpt: Query workspace spend, AI contribution margin, waste, budgets, recommendations, and alerts from the CLI or any MCP client.
-order: 7
+section: Tools
+sectionOrder: 4
+order: 1
 ---
 
 # Ask trAIce

@@ -1,6 +1,8 @@
 ---
 title: Install Guide
 excerpt: Sign in, create an API key, install the SDK or collector, and send your first trAIce event.
+section: Getting started
+sectionOrder: 1
 order: 2
 ---
 
@@ -26,7 +28,7 @@ Sign in at [runtraice.com](https://www.runtraice.com/login). A workspace is crea
 Open [API keys](https://www.runtraice.com/app/api-keys), create a key, and store it in your secret manager or `.env` file.
 
 ```sh
-TRAICE_API_KEY=trc_...
+TRAICE_API_KEY=your_workspace_key
 ```
 
 The full key is shown once.
@@ -62,10 +64,12 @@ await flush();
 ```
 
 ```python install="pip install traice-sdk openai"
+import os
+
 from openai import OpenAI
 from traice import configure, flush, track
 
-configure(api_key="lm_live_YOUR_API_KEY")
+configure(api_key=os.environ["TRAICE_API_KEY"])
 openai = OpenAI()
 
 @track(
@@ -173,7 +177,10 @@ See [Ask trAIce](/docs/ask-traice) for Cursor, VS Code, MCP, and direct API setu
 
 ## Next Steps
 
-- [SDK Quickstart](sdk-quickstart)
+- [Product SDKs](sdk-quickstart)
+- [TypeScript and Node.js SDK](typescript-sdk)
+- [Python SDK](python-sdk)
+- [HTTP and cURL](http-api)
 - [Collector Overview](collector-overview)
 - [Claude Code](claude-code)
 - [Codex](codex)

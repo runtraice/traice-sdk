@@ -1,7 +1,9 @@
 ---
 title: Codex
 excerpt: Configure Codex telemetry for trAIce Internal Spend.
-order: 5
+section: Internal spend
+sectionOrder: 3
+order: 3
 ---
 
 # Codex

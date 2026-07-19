@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowUpRight, BookOpen, Github, Home, Package, Wrench } from "lucide-react";
+import { ArrowUpRight, BookOpen, Braces, Github, Home } from "lucide-react";
 import { CommandMenu } from "./components/CommandMenu";
 import { allDocs } from "./lib/docs";
 import "./globals.css";
@@ -28,19 +28,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <nav aria-label="Primary navigation">
             <a href={HOME_URL}>
               <Home size={16} />
-              trAIce home
+              Home
             </a>
-            <Link href="/docs/install">
-              <Wrench size={16} />
-              Install
-            </Link>
             <Link href="/docs/sdk-quickstart">
-              <Package size={16} />
-              SDK
-            </Link>
-            <Link href="/docs/collector-overview">
               <BookOpen size={16} />
-              Collectors
+              Docs
+            </Link>
+            <Link href="/docs/typescript-sdk">TypeScript</Link>
+            <Link href="/docs/python-sdk">Python</Link>
+            <Link href="/docs/http-api">HTTP</Link>
+            <Link href="/docs/api-reference">
+              <Braces size={16} />
+              API
             </Link>
             <a href="https://github.com/runtraice/traice-sdk">
               <Github size={16} />
@@ -53,6 +52,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </nav>
         </header>
         {children}
+        <footer className="site-footer">
+          <div>
+            <span>trAIce SDK documentation</span>
+            <span>Open source packages for product attribution and internal AI spend.</span>
+          </div>
+          <nav aria-label="Footer navigation">
+            <Link href="/docs/introduction">Documentation</Link>
+            <Link href="/docs/contributing">Contributing</Link>
+            <a href="https://github.com/runtraice/traice-sdk">GitHub</a>
+          </nav>
+        </footer>
       </body>
     </html>
   );
