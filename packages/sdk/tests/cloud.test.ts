@@ -413,6 +413,7 @@ describe("CloudAdapter", () => {
         endpoint: `http://localhost:${port}/v1/events`,
       });
       const provider = jest.fn(async () => chatCompletionResponse());
+      await adapter.warmEnforcement();
 
       await adapter.enforceExactCache(request, provider);
       await adapter.enforceExactCache({ temperature: 0, messages: request.messages, model: request.model }, provider);
@@ -456,6 +457,7 @@ describe("CloudAdapter", () => {
         },
         output: [],
       }));
+      await adapter.warmEnforcement();
 
       await adapter.enforceExactCache(request, provider);
       await adapter.enforceExactCache(request, provider);
@@ -504,6 +506,7 @@ describe("CloudAdapter", () => {
         endpoint: `http://localhost:${port}/v1/events`,
       });
       const provider = jest.fn(async () => chatCompletionResponse());
+      await adapter.warmEnforcement();
 
       await adapter.enforceExactCache(request, provider);
       await adapter.enforceExactCache(request, provider, { bypass: true });
@@ -525,6 +528,7 @@ describe("CloudAdapter", () => {
       });
       const provider = jest.fn(async () => chatCompletionResponse());
       const now = jest.spyOn(Date, "now").mockReturnValue(1_000_000);
+      await adapter.warmEnforcement();
 
       await adapter.enforceExactCache(request, provider);
       now.mockReturnValue(1_001_001);

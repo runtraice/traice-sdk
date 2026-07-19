@@ -208,7 +208,9 @@ export class CloudAdapter implements CostAdapter {
    *
    * Streaming requests are always passed through because provider stream
    * objects are one-shot and cannot be replayed safely from an object cache.
-   * Rules, cache bookkeeping, and decision telemetry fail open.
+   * Rules, cache bookkeeping, and decision telemetry fail open. Call
+   * warmEnforcement() during startup. A cold or expired rules cache never adds
+   * a network read to the request path.
    */
   async enforceExactCache<T>(
     request: ExactCacheRequest,
@@ -220,10 +222,11 @@ export class CloudAdapter implements CostAdapter {
       return providerCall();
     }
 
+    if (!this.rulesAreFresh()) {
+      this.refreshRulesInBackground();
+      return providerCall();
+    }
     try {
-      const rulesAvailable = await this.refreshRules();
-      if (!rulesAvailable) return providerCall();
-
       const rule = this.matchExactCacheRule(request, context);
       if (!rule) return providerCall();
       return this.executeExactCacheRule(request, providerCall, context, rule);
@@ -235,10 +238,12 @@ export class CloudAdapter implements CostAdapter {
   /**
    * Run a request through the currently supported in-path rule actions.
    *
-   * Active exact-cache rules may return a cached response. Active DENY and
-   * CAP_RETRIES rules throw a structured TraiceEnforcementError without
-   * calling the provider. Shadow, unsupported, unavailable, or malformed
-   * rules pass through to the provider unchanged.
+   * Active exact-cache rules may return a cached response. Active deny and
+   * retry-cap rules throw a structured TraiceEnforcementError. Active swap and
+   * downgrade rules rewrite the model only with passing experiment evidence.
+   * Active fallback rules make at most one configured fallback call after a
+   * provider error. Shadow, unsupported, unavailable, or malformed rules pass
+   * through unchanged.
    */
   async enforceRequest<T, R extends ExactCacheRequest>(
     request: R,
