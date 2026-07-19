@@ -119,8 +119,13 @@ See [Python SDK](python-sdk) for batching, errors, custom pricing, all attributi
 ## Request enforcement
 
 Keep one `CloudAdapter` instance for the process and pass opted-in calls through
-`cloud.enforceRequest()`. The TypeScript SDK currently executes active
-exact-cache, deny, and retry-cap rules.
+`cloud.enforceRequest()`. The TypeScript SDK executes the wrapper-v1 actions:
+exact cache, deny, retry cap, evidence-gated swap or downgrade, and one-shot
+fallback.
+
+Call `await cloud.warmEnforcement()` during startup. Wrapped requests never wait
+for a rule API read. A cold or expired rules cache passes through and starts a
+background refresh.
 
 Active deny and retry-cap rules throw `TraiceEnforcementError` without calling
 the provider. The error has a stable code, action, rule identifier, and
@@ -132,6 +137,11 @@ Use `cloud.getExactCacheStats()` for process-local hits, misses, bypasses, hit
 rate, and realized savings. trAIce receives action outcomes and verifiable cost
 bases, but not request or response payloads.
 
+Swap and downgrade rules need a current experiment for the exact feature,
+source model, and target model. The measured equivalence and quality drop must
+meet both rule thresholds. Fallback calls the configured target once after the original
+provider call fails. If fallback also fails, the original error is preserved.
+
 ## Plan enforcement decisions
 
 The SDK exports a pure `decide(request, rules, context)` function for custom
@@ -140,6 +150,5 @@ conditions, model allowlists, and supplied equivalence evidence without I/O,
 then returns `PASS_THROUGH` or a structured active/shadow decision.
 
 Planning does not call a model provider. `CloudAdapter.enforceRequest()` executes
-exact-cache, deny, and retry-cap decisions. Swap, downgrade, fallback,
-semantic-cache, and route execution remain disabled until their guarded
-executors are released.
+the wrapper-v1 actions. Semantic-cache and route execution remain disabled until
+their guarded executors are released.

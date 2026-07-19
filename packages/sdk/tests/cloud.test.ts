@@ -559,7 +559,11 @@ describe("CloudAdapter", () => {
       messages: [{ role: "user", content: "hello" }],
     };
 
-    function activeRule(action: "DENY" | "CAP_RETRIES", actionParams: Record<string, unknown> = {}) {
+    function activeRule(
+      action: "DENY" | "CAP_RETRIES" | "SWAP" | "DOWNGRADE" | "FALLBACK",
+      actionParams: Record<string, unknown> = {},
+      overrides: Record<string, unknown> = {},
+    ) {
       return {
         id: `rule-${action.toLowerCase()}`,
         name: action === "DENY" ? "Block support calls" : "Stop retry loops",
@@ -570,6 +574,7 @@ describe("CloudAdapter", () => {
         actionParams,
         requireEquivalencePct: null,
         modelAllowlist: [],
+        ...overrides,
       };
     }
 
@@ -580,6 +585,7 @@ describe("CloudAdapter", () => {
         endpoint: `http://localhost:${port}/v1/events`,
       });
       const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
 
       const blocked = adapter.enforceRequest(request, provider, { feature: "support" });
       await expect(blocked).rejects.toBeInstanceOf(TraiceEnforcementError);
@@ -610,6 +616,7 @@ describe("CloudAdapter", () => {
         endpoint: `http://localhost:${port}/v1/events`,
       });
       const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
 
       await expect(adapter.enforceRequest(request, provider)).resolves.toEqual({ ok: true });
       await adapter.flush();
@@ -625,6 +632,7 @@ describe("CloudAdapter", () => {
         endpoint: `http://localhost:${port}/v1/events`,
       });
       const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
 
       await expect(adapter.enforceRequest(request, provider, { retryCount: 2 })).resolves.toEqual({ ok: true });
       await expect(adapter.enforceRequest(request, provider, { retryCount: 3 })).rejects.toMatchObject({
@@ -647,6 +655,149 @@ describe("CloudAdapter", () => {
 
       await expect(adapter.enforceRequest(request, provider)).resolves.toEqual({ ok: true });
       expect(provider).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not wait for a network rule read on a cold request", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule("DENY")] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+
+      await expect(adapter.enforceRequest(request, provider)).resolves.toEqual({ ok: true });
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(await adapter.warmEnforcement()).toBe(true);
+      await expect(adapter.enforceRequest(request, provider)).rejects.toBeInstanceOf(TraiceEnforcementError);
+    });
+
+    it("rewrites the model only when current experiment evidence satisfies the rule", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "DOWNGRADE",
+            { targetModel: "gpt-4o-mini" },
+            { requireEquivalencePct: 90, modelAllowlist: ["gpt-4o-mini"] },
+          ),
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-1",
+            feature: "support",
+            sourceModel: "gpt-4o",
+            candidateModel: "gpt-4o-mini",
+            equivalencePct: 94,
+            sampleCount: 30,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async (effectiveRequest: typeof request) => ({
+        object: "chat.completion",
+        model: effectiveRequest.model,
+        usage: { prompt_tokens: 400, completion_tokens: 100 },
+      }));
+      await adapter.warmEnforcement();
+
+      const sourceRequest = { ...request, model: "gpt-4o" };
+      await adapter.enforceRequest(sourceRequest, provider, { feature: "support", provider: "openai" });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o-mini" }));
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          action: "DOWNGRADE",
+          requestedModel: "gpt-4o",
+          servedModel: "gpt-4o-mini",
+          experimentId: "experiment-1",
+        }),
+      );
+    });
+
+    it("passes through model actions when evidence is absent or below the threshold", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("SWAP", { targetModel: "gpt-4o-mini" }, { requireEquivalencePct: 95 })],
+        evidence: [
+          {
+            experimentId: "experiment-1",
+            feature: "support",
+            sourceModel: "gpt-4o",
+            candidateModel: "gpt-4o-mini",
+            equivalencePct: 94,
+            sampleCount: 30,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
+      const sourceRequest = { ...request, model: "gpt-4o" };
+
+      await adapter.enforceRequest(sourceRequest, provider, { feature: "support" });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledWith(sourceRequest);
+      expect(receivedBodies.some((body) => body.action === "SWAP")).toBe(false);
+    });
+
+    it("uses one fallback call after a primary error and records success", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini" }, { modelAllowlist: ["gpt-4o-mini"] })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o") throw new Error("primary failed");
+        return { ok: true, model: effectiveRequest.model };
+      });
+      await adapter.warmEnforcement();
+      const sourceRequest = { ...request, model: "gpt-4o" };
+
+      await expect(adapter.enforceRequest(sourceRequest, provider, { feature: "support" })).resolves.toMatchObject({
+        ok: true,
+        model: "gpt-4o-mini",
+      });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(2);
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({ action: "FALLBACK", fallbackOutcome: "success" }),
+      );
+    });
+
+    it("preserves the primary error when the single fallback also fails", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini" })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest
+        .fn<Promise<never>, [typeof request]>()
+        .mockRejectedValueOnce(new Error("primary failed"))
+        .mockRejectedValueOnce(new Error("fallback failed"));
+      await adapter.warmEnforcement();
+
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, { feature: "support" }),
+      ).rejects.toThrow("primary failed");
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(2);
+      expect(receivedBodies).toContainEqual(expect.objectContaining({ action: "FALLBACK", fallbackOutcome: "failed" }));
     });
   });
 });

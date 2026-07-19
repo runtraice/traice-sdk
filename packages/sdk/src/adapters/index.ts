@@ -12,9 +12,11 @@ export { TraiceEnforcementError } from "./cloud";
 export type {
   BlockingRuleAction,
   CloudAdapterConfig,
+  EnforcementEvidence,
   ExactCacheContext,
   ExactCacheRequest,
   ExactCacheStats,
+  ModelRuleAction,
   RequestEnforcementContext,
 } from "./cloud";
 

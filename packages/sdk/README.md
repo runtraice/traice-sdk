@@ -71,14 +71,15 @@ npx @traice/sdk anomalies --threshold 2
 
 ## Active request enforcement
 
-`CloudAdapter.enforceRequest()` executes active exact-cache, deny, and retry-cap
-rules. Keep one adapter per process and pass the effective request to the
-provider callback:
+`CloudAdapter.enforceRequest()` executes the wrapper-v1 actions: exact cache,
+deny, retry cap, evidence-gated swap or downgrade, and one-shot fallback. Keep
+one adapter per process and pass the effective request to the provider callback:
 
 ```ts
 import { CloudAdapter, TraiceEnforcementError } from "@traice/sdk";
 
 const cloud = new CloudAdapter({ apiKey: process.env.TRAICE_API_KEY! });
+await cloud.warmEnforcement();
 const request = { model: "gpt-4o-mini", messages, temperature: 0 };
 
 try {
@@ -104,6 +105,32 @@ Shadow rules, unsupported actions, malformed rules, and rule API failures pass
 through unchanged. Decision telemetry is best-effort and never includes the
 request or response payload.
 
+Swap and downgrade rules execute only when the cached rules response includes a
+current experiment for the exact feature, source model, and target model. The
+experiment must meet the required equivalence and maximum quality-drop limits. The SDK passes
+the rewritten request to the callback and reports the experiment and verifiable
+token cost basis in the Decision Record.
+
+A fallback rule calls the original model first. After a provider error it makes
+one call with the configured fallback model. If that call also fails, the SDK
+rethrows the original provider error and does not add another retry.
+
+Call `warmEnforcement()` during application startup. Request-path evaluation
+reads only the in-memory rules and evidence cache. A cold or expired cache
+passes the request through immediately and refreshes in the background.
+
+Run the enforcement smoke harness against the workspace saved by the collector.
+It uses a simulated provider, so it does not incur model spend:
+
+```sh
+npm run test:enforcement --workspace @traice/sdk
+```
+
+Set `TRAICE_API_KEY` and optionally `TRAICE_API_URL` to use a different
+workspace. Set `OPENAI_API_KEY` to make a small real call. Use `TRAICE_MODEL`,
+`TRAICE_FEATURE`, and `TRAICE_RETRY_COUNT` to match a rule. Set
+`TRAICE_FAIL_MODEL` to simulate a primary error and test fallback.
+
 For exact caching, the request hash includes the complete normalized request
 and is scoped to the workspace API key and rule. Use `{ bypass: true }` for all
 request enforcement, or the `x-traice-cache-bypass: 1` header for a cache-only
@@ -120,8 +147,8 @@ reason. The SDK exports its request, rule, context, and decision types for
 custom wrappers and deterministic tests.
 
 This API plans a decision; it does not itself call a model provider.
-`CloudAdapter.enforceRequest()` executes exact-cache, deny, and retry-cap
-decisions. Swap, downgrade, fallback, semantic-cache, and route execution remain
+`CloudAdapter.enforceRequest()` executes exact-cache, deny, retry-cap, swap,
+downgrade, and fallback decisions. Semantic-cache and route execution remain
 disabled until their safety contracts are released.
 
 ## Privacy

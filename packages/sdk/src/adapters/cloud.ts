@@ -34,6 +34,16 @@ export interface ExactCacheContext {
 export type RequestEnforcementContext = ExactCacheContext;
 
 export type BlockingRuleAction = "DENY" | "CAP_RETRIES";
+export type ModelRuleAction = "SWAP" | "DOWNGRADE" | "FALLBACK";
+
+export interface EnforcementEvidence {
+  experimentId: string;
+  feature: string;
+  sourceModel: string;
+  candidateModel: string;
+  equivalencePct: number;
+  sampleCount: number;
+}
 
 /** A structured refusal produced by an active deny or retry-cap rule. */
 export class TraiceEnforcementError extends Error {
@@ -148,8 +158,10 @@ export class CloudAdapter implements CostAdapter {
   private exactCacheMaxEntries: number;
   private enforcementTimeoutMs: number;
   private rules: EnforcementRule[] = [];
+  private evidence: EnforcementEvidence[] = [];
   private rulesFetchedAt = 0;
   private rulesTtlMs = 60_000;
+  private rulesRefresh: Promise<boolean> | null = null;
   private pendingDecisions = new Set<Promise<void>>();
   private exactCacheHits = 0;
   private exactCacheMisses = 0;
@@ -184,6 +196,11 @@ export class CloudAdapter implements CostAdapter {
       await this.flushBuffer();
     }
     await Promise.allSettled(Array.from(this.pendingDecisions));
+  }
+
+  /** Fetch and cache the current rules and experiment evidence before serving traffic. */
+  async warmEnforcement(): Promise<boolean> {
+    return this.refreshRules();
   }
 
   /**
@@ -229,39 +246,67 @@ export class CloudAdapter implements CostAdapter {
     context: RequestEnforcementContext = {},
   ): Promise<T> {
     if (context.bypass) return providerCall(request);
+    if (!this.rulesAreFresh()) {
+      this.refreshRulesInBackground();
+      return providerCall(request);
+    }
 
+    let decision: ReturnType<typeof decide>;
+    let rule: EnforcementRule | undefined;
     try {
-      const rulesAvailable = await this.refreshRules();
-      if (!rulesAvailable) return providerCall(request);
-
-      const decision = decide(
+      decision = decide(
         { model: request.model, feature: context.feature, retryCount: context.retryCount },
         this.rules,
+        this.decisionContext(request, context),
       );
       if (!decision.matched || decision.mode !== "active") return providerCall(request);
 
-      const rule = this.rules.find((candidate) => candidate.id === decision.ruleId);
+      rule = this.rules.find((candidate) => candidate.id === decision.ruleId);
       if (!rule) return providerCall(request);
-
-      if (decision.action === "CACHE_EXACT") {
-        return this.executeExactCacheRule(request, () => providerCall(request), context, rule);
-      }
-
-      if (decision.action === "DENY" || decision.action === "CAP_RETRIES") {
-        this.trackDecision(
-          this.postBlockingDecision(rule, request.model, decision.action, context.retryCount, decision.reason),
-        );
-        throw new TraiceEnforcementError(
-          decision.action,
-          decision.ruleId,
-          decision.ruleName,
-          request.model,
-          decision.reason,
-        );
-      }
-    } catch (error) {
-      if (error instanceof TraiceEnforcementError) throw error;
+    } catch {
       return providerCall(request);
+    }
+
+    if (decision.action === "CACHE_EXACT") {
+      return this.executeExactCacheRule(request, () => providerCall(request), context, rule);
+    }
+
+    if (decision.action === "DENY" || decision.action === "CAP_RETRIES") {
+      this.trackDecision(
+        this.postBlockingDecision(rule, request.model, decision.action, context.retryCount, decision.reason),
+      );
+      throw new TraiceEnforcementError(
+        decision.action,
+        decision.ruleId,
+        decision.ruleName,
+        request.model,
+        decision.reason,
+      );
+    }
+
+    if (decision.action === "SWAP" || decision.action === "DOWNGRADE") {
+      if (!decision.servedModel || !decision.evidence?.satisfied || !decision.evidence.experimentId) {
+        return providerCall(request);
+      }
+      const effectiveRequest = { ...request, model: decision.servedModel } as R;
+      const response = await providerCall(effectiveRequest);
+      const costBasis = responseCostBasis(response, context.provider);
+      this.trackDecision(
+        this.postModelDecision(
+          rule,
+          decision.action,
+          request.model,
+          decision.servedModel,
+          context.feature,
+          decision.evidence.experimentId,
+          costBasis,
+        ),
+      );
+      return response;
+    }
+
+    if (decision.action === "FALLBACK" && decision.servedModel) {
+      return this.executeFallbackRule(request, providerCall, context, rule, decision.servedModel, decision.reason);
     }
 
     return providerCall(request);
@@ -282,7 +327,18 @@ export class CloudAdapter implements CostAdapter {
 
   private async refreshRules(): Promise<boolean> {
     if (this.rulesFetchedAt > 0 && Date.now() - this.rulesFetchedAt < this.rulesTtlMs) return true;
+    if (this.rulesRefresh) return this.rulesRefresh;
 
+    const refresh = this.fetchRules();
+    this.rulesRefresh = refresh;
+    try {
+      return await refresh;
+    } finally {
+      if (this.rulesRefresh === refresh) this.rulesRefresh = null;
+    }
+  }
+
+  private async fetchRules(): Promise<boolean> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
     try {
@@ -291,8 +347,9 @@ export class CloudAdapter implements CostAdapter {
         signal: controller.signal,
       });
       if (!response.ok) return false;
-      const json = (await response.json()) as { rules?: unknown; ttlSeconds?: unknown };
+      const json = (await response.json()) as { rules?: unknown; evidence?: unknown; ttlSeconds?: unknown };
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
+      this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
       const ttlSeconds = Number(json.ttlSeconds ?? 60);
       this.rulesTtlMs = Number.isFinite(ttlSeconds) ? Math.max(1000, ttlSeconds * 1000) : 60_000;
       this.rulesFetchedAt = Date.now();
@@ -304,6 +361,14 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
+  private rulesAreFresh(): boolean {
+    return this.rulesFetchedAt > 0 && Date.now() - this.rulesFetchedAt < this.rulesTtlMs;
+  }
+
+  private refreshRulesInBackground(): void {
+    void this.refreshRules().catch(() => false);
+  }
+
   private matchExactCacheRule(request: ExactCacheRequest, context: ExactCacheContext): EnforcementRule | undefined {
     const decision = decide(
       { model: request.model, feature: context.feature, retryCount: context.retryCount },
@@ -311,6 +376,20 @@ export class CloudAdapter implements CostAdapter {
     );
     if (!decision.matched || decision.mode !== "active" || decision.action !== "CACHE_EXACT") return undefined;
     return this.rules.find((rule) => rule.id === decision.ruleId);
+  }
+
+  private decisionContext(request: ExactCacheRequest, context: RequestEnforcementContext) {
+    const matchingEvidence = (candidateModel: string): EnforcementEvidence | undefined =>
+      this.evidence.find(
+        (candidate) =>
+          candidate.feature === context.feature &&
+          candidate.sourceModel === request.model &&
+          candidate.candidateModel === candidateModel,
+      );
+    return {
+      equivalencePctFor: (candidateModel: string) => matchingEvidence(candidateModel)?.equivalencePct ?? null,
+      experimentIdFor: (candidateModel: string) => matchingEvidence(candidateModel)?.experimentId ?? null,
+    };
   }
 
   private async executeExactCacheRule<T>(
@@ -349,6 +428,33 @@ export class CloudAdapter implements CostAdapter {
       // A cache write/costing failure does not affect the provider response.
     }
     return response;
+  }
+
+  private async executeFallbackRule<T, R extends ExactCacheRequest>(
+    request: R,
+    providerCall: (effectiveRequest: R) => Promise<T>,
+    context: RequestEnforcementContext,
+    rule: EnforcementRule,
+    fallbackModel: string,
+    reason: Record<string, unknown>,
+  ): Promise<T> {
+    try {
+      return await providerCall(request);
+    } catch (primaryError) {
+      const fallbackRequest = { ...request, model: fallbackModel } as R;
+      try {
+        const response = await providerCall(fallbackRequest);
+        this.trackDecision(
+          this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "success", reason),
+        );
+        return response;
+      } catch {
+        this.trackDecision(
+          this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "failed", reason),
+        );
+        throw primaryError;
+      }
+    }
   }
 
   private getExactCache(key: string): ExactCacheEntry | undefined {
@@ -411,6 +517,49 @@ export class CloudAdapter implements CostAdapter {
       action,
       requestedModel,
       retryCount: retryCount ?? 0,
+      reason,
+    });
+  }
+
+  private postModelDecision(
+    rule: EnforcementRule,
+    action: Exclude<ModelRuleAction, "FALLBACK">,
+    requestedModel: string,
+    servedModel: string,
+    feature: string | undefined,
+    experimentId: string,
+    costBasis: ExactCacheCostBasis,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: rule.id,
+      action,
+      requestedModel,
+      servedModel,
+      feature,
+      experimentId,
+      provider: costBasis.provider,
+      inputTokens: costBasis.inputTokens,
+      outputTokens: costBasis.outputTokens,
+      cacheReadTokens: costBasis.cacheReadTokens,
+      cacheWriteTokens: costBasis.cacheWriteTokens,
+    });
+  }
+
+  private postFallbackDecision(
+    rule: EnforcementRule,
+    requestedModel: string,
+    servedModel: string,
+    feature: string | undefined,
+    fallbackOutcome: "success" | "failed",
+    reason: Record<string, unknown>,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: rule.id,
+      action: "FALLBACK",
+      requestedModel,
+      servedModel,
+      feature,
+      fallbackOutcome,
       reason,
     });
   }
@@ -496,7 +645,26 @@ function isCacheRule(value: unknown): value is EnforcementRule {
     rule.actionParams != null &&
     typeof rule.actionParams === "object" &&
     (rule.requireEquivalencePct === null || typeof rule.requireEquivalencePct === "number") &&
+    (rule.maxQualityDropPct == null || typeof rule.maxQualityDropPct === "number") &&
     Array.isArray(rule.modelAllowlist)
+  );
+}
+
+function isEnforcementEvidence(value: unknown): value is EnforcementEvidence {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const evidence = value as Partial<EnforcementEvidence>;
+  return (
+    typeof evidence.experimentId === "string" &&
+    typeof evidence.feature === "string" &&
+    typeof evidence.sourceModel === "string" &&
+    typeof evidence.candidateModel === "string" &&
+    typeof evidence.equivalencePct === "number" &&
+    Number.isFinite(evidence.equivalencePct) &&
+    evidence.equivalencePct >= 0 &&
+    evidence.equivalencePct <= 100 &&
+    typeof evidence.sampleCount === "number" &&
+    Number.isInteger(evidence.sampleCount) &&
+    evidence.sampleCount >= 0
   );
 }
 

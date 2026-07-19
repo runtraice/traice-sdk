@@ -83,12 +83,53 @@ describe("decide", () => {
 
     expect(decide({ model: "gpt-4o" }, [guarded])).toMatchObject({ matched: false });
     expect(decide({ model: "gpt-4o" }, [guarded], { equivalencePctFor: () => 89.9 })).toMatchObject({ matched: false });
-    expect(decide({ model: "gpt-4o" }, [guarded], { equivalencePctFor: () => 94 })).toMatchObject({
+    expect(
+      decide({ model: "gpt-4o" }, [guarded], { equivalencePctFor: () => 94, experimentIdFor: () => "experiment-1" }),
+    ).toMatchObject({
       matched: true,
       action: "SWAP",
       servedModel: "gpt-4o-mini",
-      evidence: { requiredPct: 90, actualPct: 94, satisfied: true },
+      evidence: { requiredPct: 90, actualPct: 94, satisfied: true, experimentId: "experiment-1" },
     });
+  });
+
+  it("honors the maximum allowed quality drop for model actions", () => {
+    const guarded = rule({
+      action: "DOWNGRADE",
+      actionParams: { targetModel: "gpt-4o-mini" },
+      requireEquivalencePct: 90,
+      maxQualityDropPct: 5,
+    });
+
+    expect(decide({ model: "gpt-4o" }, [guarded], { equivalencePctFor: () => 94 })).toMatchObject({
+      matched: false,
+    });
+    expect(decide({ model: "gpt-4o" }, [guarded], { equivalencePctFor: () => 96 })).toMatchObject({
+      matched: true,
+      evidence: { qualityDropPct: 4, maxQualityDropPct: 5 },
+    });
+  });
+
+  it("requires a target model and honors the allowlist for fallback", () => {
+    expect(decide({ model: "gpt-4o" }, [rule({ action: "FALLBACK" })])).toMatchObject({ matched: false });
+    expect(
+      decide({ model: "gpt-4o" }, [
+        rule({
+          action: "FALLBACK",
+          actionParams: { targetModel: "gpt-4o-mini" },
+          modelAllowlist: ["claude-3-5-haiku"],
+        }),
+      ]),
+    ).toMatchObject({ matched: false });
+    expect(
+      decide({ model: "gpt-4o" }, [
+        rule({
+          action: "FALLBACK",
+          actionParams: { targetModel: "gpt-4o-mini" },
+          modelAllowlist: ["gpt-4o-mini"],
+        }),
+      ]),
+    ).toMatchObject({ matched: true, action: "FALLBACK", servedModel: "gpt-4o-mini" });
   });
 
   it("selects a retry cap only after the configured retry allowance is exceeded", () => {

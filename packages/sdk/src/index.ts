@@ -55,9 +55,11 @@ export { TraiceEnforcementError } from "./adapters";
 export type {
   BlockingRuleAction,
   CloudAdapterConfig,
+  EnforcementEvidence,
   ExactCacheContext,
   ExactCacheRequest,
   ExactCacheStats,
+  ModelRuleAction,
   RequestEnforcementContext,
 } from "./adapters";
 
