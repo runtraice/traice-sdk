@@ -26,11 +26,13 @@ describe("CloudAdapter", () => {
   let receivedBodies: any[];
   let receivedHeaders: any;
   let rulesResponse: Record<string, unknown>;
+  let writeResponseStatus: number;
 
   beforeEach((done) => {
     receivedBodies = [];
     receivedHeaders = {};
     rulesResponse = { ttlSeconds: 60, rules: [] };
+    writeResponseStatus = 200;
     server = http.createServer((req, res) => {
       receivedHeaders = req.headers;
       if (req.method === "GET" && req.url === "/v1/rules") {
@@ -42,7 +44,7 @@ describe("CloudAdapter", () => {
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
         receivedBodies.push(JSON.parse(body));
-        res.writeHead(200, { "Content-Type": "application/json" });
+        res.writeHead(writeResponseStatus, { "Content-Type": "application/json" });
         res.end('{"received":1}');
       });
     });
@@ -627,6 +629,90 @@ describe("CloudAdapter", () => {
 
       expect(provider).toHaveBeenCalledWith(request);
       expect(receivedBodies.some((body) => body.ruleId)).toBe(false);
+    });
+
+    it("matches cached workspace, feature, and user budget snapshots", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        budgets: [
+          { scope: "WORKSPACE", scopeValue: null, pct: 70 },
+          { scope: "FEATURE", scopeValue: "support", pct: 85 },
+          { scope: "USER", scopeValue: "user-1", pct: 90 },
+        ],
+        rules: [activeRule("DENY", {}, { condition: { type: "budget", scope: "feature", thresholdPct: 80 } })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
+
+      await expect(adapter.enforceRequest(request, provider, { feature: "sales" })).resolves.toEqual({ ok: true });
+      await expect(
+        adapter.enforceRequest(request, provider, { feature: "support", userId: "user-1" }),
+      ).rejects.toMatchObject({
+        action: "DENY",
+      });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+
+    it("honors an explicit budget snapshot override", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        budgets: [{ scope: "WORKSPACE", scopeValue: null, pct: 20 }],
+        rules: [activeRule("DENY", {}, { condition: { type: "budget", scope: "workspace", thresholdPct: 80 } })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
+
+      await expect(adapter.enforceRequest(request, provider, { budgetPct: { workspace: 0.9 } })).rejects.toMatchObject({
+        action: "DENY",
+      });
+      await adapter.flush();
+      expect(provider).not.toHaveBeenCalled();
+    });
+
+    it("passes through when workspace enforcement is disabled", async () => {
+      rulesResponse = { enabled: false, ttlSeconds: 60, rules: [activeRule("DENY")] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
+
+      await expect(adapter.enforceRequest(request, provider)).resolves.toEqual({ ok: true });
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports rejected Decision Records while preserving enforcement behavior", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule("DENY")] };
+      writeResponseStatus = 409;
+      const onEnforcementError = jest.fn();
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+        onEnforcementError,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+      await adapter.warmEnforcement();
+
+      await expect(adapter.enforceRequest(request, provider)).rejects.toBeInstanceOf(TraiceEnforcementError);
+      await adapter.flush();
+
+      expect(provider).not.toHaveBeenCalled();
+      expect(onEnforcementError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "Decision upload failed with HTTP 409" }),
+        { operation: "decision_post", status: 409 },
+      );
+      expect(adapter.getEnforcementStats()).toMatchObject({ decisionPosts: 1, decisionPostFailures: 1 });
     });
 
     it("allows configured retries and blocks only the first retry over the cap", async () => {

@@ -12,6 +12,8 @@ export interface CloudAdapterConfig {
   exactCacheMaxEntries?: number;
   /** Timeout for rules and decision API calls. Default: 2000. */
   enforcementTimeoutMs?: number;
+  /** Reports enforcement control-plane failures without changing fail-open behavior. */
+  onEnforcementError?: (error: Error, context: EnforcementErrorContext) => void;
 }
 
 export interface ExactCacheRequest {
@@ -22,7 +24,10 @@ export interface ExactCacheRequest {
 
 export interface ExactCacheContext {
   feature?: string;
+  userId?: string;
   retryCount?: number;
+  /** Optional current-period budget utilization overrides, expressed as fractions from 0 to 1. */
+  budgetPct?: Partial<Record<"workspace" | "feature" | "user", number>>;
   /** Provider override for custom response shapes and authoritative cost calculation. */
   provider?: CostEvent["provider"];
   /** Explicit per-call bypass. */
@@ -32,6 +37,19 @@ export interface ExactCacheContext {
 }
 
 export type RequestEnforcementContext = ExactCacheContext;
+
+export type EnforcementErrorContext = {
+  operation: "rules_refresh" | "decision_post";
+  status?: number;
+};
+
+export type EnforcementStats = {
+  ruleRefreshes: number;
+  ruleRefreshFailures: number;
+  decisionPosts: number;
+  decisionPostFailures: number;
+  failOpenRequests: number;
+};
 
 export type BlockingRuleAction = "DENY" | "CAP_RETRIES";
 export type ModelRuleAction = "SWAP" | "DOWNGRADE" | "FALLBACK";
@@ -98,6 +116,12 @@ type ExactCacheCostBasis = {
   savingsUsdMicros: number;
 };
 
+type EnforcementBudgetSnapshot = {
+  scope: "WORKSPACE" | "FEATURE" | "USER";
+  scopeValue: string | null;
+  pct: number;
+};
+
 export interface CloudCostEvent {
   ts: string;
   provider: CostEvent["provider"];
@@ -157,8 +181,11 @@ export class CloudAdapter implements CostAdapter {
   private exactCache = new Map<string, ExactCacheEntry>();
   private exactCacheMaxEntries: number;
   private enforcementTimeoutMs: number;
+  private onEnforcementError?: CloudAdapterConfig["onEnforcementError"];
   private rules: EnforcementRule[] = [];
   private evidence: EnforcementEvidence[] = [];
+  private budgets: EnforcementBudgetSnapshot[] = [];
+  private enforcementEnabled = true;
   private rulesFetchedAt = 0;
   private rulesTtlMs = 60_000;
   private rulesRefresh: Promise<boolean> | null = null;
@@ -167,6 +194,13 @@ export class CloudAdapter implements CostAdapter {
   private exactCacheMisses = 0;
   private exactCacheBypasses = 0;
   private exactCacheSavingsUsdMicros = 0;
+  private enforcementStats: EnforcementStats = {
+    ruleRefreshes: 0,
+    ruleRefreshFailures: 0,
+    decisionPosts: 0,
+    decisionPostFailures: 0,
+    failOpenRequests: 0,
+  };
 
   constructor(config: CloudAdapterConfig) {
     this.apiKey = config.apiKey;
@@ -174,6 +208,7 @@ export class CloudAdapter implements CostAdapter {
     this.batchSize = config.batchSize ?? 50;
     this.exactCacheMaxEntries = Math.max(1, Math.floor(config.exactCacheMaxEntries ?? 1000));
     this.enforcementTimeoutMs = Math.max(100, Math.floor(config.enforcementTimeoutMs ?? 2000));
+    this.onEnforcementError = config.onEnforcementError;
     const flushMs = config.flushIntervalMs ?? 5000;
 
     this.timer = setInterval(() => this.flushBuffer(), flushMs);
@@ -217,12 +252,13 @@ export class CloudAdapter implements CostAdapter {
     providerCall: () => Promise<T>,
     context: ExactCacheContext = {},
   ): Promise<T> {
-    if (request.stream === true || cacheBypassed(context)) {
+    if (!this.enforcementEnabled || request.stream === true || cacheBypassed(context)) {
       this.exactCacheBypasses++;
       return providerCall();
     }
 
     if (!this.rulesAreFresh()) {
+      this.enforcementStats.failOpenRequests++;
       this.refreshRulesInBackground();
       return providerCall();
     }
@@ -231,6 +267,7 @@ export class CloudAdapter implements CostAdapter {
       if (!rule) return providerCall();
       return this.executeExactCacheRule(request, providerCall, context, rule);
     } catch {
+      this.enforcementStats.failOpenRequests++;
       return providerCall();
     }
   }
@@ -250,8 +287,9 @@ export class CloudAdapter implements CostAdapter {
     providerCall: (effectiveRequest: R) => Promise<T>,
     context: RequestEnforcementContext = {},
   ): Promise<T> {
-    if (context.bypass) return providerCall(request);
+    if (context.bypass || !this.enforcementEnabled) return providerCall(request);
     if (!this.rulesAreFresh()) {
+      this.enforcementStats.failOpenRequests++;
       this.refreshRulesInBackground();
       return providerCall(request);
     }
@@ -269,6 +307,7 @@ export class CloudAdapter implements CostAdapter {
       rule = this.rules.find((candidate) => candidate.id === decision.ruleId);
       if (!rule) return providerCall(request);
     } catch {
+      this.enforcementStats.failOpenRequests++;
       return providerCall(request);
     }
 
@@ -330,6 +369,11 @@ export class CloudAdapter implements CostAdapter {
     };
   }
 
+  /** Process-local enforcement control-plane health. */
+  getEnforcementStats(): EnforcementStats {
+    return { ...this.enforcementStats };
+  }
+
   private async refreshRules(): Promise<boolean> {
     if (this.rulesFetchedAt > 0 && Date.now() - this.rulesFetchedAt < this.rulesTtlMs) return true;
     if (this.rulesRefresh) return this.rulesRefresh;
@@ -344,6 +388,7 @@ export class CloudAdapter implements CostAdapter {
   }
 
   private async fetchRules(): Promise<boolean> {
+    this.enforcementStats.ruleRefreshes++;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
     try {
@@ -351,15 +396,30 @@ export class CloudAdapter implements CostAdapter {
         headers: { Authorization: `Bearer ${this.apiKey}`, "X-Source": "traice-sdk" },
         signal: controller.signal,
       });
-      if (!response.ok) return false;
-      const json = (await response.json()) as { rules?: unknown; evidence?: unknown; ttlSeconds?: unknown };
+      if (!response.ok) {
+        this.reportEnforcementFailure(new Error(`Rule refresh failed with HTTP ${response.status}`), {
+          operation: "rules_refresh",
+          status: response.status,
+        });
+        return false;
+      }
+      const json = (await response.json()) as {
+        enabled?: unknown;
+        rules?: unknown;
+        evidence?: unknown;
+        budgets?: unknown;
+        ttlSeconds?: unknown;
+      };
+      this.enforcementEnabled = json.enabled !== false;
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
       this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
+      this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
       const ttlSeconds = Number(json.ttlSeconds ?? 60);
       this.rulesTtlMs = Number.isFinite(ttlSeconds) ? Math.max(1000, ttlSeconds * 1000) : 60_000;
       this.rulesFetchedAt = Date.now();
       return true;
-    } catch {
+    } catch (error) {
+      this.reportEnforcementFailure(asError(error), { operation: "rules_refresh" });
       return false;
     } finally {
       clearTimeout(timeout);
@@ -378,6 +438,7 @@ export class CloudAdapter implements CostAdapter {
     const decision = decide(
       { model: request.model, feature: context.feature, retryCount: context.retryCount },
       this.rules,
+      this.decisionContext(request, context),
     );
     if (!decision.matched || decision.mode !== "active" || decision.action !== "CACHE_EXACT") return undefined;
     return this.rules.find((rule) => rule.id === decision.ruleId);
@@ -392,9 +453,25 @@ export class CloudAdapter implements CostAdapter {
           candidate.candidateModel === candidateModel,
       );
     return {
+      budgetPct: mergeBudgetPct(this.budgetPctFor(context), context.budgetPct),
       equivalencePctFor: (candidateModel: string) => matchingEvidence(candidateModel)?.equivalencePct ?? null,
       experimentIdFor: (candidateModel: string) => matchingEvidence(candidateModel)?.experimentId ?? null,
     };
+  }
+
+  private budgetPctFor(context: RequestEnforcementContext): Partial<Record<"workspace" | "feature" | "user", number>> {
+    const budgetPct: Partial<Record<"workspace" | "feature" | "user", number>> = {};
+    for (const budget of this.budgets) {
+      const fraction = Math.max(0, budget.pct / 100);
+      if (budget.scope === "WORKSPACE") {
+        budgetPct.workspace = Math.max(budgetPct.workspace ?? 0, fraction);
+      } else if (budget.scope === "FEATURE" && context.feature && budget.scopeValue === context.feature) {
+        budgetPct.feature = Math.max(budgetPct.feature ?? 0, fraction);
+      } else if (budget.scope === "USER" && context.userId && budget.scopeValue === context.userId) {
+        budgetPct.user = Math.max(budgetPct.user ?? 0, fraction);
+      }
+    }
+    return budgetPct;
   }
 
   private async executeExactCacheRule<T>(
@@ -575,10 +652,11 @@ export class CloudAdapter implements CostAdapter {
   }
 
   private async postJson(url: string, body: unknown): Promise<void> {
+    this.enforcementStats.decisionPosts++;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
     try {
-      await fetch(url, {
+      const response = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -588,10 +666,30 @@ export class CloudAdapter implements CostAdapter {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-    } catch {
-      // Decision telemetry is best-effort and never affects the cached result.
+      if (!response.ok) {
+        throw Object.assign(new Error(`Decision upload failed with HTTP ${response.status}`), {
+          status: response.status,
+        });
+      }
+    } catch (error) {
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "decision_post",
+        ...(status == null ? {} : { status }),
+      });
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  private reportEnforcementFailure(error: Error, context: EnforcementErrorContext): void {
+    if (context.operation === "rules_refresh") this.enforcementStats.ruleRefreshFailures++;
+    else this.enforcementStats.decisionPostFailures++;
+    try {
+      this.onEnforcementError?.(error, context);
+    } catch {
+      // An observer must never affect request-path behavior.
     }
   }
 
@@ -671,6 +769,29 @@ function isEnforcementEvidence(value: unknown): value is EnforcementEvidence {
     Number.isInteger(evidence.sampleCount) &&
     evidence.sampleCount >= 0
   );
+}
+
+function isEnforcementBudgetSnapshot(value: unknown): value is EnforcementBudgetSnapshot {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const budget = value as Partial<EnforcementBudgetSnapshot>;
+  return (
+    (budget.scope === "WORKSPACE" || budget.scope === "FEATURE" || budget.scope === "USER") &&
+    (budget.scopeValue === null || typeof budget.scopeValue === "string") &&
+    typeof budget.pct === "number" &&
+    Number.isFinite(budget.pct) &&
+    budget.pct >= 0
+  );
+}
+
+function mergeBudgetPct(
+  cached: Partial<Record<"workspace" | "feature" | "user", number>>,
+  override?: Partial<Record<"workspace" | "feature" | "user", number>>,
+): Partial<Record<"workspace" | "feature" | "user", number>> {
+  return { ...cached, ...override };
+}
+
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }
 
 function boundedTtlSeconds(value: unknown): number {
