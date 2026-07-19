@@ -1,5 +1,6 @@
 import { CostAdapter, CostEvent, EventMetadata } from "../types";
 import { calculateCost } from "../pricing";
+import { decide, type EnforcementRule } from "../enforcement";
 import * as crypto from "crypto";
 
 export interface CloudAdapterConfig {
@@ -38,18 +39,6 @@ export interface ExactCacheStats {
   hitRate: number;
   savingsUsd: number;
 }
-
-type CacheRule = {
-  id: string;
-  name: string;
-  state: "DRAFT" | "SHADOW" | "ACTIVE" | "DISABLED";
-  priority: number;
-  condition: Record<string, unknown>;
-  action: string;
-  actionParams: Record<string, unknown>;
-  requireEquivalencePct: number | null;
-  modelAllowlist: string[];
-};
 
 type ExactCacheEntry = {
   response: unknown;
@@ -126,7 +115,7 @@ export class CloudAdapter implements CostAdapter {
   private exactCache = new Map<string, ExactCacheEntry>();
   private exactCacheMaxEntries: number;
   private enforcementTimeoutMs: number;
-  private rules: CacheRule[] = [];
+  private rules: EnforcementRule[] = [];
   private rulesFetchedAt = 0;
   private rulesTtlMs = 60_000;
   private pendingDecisions = new Set<Promise<void>>();
@@ -182,7 +171,7 @@ export class CloudAdapter implements CostAdapter {
       return providerCall();
     }
 
-    let rule: CacheRule;
+    let rule: EnforcementRule;
     let key: string;
     try {
       const rulesAvailable = await this.refreshRules();
@@ -259,15 +248,13 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
-  private matchExactCacheRule(request: ExactCacheRequest, context: ExactCacheContext): CacheRule | undefined {
-    const ordered = this.rules
-      .filter((rule) => rule.state === "ACTIVE" || rule.state === "SHADOW")
-      .sort((a, b) => a.priority - b.priority);
-    for (const rule of ordered) {
-      if (!ruleMatches(rule, request.model, context)) continue;
-      return rule.state === "ACTIVE" && rule.action === "CACHE_EXACT" ? rule : undefined;
-    }
-    return undefined;
+  private matchExactCacheRule(request: ExactCacheRequest, context: ExactCacheContext): EnforcementRule | undefined {
+    const decision = decide(
+      { model: request.model, feature: context.feature, retryCount: context.retryCount },
+      this.rules,
+    );
+    if (!decision.matched || decision.mode !== "active" || decision.action !== "CACHE_EXACT") return undefined;
+    return this.rules.find((rule) => rule.id === decision.ruleId);
   }
 
   private getExactCache(key: string): ExactCacheEntry | undefined {
@@ -293,7 +280,7 @@ export class CloudAdapter implements CostAdapter {
   }
 
   private postExactCacheDecision(
-    rule: CacheRule,
+    rule: EnforcementRule,
     requestedModel: string,
     costBasis: ExactCacheCostBasis,
   ): Promise<void> {
@@ -310,7 +297,7 @@ export class CloudAdapter implements CostAdapter {
     });
   }
 
-  private postExactCacheMiss(rule: CacheRule, requestedModel: string): Promise<void> {
+  private postExactCacheMiss(rule: EnforcementRule, requestedModel: string): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
       cacheOutcome: "miss",
@@ -385,9 +372,9 @@ export class CloudAdapter implements CostAdapter {
   }
 }
 
-function isCacheRule(value: unknown): value is CacheRule {
+function isCacheRule(value: unknown): value is EnforcementRule {
   if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
-  const rule = value as Partial<CacheRule>;
+  const rule = value as Partial<EnforcementRule>;
   return (
     typeof rule.id === "string" &&
     typeof rule.name === "string" &&
@@ -401,30 +388,6 @@ function isCacheRule(value: unknown): value is CacheRule {
     (rule.requireEquivalencePct === null || typeof rule.requireEquivalencePct === "number") &&
     Array.isArray(rule.modelAllowlist)
   );
-}
-
-function ruleMatches(rule: CacheRule, model: string, context: ExactCacheContext): boolean {
-  if (!conditionMatches(rule.condition, model, context)) return false;
-  if (rule.action !== "SWAP" && rule.action !== "DOWNGRADE" && rule.action !== "ROUTE") return true;
-
-  const targetModel = typeof rule.actionParams.targetModel === "string" ? rule.actionParams.targetModel : null;
-  if (targetModel && rule.modelAllowlist.length > 0 && !rule.modelAllowlist.includes(targetModel)) return false;
-  return rule.requireEquivalencePct == null;
-}
-
-function conditionMatches(condition: Record<string, unknown>, model: string, context: ExactCacheContext): boolean {
-  switch (condition.type) {
-    case "always":
-      return true;
-    case "model":
-      return model === condition.equals;
-    case "feature":
-      return context.feature === condition.equals;
-    case "retry":
-      return (context.retryCount ?? 0) >= Number(condition.gte ?? 0);
-    default:
-      return false;
-  }
 }
 
 function boundedTtlSeconds(value: unknown): number {
