@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.5.0
+
+### Minor Changes
+
+- 9009bfc: Add retry-safe LiteLLM spend-log and Langfuse observation import helpers plus `traice import` CLI commands with bounded backfills and dry runs.
+
 ## 0.4.5
 
 ### Patch Changes
