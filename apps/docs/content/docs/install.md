@@ -14,7 +14,7 @@ You need:
 
 - A trAIce account and workspace.
 - A trAIce API key from the app.
-- A TypeScript or JavaScript project for product-runtime events, or any runtime that can send an HTTP POST.
+- A TypeScript or Python project for product-runtime events, or any runtime that can send an HTTP POST.
 - Provider keys for OpenAI, Anthropic, Bedrock, or your LLM vendor. Those stay in your infrastructure.
 
 ## 1. Sign In
@@ -33,16 +33,10 @@ The full key is shown once.
 
 ## 3. Send Product LLM Events
 
-Install the SDK:
+:::language-snippet
 
-```sh
-npm install @traice/sdk
-```
-
-TypeScript:
-
-```ts
-import { configure, meter } from "@traice/sdk";
+```typescript install="npm install @traice/sdk openai"
+import { configure, flush, meter } from "@traice/sdk";
 import OpenAI from "openai";
 
 configure({
@@ -53,7 +47,6 @@ configure({
 const openai = new OpenAI();
 
 await meter(
-  "support-summary",
   () =>
     openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -65,21 +58,33 @@ await meter(
     workflowId: "support",
   },
 );
+await flush();
 ```
 
-JavaScript:
+```python install="pip install traice-sdk openai"
+from openai import OpenAI
+from traice import configure, flush, track
 
-```js
-const { configure, meter } = require("@traice/sdk");
+configure(api_key="lm_live_YOUR_API_KEY")
+openai = OpenAI()
+
+@track(
+    feature="support-summary",
+    tenant_id="customer_42",
+    user_id="user_123",
+    workflow_id="support",
+)
+def summarize_ticket():
+    return openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "Summarize this ticket"}],
+    )
+
+completion = summarize_ticket()
+flush(timeout=2.0)
 ```
 
-`tenantId` is the key field for customer margin. Pass the customer or account id you bill on every product event.
-
-## 4. Send Events Over HTTP
-
-If you are not ready to use the SDK, send a product event directly:
-
-```sh
+```curl
 curl -X POST "https://www.runtraice.com/api/v1/events" \
   -H "authorization: Bearer $TRAICE_API_KEY" \
   -H "content-type: application/json" \
@@ -96,7 +101,11 @@ curl -X POST "https://www.runtraice.com/api/v1/events" \
   }'
 ```
 
-## 5. Track Internal AI-Tool Spend
+:::
+
+`tenantId` is the key field for customer margin. Pass the customer or account id you bill on every product event.
+
+## 4. Track Internal AI-Tool Spend
 
 Internal Spend is separate from product events. The maintained collector supports Claude Code and Codex today. Send
 other employee or team usage through the authenticated internal-usage API until native connectors are available.
@@ -142,13 +151,13 @@ curl -X POST "https://www.runtraice.com/api/v1/internal-usage" \
 
 Product events answer which customer or feature spent money. Internal Spend answers which employee, team, and AI tool spent money. Keep those identifiers separate.
 
-## 6. Check The Dashboard
+## 5. Check The Dashboard
 
 After the first product event lands, open [the dashboard](https://www.runtraice.com/app/dashboard). For customer margin, add revenue rows under Settings -> Customer revenue.
 
 For Internal Spend, open Dashboard -> Internal Spend after collector events arrive.
 
-## 7. Ask From The CLI Or An MCP Client
+## 6. Ask From The CLI Or An MCP Client
 
 Save the same workspace API key in the operating system credential store, then ask a question:
 

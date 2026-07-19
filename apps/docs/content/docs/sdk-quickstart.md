@@ -1,71 +1,127 @@
 ---
 title: SDK Quickstart
-excerpt: Install @traice/sdk and send product-runtime LLM cost events.
+excerpt: Send product-runtime LLM cost events from TypeScript, Python, or any HTTP client.
 order: 2
 ---
 
 # SDK Quickstart
 
-Install the SDK:
+Choose a language. TypeScript is selected by default, and every tab sends the same attribution fields to `/api/v1/events`.
 
-```sh
-npm install @traice/sdk
-```
+:::language-snippet
 
-TypeScript:
-
-```ts
-import { configure, meter } from "@traice/sdk";
+```typescript install="npm install @traice/sdk openai"
+import OpenAI from "openai";
+import { configure, flush, meter } from "@traice/sdk";
 
 configure({
   adapters: ["cloud"],
   cloudApiKey: process.env.TRAICE_API_KEY,
 });
 
+const openai = new OpenAI();
 const completion = await meter(
-  "support-summary",
   () =>
     openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: "Summarize this ticket" }],
     }),
   {
+    feature: "support-summary",
     userId: "user_123",
-    tenantId: "acme",
+    tenantId: "customer_42",
     workflowId: "support",
   },
 );
+
+await flush();
 ```
 
-JavaScript:
+```python install="pip install traice-sdk openai"
+from openai import OpenAI
+from traice import configure, flush, track
 
-```js
-const { configure, meter } = require("@traice/sdk");
+configure(api_key="lm_live_YOUR_API_KEY")
+openai = OpenAI()
 
-configure({
-  adapters: ["local"],
-  localPath: "./.traice-costs/events.ndjson",
+@track(
+    feature="support-summary",
+    user_id="user_123",
+    tenant_id="customer_42",
+    workflow_id="support",
+)
+def summarize_ticket():
+    return openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "Summarize this ticket"}],
+    )
+
+completion = summarize_ticket()
+flush(timeout=2.0)
+```
+
+```curl
+curl -X POST "https://runtraice.com/api/v1/events" \
+  -H "authorization: Bearer $TRAICE_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "feature": "support-summary",
+    "userId": "user_123",
+    "tenantId": "customer_42",
+    "workflowId": "support",
+    "promptTokens": 1200,
+    "outputTokens": 50,
+    "cacheReadTokens": 800,
+    "cacheWriteTokens": 0,
+    "costUsd": 0.0012
+  }'
+```
+
+:::
+
+`tenantId` is the key field for customer margin. Pass the customer or account identifier you bill on every product event.
+
+The TypeScript and Python SDKs read model and token usage from the provider response, calculate known-model cost locally, and batch events in the background. Call `flush()` before a short-lived script or serverless invocation exits. Long-running processes flush on an interval and at shutdown.
+
+## Python decorators and context managers
+
+`@track()` works with sync and async functions. When a decorator does not fit, use `track()` as a sync or async context manager and attach the provider response with `span.record()`:
+
+:::language-snippet
+
+```typescript
+const completion = await meter(() => openai.responses.create({ model: "gpt-4o-mini", input: "Hello" }), {
+  feature: "answer",
+  tenantId: "customer_42",
 });
 ```
 
-The package ships TypeScript declarations plus ESM and CommonJS builds.
+```python
+with track(feature="answer", tenant_id="customer_42") as span:
+    completion = span.record(
+        openai.responses.create(model="gpt-4o-mini", input="Hello")
+    )
+```
+
+```curl
+curl -X POST "https://runtraice.com/api/v1/events" \
+  -H "authorization: Bearer $TRAICE_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"provider":"openai","model":"gpt-4o-mini","feature":"answer","tenantId":"customer_42","promptTokens":10,"outputTokens":2,"costUsd":0.0000027}'
+```
+
+:::
+
+See [Python SDK](python-sdk) for batching, errors, custom pricing, all attribution dimensions, and LangChain or LangGraph callbacks.
 
 ## Exact-cache guardrails
 
 To opt a request path into an active exact-cache rule, keep one `CloudAdapter`
-instance for the process and wrap the provider call:
-
-```ts
-import { CloudAdapter } from "@traice/sdk";
-
-const cloud = new CloudAdapter({ apiKey: process.env.TRAICE_API_KEY! });
-const request = { model: "gpt-4o-mini", messages, temperature: 0 };
-
-const response = await cloud.enforceExactCache(request, () => openai.chat.completions.create(request), {
-  feature: "support",
-  provider: "openai",
-});
-```
+instance for the process and pass the request, provider call, and attribution to
+`cloud.enforceExactCache()`. Exact-cache enforcement is currently available in
+the TypeScript SDK only.
 
 Only an active `CACHE_EXACT` rule can change the call. Cache misses, rule/API
 errors, explicit bypasses, and all streaming requests call the provider normally.

@@ -1,9 +1,23 @@
 import Link from "next/link";
 import { ArrowRight, Radio, ShieldCheck, Terminal } from "lucide-react";
+import { LanguageSnippet, type LanguageSnippets } from "./components/LanguageSnippet";
 import { allDocs } from "./lib/docs";
 
 export default function HomePage() {
   const docs = allDocs();
+  const snippets: LanguageSnippets = {
+    typescript: {
+      install: "npm install @traice/sdk",
+      code: 'import { configure, meter } from "@traice/sdk";',
+    },
+    python: {
+      install: "pip install traice-sdk",
+      code: "from traice import configure, track",
+    },
+    curl: {
+      code: 'curl -X POST "https://runtraice.com/api/v1/events" \\\n+  -H "authorization: Bearer $TRAICE_API_KEY"',
+    },
+  };
 
   return (
     <main>
@@ -25,14 +39,8 @@ export default function HomePage() {
             </Link>
           </div>
         </div>
-        <div className="terminal-panel" aria-label="Install commands">
-          <pre>{`npm install @traice/sdk
-
-npx @traice/collector@latest install claude-code \\
-  --server-url https://runtraice.com \\
-  --employee-email you@company.com
-
-npx @traice/collector@latest collect`}</pre>
+        <div aria-label="SDK examples">
+          <LanguageSnippet snippets={snippets} />
         </div>
       </section>
 

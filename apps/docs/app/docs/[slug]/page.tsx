@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import { allDocs, docBySlug } from "../../lib/docs";
+import { LanguageSnippet } from "../../components/LanguageSnippet";
+import { allDocs, docBlocks, docBySlug } from "../../lib/docs";
 
 export function generateStaticParams() {
   return allDocs().map((doc) => ({ slug: doc.slug }));
@@ -31,7 +32,13 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
         ))}
       </aside>
       <article className="doc-content">
-        <ReactMarkdown>{doc.body}</ReactMarkdown>
+        {docBlocks(doc.body).map((block, index) =>
+          block.type === "markdown" ? (
+            <ReactMarkdown key={`markdown-${index}`}>{block.content}</ReactMarkdown>
+          ) : (
+            <LanguageSnippet key={`languages-${index}`} snippets={block.snippets} />
+          ),
+        )}
       </article>
     </main>
   );

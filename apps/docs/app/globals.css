@@ -194,6 +194,62 @@ kbd {
   overflow-x: auto;
 }
 
+.language-snippet {
+  margin: 20px 0 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--code);
+  overflow: hidden;
+}
+
+.language-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.language-tabs button,
+.copy-snippet {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.language-tabs button[aria-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.language-panel {
+  position: relative;
+}
+
+.language-panel pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding-right: 72px;
+}
+
+.language-panel pre + pre {
+  border-top: 1px solid var(--line);
+}
+
+.copy-snippet {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
 .feature-grid,
 .doc-list {
   width: min(1180px, calc(100% - 48px));

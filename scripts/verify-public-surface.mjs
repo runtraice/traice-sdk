@@ -86,5 +86,5 @@ function* walk(dir) {
 }
 
 function isTextFile(path) {
-  return /\.(cjs|css|html|js|json|jsx|md|mdx|mjs|toml|ts|tsx|txt|yml|yaml)$/.test(path);
+  return /\.(cjs|css|html|js|json|jsx|md|mdx|mjs|py|toml|ts|tsx|txt|yml|yaml)$/.test(path);
 }
