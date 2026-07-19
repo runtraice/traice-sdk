@@ -840,12 +840,15 @@ function responseCostBasis(response: unknown, providerOverride?: CostEvent["prov
     object?: unknown;
     model?: unknown;
     usage?: {
+      inputTokens?: unknown;
+      outputTokens?: unknown;
       input_tokens?: unknown;
       output_tokens?: unknown;
       prompt_tokens?: unknown;
       completion_tokens?: unknown;
       cache_read_input_tokens?: unknown;
       cache_creation_input_tokens?: unknown;
+      inputTokenDetails?: { cacheReadTokens?: unknown; cacheWriteTokens?: unknown };
       input_tokens_details?: { cached_tokens?: unknown };
       prompt_tokens_details?: { cached_tokens?: unknown };
     };
@@ -862,15 +865,23 @@ function responseCostBasis(response: unknown, providerOverride?: CostEvent["prov
   const cacheRead = nonNegativeNumber(
     anthropic
       ? value?.usage?.cache_read_input_tokens
-      : (value?.usage?.input_tokens_details?.cached_tokens ?? value?.usage?.prompt_tokens_details?.cached_tokens),
+      : (value?.usage?.inputTokenDetails?.cacheReadTokens ??
+          value?.usage?.input_tokens_details?.cached_tokens ??
+          value?.usage?.prompt_tokens_details?.cached_tokens),
   );
-  const cacheWrite = nonNegativeNumber(anthropic ? value?.usage?.cache_creation_input_tokens : 0);
+  const cacheWrite = nonNegativeNumber(
+    anthropic ? value?.usage?.cache_creation_input_tokens : value?.usage?.inputTokenDetails?.cacheWriteTokens,
+  );
   const rawInput = nonNegativeNumber(
-    anthropic ? value?.usage?.input_tokens : (value?.usage?.input_tokens ?? value?.usage?.prompt_tokens),
+    anthropic
+      ? value?.usage?.input_tokens
+      : (value?.usage?.inputTokens ?? value?.usage?.input_tokens ?? value?.usage?.prompt_tokens),
   );
   const input = anthropic ? rawInput + cacheRead + cacheWrite : rawInput;
   const output = nonNegativeNumber(
-    anthropic ? value?.usage?.output_tokens : (value?.usage?.output_tokens ?? value?.usage?.completion_tokens),
+    anthropic
+      ? value?.usage?.output_tokens
+      : (value?.usage?.outputTokens ?? value?.usage?.output_tokens ?? value?.usage?.completion_tokens),
   );
   const { totalCostUSD } = calculateCost(provider, model, input, output, cacheRead, cacheWrite);
   return {

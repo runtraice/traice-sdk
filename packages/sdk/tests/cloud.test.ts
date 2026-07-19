@@ -1,5 +1,6 @@
 import { CloudAdapter, TraiceEnforcementError, toCloudEvent } from "../src/adapters/cloud";
 import { CostEvent } from "../src/types";
+import { configurePricing } from "../src/pricing";
 import * as http from "http";
 
 function makeEvent(overrides: Partial<CostEvent> = {}): CostEvent {
@@ -469,6 +470,40 @@ describe("CloudAdapter", () => {
       expect(decision).toMatchObject({
         provider: "openai",
         servedModel: "gpt-4o-mini",
+        inputTokens: 400,
+        outputTokens: 200,
+        cacheReadTokens: 100,
+      });
+      expect(adapter.getExactCacheStats().savingsUsd).toBeGreaterThan(0);
+    });
+
+    it("prices SDK-normalized Vertex usage for exact-cache savings", async () => {
+      configurePricing("google-vertex", "gemini-3.1-flash-lite", { input: 0.25, output: 1.5 });
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule()] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const vertexRequest = { ...request, model: "gemini-3.1-flash-lite" };
+      const provider = jest.fn(async () => ({
+        result: { text: "Hi" },
+        model: "gemini-3.1-flash-lite",
+        usage: {
+          inputTokens: 400,
+          outputTokens: 200,
+          inputTokenDetails: { cacheReadTokens: 100 },
+        },
+      }));
+      await adapter.warmEnforcement();
+
+      await adapter.enforceExactCache(vertexRequest, provider, { provider: "google-vertex" });
+      await adapter.enforceExactCache(vertexRequest, provider, { provider: "google-vertex" });
+      await adapter.flush();
+
+      const decision = receivedBodies.find((body) => body.ruleId === "rule-cache" && body.cacheOutcome === "hit");
+      expect(decision).toMatchObject({
+        provider: "google-vertex",
+        servedModel: "gemini-3.1-flash-lite",
         inputTokens: 400,
         outputTokens: 200,
         cacheReadTokens: 100,
