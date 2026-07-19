@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.4.5
+
+### Patch Changes
+
+- e919ad1: Add two-step confirmed Ask trAIce actions to the TypeScript client and CLI for budgets, alert snoozes, and evidence-gated shadow guardrails.
+
 ## 0.4.4
 
 ### Patch Changes
