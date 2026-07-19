@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.6.0
+
+### Minor Changes
+
+- 820e437: Add a typed portable enforcement-policy export API and `traice policy export` command for custom wrappers and gateway adapters.
+
 ## 0.5.0
 
 ### Minor Changes
