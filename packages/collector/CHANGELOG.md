@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.2.6
+
+### Patch Changes
+
+- 4a73838: Add one-command collector setup with credential reuse, connection verification, background service installation, and configurable Codex backfill.
+
 ## 0.2.5
 
 ### Patch Changes
