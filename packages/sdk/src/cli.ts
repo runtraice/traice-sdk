@@ -17,6 +17,7 @@ import { optimizeModels } from "./analytics/optimizer";
 import { detectTokenAbuse } from "./analytics/token-abuse";
 import { askTraice, confirmAskAction, prepareAskAction, type AskActionInput } from "./ask";
 import { deleteCliCredential, resolveCliCredential, storeCliCredential } from "./cli-credentials";
+import { importLangfuse, importLiteLlm, parseImportRange, type VendorImportResult } from "./vendor-imports";
 
 const DEFAULT_FILE = "./.traice-costs/events.ndjson";
 
@@ -301,6 +302,93 @@ async function runPrepareAction(action: AskActionInput, opts: { serverUrl?: stri
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+const importCommand = program
+  .command("import")
+  .description("Import normalized cost and attribution from an existing gateway or observability system");
+
+importCommand
+  .command("litellm")
+  .description("Import LiteLLM individual spend logs without sending prompts or responses")
+  .option("--base-url <url>", "LiteLLM proxy base URL (or LITELLM_BASE_URL)")
+  .option("--since <duration-or-date>", "Backfill start: ISO date, 24h, 7d, or 4w", "7d")
+  .option("--until <date>", "Exclusive upper time boundary (default: command start)")
+  .option("--source-key <key>", "Stable name for this LiteLLM deployment (default: base URL)")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--dry-run", "Fetch and validate without writing to trAIce")
+  .option("--json", "Print the result as JSON")
+  .action(async (opts) => {
+    try {
+      const baseUrl = opts.baseUrl ?? process.env.LITELLM_BASE_URL;
+      const apiKey = process.env.LITELLM_MASTER_KEY ?? process.env.LITELLM_API_KEY;
+      if (!baseUrl) throw new Error("LiteLLM base URL is required through --base-url or LITELLM_BASE_URL");
+      if (!apiKey) throw new Error("LITELLM_MASTER_KEY or LITELLM_API_KEY is required");
+      const credential = await resolveCliCredential(opts.serverUrl);
+      const range = parseImportRange(opts.since, opts.until);
+      const result = await importLiteLlm({
+        baseUrl,
+        apiKey,
+        traice: credential,
+        ...range,
+        dryRun: Boolean(opts.dryRun),
+        sourceKey: opts.sourceKey,
+      });
+      printImportResult(result, Boolean(opts.dryRun), Boolean(opts.json));
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
+
+importCommand
+  .command("langfuse")
+  .description("Import Langfuse v2 generation observations without requesting input or output fields")
+  .option("--base-url <url>", "Langfuse base URL (or LANGFUSE_BASE_URL)")
+  .option("--since <duration-or-date>", "Backfill start: ISO date, 24h, 7d, or 4w", "7d")
+  .option("--until <date>", "Exclusive upper time boundary (default: command start)")
+  .option("--source-key <key>", "Stable name for this Langfuse deployment (default: base URL)")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--dry-run", "Fetch and validate without writing to trAIce")
+  .option("--json", "Print the result as JSON")
+  .action(async (opts) => {
+    try {
+      const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
+      const secretKey = process.env.LANGFUSE_SECRET_KEY;
+      if (!publicKey || !secretKey) throw new Error("LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are required");
+      const credential = await resolveCliCredential(opts.serverUrl);
+      const range = parseImportRange(opts.since, opts.until);
+      const result = await importLangfuse({
+        baseUrl: opts.baseUrl ?? process.env.LANGFUSE_BASE_URL,
+        publicKey,
+        secretKey,
+        traice: credential,
+        ...range,
+        dryRun: Boolean(opts.dryRun),
+        sourceKey: opts.sourceKey,
+      });
+      printImportResult(result, Boolean(opts.dryRun), Boolean(opts.json));
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
+
+function printImportResult(result: VendorImportResult, dryRun: boolean, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify({ ...result, dryRun }, null, 2));
+    return;
+  }
+  const prefix = dryRun ? "Dry run complete" : "Import complete";
+  console.log(chalk.green(`${prefix}: ${result.source}`));
+  console.log(
+    `${formatNumber(result.fetched)} fetched, ${formatNumber(result.mapped)} mapped, ${formatNumber(result.ignored)} ignored`,
+  );
+  if (!dryRun) {
+    console.log(
+      `${formatNumber(result.accepted)} accepted, ${formatNumber(result.deduplicated)} deduplicated, ${formatNumber(result.quotaDropped)} quota-dropped`,
+    );
+  }
 }
 
 program

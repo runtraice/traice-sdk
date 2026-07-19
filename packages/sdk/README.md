@@ -61,6 +61,19 @@ npx @traice/sdk forecast
 npx @traice/sdk anomalies --threshold 2
 ```
 
+## OpenTelemetry and vendor imports
+
+Point an OTLP HTTP/JSON exporter at `https://www.runtraice.com/api/v1/otel/v1/traces` to ingest GenAI spans. Existing LiteLLM and Langfuse data can be previewed and backfilled through the same CLI credential:
+
+```sh
+export LITELLM_BASE_URL='https://litellm.example.com'
+export LITELLM_MASTER_KEY='<spend-reader-key>'
+traice import litellm --since 7d --dry-run
+traice import litellm --since 30d
+```
+
+Langfuse uses `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` with `traice import langfuse`. Importers request usage/cost fields, not prompts or responses, and stable vendor IDs make repeated backfills idempotent. See the [integration guide](../../apps/docs/content/docs/integrations.md).
+
 ## Adapters
 
 - `console`: print cost events locally.

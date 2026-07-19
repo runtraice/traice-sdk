@@ -123,6 +123,16 @@ Every adapter implements `CostAdapter` with an asynchronous `write(event)` metho
 | `normalizeServerUrl`        | `(value) => string`                                                         | [ask.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/ask.ts)                                     |
 | `DEFAULT_TRAICE_SERVER_URL` | `"https://www.runtraice.com"`                                               | [ask.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/ask.ts)                                     |
 
+## Vendor import APIs
+
+| API                      | Signature                                                         | Behavior                                                                 | Source                                                                                                    |
+| ------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `importLiteLlm`          | `(options: LiteLlmImportOptions) => Promise<VendorImportResult>`  | Import bounded LiteLLM spend-log windows with retry-safe identities      | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts) |
+| `importLangfuse`         | `(options: LangfuseImportOptions) => Promise<VendorImportResult>` | Import bounded Langfuse generation observations without prompt or output | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts) |
+| `mapLiteLlmSpendLog`     | `(value: unknown) => ImportedEvent \| null`                       | Normalize one LiteLLM spend log                                          | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts) |
+| `mapLangfuseObservation` | `(value: unknown) => ImportedEvent \| null`                       | Normalize one Langfuse observation                                       | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts) |
+| `parseImportRange`       | `(since, until?, now?) => ImportRange`                            | Parse an ISO boundary or duration such as `7d`                           | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts) |
+
 ## Exported types
 
 | Group                   | Public types                                                                                                                                               | Source                                                                                                                                                                                    |
@@ -136,6 +146,7 @@ Every adapter implements `CostAdapter` with an asynchronous `write(event)` metho
 | Rule planning           | `EnforcementBudgetScope`, `EnforcementContext`, `EnforcementDecision`, `EnforcementRequest`, `EnforcementRule`, `RuleAction`, `RuleCondition`, `RuleState` | [enforcement.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/enforcement.ts)                                                                                       |
 | Analytics               | `ForecastResult`, `AnomalyResult`, `AnomalyOptions`, `VersionComparison`, `ModelRecommendation`, `TokenAbuseOptions`, `TokenAbuseResult`                   | [analytics](https://github.com/runtraice/traice-sdk/tree/main/packages/sdk/src/analytics)                                                                                                 |
 | Ask trAIce              | `AskTraiceResponse`                                                                                                                                        | [ask.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/ask.ts)                                                                                                       |
+| Vendor imports          | `ImportCredential`, `ImportRange`, `ImportedEvent`, `LiteLlmImportOptions`, `LangfuseImportOptions`, `VendorImportResult`                                  | [vendor-imports.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/vendor-imports.ts)                                                                                 |
 
 ## Related guides
 

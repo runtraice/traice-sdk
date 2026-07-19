@@ -85,6 +85,8 @@ curl -X POST "https://www.runtraice.com/api/v1/events" \
 | `promptTokens`     | Yes      | Total input tokens, including provider cache tokens when applicable   |
 | `outputTokens`     | Yes      | Generated output tokens                                               |
 | `costUsd`          | Yes      | Calculated event cost in USD                                          |
+| `source`           | No       | Stable importer name; requires `externalId`                           |
+| `externalId`       | No       | Stable source record ID; requires `source`                            |
 | `ts`               | No       | ISO 8601 event time; ingestion time is used when omitted              |
 | `totalTokens`      | No       | Total tokens when already calculated                                  |
 | `cacheReadTokens`  | No       | Input tokens served from a provider cache                             |
@@ -117,6 +119,8 @@ Treat a non-success HTTP response as a delivery failure. Bound your buffer, requ
 
 Retry event delivery, not the provider call. A failed trAIce request must never cause the application to repeat an LLM request and incur duplicate provider spend.
 
+Importers should provide both `source` and `externalId`. trAIce derives a workspace-scoped event identity from that pair, so retrying the same source record does not consume event quota or repeat downstream side effects. Do not use a random ID on every retry.
+
 ## Privacy
 
 Product attribution needs usage and business dimensions, not prompts or model outputs. Do not put secrets, provider keys, authorization headers, or sensitive content in `metadata`.
@@ -127,3 +131,4 @@ Product attribution needs usage and business dimensions, not prompts or model ou
 - [Event contract reference](/docs/event-reference)
 - [TypeScript and Node.js SDK](/docs/typescript-sdk)
 - [Python SDK](/docs/python-sdk)
+- [OpenTelemetry and vendor imports](/docs/integrations)
