@@ -173,7 +173,7 @@ unset TRAICE_API_KEY
 traice ask "top spend by feature in the last 7 days"
 ```
 
-See [Ask trAIce](/docs/ask-traice) for Cursor, VS Code, MCP, and direct API setup.
+Workspace owners and admins can connect Slack from Settings -> Ask trAIce -> Add to Slack. See [Ask trAIce](/docs/ask-traice) for Slack, Cursor, VS Code, MCP, CLI, and direct API setup.
 
 ## Next Steps
 

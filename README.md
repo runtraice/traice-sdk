@@ -70,7 +70,7 @@ unset TRAICE_API_KEY
 traice ask "which customers are unprofitable this month?"
 ```
 
-See the [Ask trAIce guide](apps/docs/content/docs/ask-traice.md) for Cursor, VS Code, MCP, and direct API setup.
+Workspace owners and admins can also connect Slack from trAIce Settings and use `/traice` or mention the app. See the [Ask trAIce guide](apps/docs/content/docs/ask-traice.md) for Slack, Cursor, VS Code, MCP, CLI, and direct API setup.
 
 ## Development
 
