@@ -1,4 +1,4 @@
-import { askTraice, normalizeServerUrl } from "../src/ask";
+import { askTraice, confirmAskAction, normalizeServerUrl, prepareAskAction } from "../src/ask";
 
 describe("askTraice", () => {
   afterEach(() => jest.restoreAllMocks());
@@ -42,6 +42,71 @@ describe("askTraice", () => {
     await expect(askTraice("top spend", { apiKey: "lm_live_secret" })).rejects.toThrow(
       "trAIce ask failed: invalid_api_key",
     );
+  });
+
+  it("prepares and confirms an action through the dedicated endpoints", async () => {
+    const fetchMock = jest
+      .spyOn(global, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "confirmation_required",
+            confirmationId: "confirmation-1",
+            action: "create_budget",
+            summary: "Create a budget.",
+            confirmationToken: "short-lived-token",
+            confirmationPhrase: "CONFIRM ABC123",
+            expiresAt: "2026-07-19T12:10:00.000Z",
+            workspacePlan: "TEAM",
+            instruction: "Confirm only after review.",
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            status: "confirmed",
+            confirmationId: "confirmation-1",
+            result: { budgetId: "budget-1" },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    const options = { apiKey: "lm_live_secret", serverUrl: "https://www.runtraice.com" };
+
+    const prepared = await prepareAskAction({ action: "create_budget", name: "Support", limitUsd: 500 }, options);
+    const confirmed = await confirmAskAction(prepared.confirmationToken, prepared.confirmationPhrase, options);
+
+    expect(confirmed.result).toEqual({ budgetId: "budget-1" });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://www.runtraice.com/api/v1/ask/actions/prepare",
+      expect.objectContaining({ body: JSON.stringify({ action: "create_budget", name: "Support", limitUsd: 500 }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://www.runtraice.com/api/v1/ask/actions/confirm",
+      expect.objectContaining({
+        body: JSON.stringify({
+          confirmationToken: "short-lived-token",
+          confirmationPhrase: "CONFIRM ABC123",
+        }),
+      }),
+    );
+  });
+
+  it("rejects malformed action responses", async () => {
+    jest.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "confirmation_required" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await expect(
+      prepareAskAction({ action: "create_budget", name: "Support", limitUsd: 500 }, { apiKey: "lm_live_secret" }),
+    ).rejects.toThrow("invalid preparation response");
   });
 
   it("requires HTTPS except for local development", () => {

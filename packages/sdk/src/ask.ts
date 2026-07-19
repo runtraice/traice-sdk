@@ -9,29 +9,102 @@ export type AskTraiceResponse = {
   answer: string;
 };
 
-export async function askTraice(
-  question: string,
-  options: { apiKey: string; serverUrl?: string; signal?: AbortSignal },
-): Promise<AskTraiceResponse> {
+export type AskActionInput =
+  | {
+      action: "create_budget";
+      name: string;
+      limitUsd: number;
+      scope?: "WORKSPACE" | "FEATURE" | "USER" | "TENANT";
+      scopeValue?: string;
+      period?: "DAILY" | "WEEKLY" | "MONTHLY";
+    }
+  | { action: "snooze_alert"; alertId: string; hours?: number; reason?: string }
+  | { action: "create_shadow_guardrail"; experimentId: string };
+
+export type PrepareAskActionResponse = {
+  status: "confirmation_required";
+  confirmationId: string;
+  action: AskActionInput["action"];
+  summary: string;
+  confirmationToken: string;
+  confirmationPhrase: string;
+  expiresAt: string;
+  workspacePlan: string;
+  instruction: string;
+};
+
+export type ConfirmAskActionResponse = {
+  status: "confirmed" | "already_confirmed";
+  confirmationId: string;
+  result: Record<string, unknown>;
+};
+
+export type AskClientOptions = { apiKey: string; serverUrl?: string; signal?: AbortSignal };
+
+export async function askTraice(question: string, options: AskClientOptions): Promise<AskTraiceResponse> {
+  const payload = await postAskJson<AskTraiceResponse>("/api/v1/ask", { question }, options, "ask");
+  if (!payload?.answer) throw new Error("trAIce ask returned an invalid response");
+  return payload;
+}
+
+export async function prepareAskAction(
+  action: AskActionInput,
+  options: AskClientOptions,
+): Promise<PrepareAskActionResponse> {
+  const payload = await postAskJson<PrepareAskActionResponse>("/api/v1/ask/actions/prepare", action, options, "action");
+  if (
+    payload.status !== "confirmation_required" ||
+    !payload.confirmationToken ||
+    !payload.confirmationPhrase ||
+    !payload.summary ||
+    !payload.expiresAt
+  ) {
+    throw new Error("trAIce action returned an invalid preparation response");
+  }
+  return payload;
+}
+
+export async function confirmAskAction(
+  confirmationToken: string,
+  confirmationPhrase: string,
+  options: AskClientOptions,
+): Promise<ConfirmAskActionResponse> {
+  const payload = await postAskJson<ConfirmAskActionResponse>(
+    "/api/v1/ask/actions/confirm",
+    { confirmationToken, confirmationPhrase },
+    options,
+    "action",
+  );
+  if (!(["confirmed", "already_confirmed"] as const).includes(payload.status) || !payload.confirmationId) {
+    throw new Error("trAIce action returned an invalid confirmation response");
+  }
+  return payload;
+}
+
+async function postAskJson<T>(
+  path: string,
+  body: unknown,
+  options: AskClientOptions,
+  operation: "ask" | "action",
+): Promise<T> {
   const serverUrl = normalizeServerUrl(options.serverUrl ?? DEFAULT_TRAICE_SERVER_URL);
-  const response = await fetch(`${serverUrl}/api/v1/ask`, {
+  const response = await fetch(`${serverUrl}${path}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${options.apiKey}`,
       "Content-Type": "application/json",
       "X-Source": "traice-cli",
     },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify(body),
     signal: options.signal ?? AbortSignal.timeout(30_000),
   });
 
-  const payload = (await response.json().catch(() => null)) as
-    (AskTraiceResponse & { error?: string; message?: string }) | null;
+  const payload = (await response.json().catch(() => null)) as (T & { error?: string; message?: string }) | null;
   if (!response.ok) {
     const reason = payload?.message ?? payload?.error ?? `HTTP ${response.status}`;
-    throw new Error(`trAIce ask failed: ${reason}`);
+    throw new Error(`trAIce ${operation} failed: ${reason}`);
   }
-  if (!payload?.answer) throw new Error("trAIce ask returned an invalid response");
+  if (!payload) throw new Error(`trAIce ${operation} returned an invalid response`);
   return payload;
 }
 
