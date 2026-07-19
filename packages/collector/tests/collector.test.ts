@@ -10,6 +10,8 @@ import { installAgent } from "../src/install";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "../src/adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "../src/adapters/codex";
 import { createSerializedEventForwarder, forwardEvents, normalizePayloadForRequest } from "../src/run";
+import { installCollectorService } from "../src/service";
+import { setupAgent } from "../src/setup";
 import { codexTomlBlock } from "../src/settings";
 import type { CollectorConfig } from "../src/types";
 
@@ -383,6 +385,108 @@ describe("@traice/collector", () => {
     expect(config.credential?.backend).toBe("protected-file");
     expect(statSync(configPath).mode & 0o777).toBe(0o600);
     expect(await readCollectorCredential(config.credential!)).toBe("lm_live_test_secret");
+  });
+
+  it("writes a macOS LaunchAgent with absolute runtime paths", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-service-"));
+    temporaryDirectories.push(directory);
+    const commands: Array<{ command: string; args: string[]; ignoreFailure?: boolean }> = [];
+
+    const result = installCollectorService(
+      { agent: "codex", configPath: join(directory, "config.json"), packageVersion: "0.2.5" },
+      {
+        platform: "darwin",
+        home: directory,
+        uid: 501,
+        prepareRuntime: () => ({ nodePath: "/absolute/node", cliPath: "/absolute/collector-cli.cjs" }),
+        run: (command, args, ignoreFailure) => commands.push({ command, args, ignoreFailure }),
+      },
+    );
+
+    const plist = readFileSync(result.definitionPath, "utf8");
+    expect(plist).toContain("<string>/absolute/node</string>");
+    expect(plist).toContain("<string>/absolute/collector-cli.cjs</string>");
+    expect(plist).toContain(`<string>${join(directory, "config.json")}</string>`);
+    expect(commands).toEqual([
+      {
+        command: "launchctl",
+        args: ["bootout", "gui/501", result.definitionPath],
+        ignoreFailure: true,
+      },
+      { command: "launchctl", args: ["bootstrap", "gui/501", result.definitionPath], ignoreFailure: undefined },
+      {
+        command: "launchctl",
+        args: ["kickstart", "-k", "gui/501/com.traice.collector"],
+        ignoreFailure: undefined,
+      },
+    ]);
+  });
+
+  it("reuses a valid persisted credential without prompting", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-setup-reuse-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.json");
+    await installAgent({
+      agent: "codex",
+      configPath,
+      serverUrl: "https://runtraice.com",
+      apiKey: "persisted-key",
+      credentialStore: "file",
+      codexHome: join(directory, "codex"),
+    });
+    const promptSecret = vi.fn(async () => {
+      throw new Error("prompt should not run");
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer persisted-key");
+      return Response.json({ usage: [] });
+    });
+
+    const result = await setupAgent(
+      { agent: "codex", configPath, service: false, backfill: false, codexHome: join(directory, "codex") },
+      { fetchImpl, promptSecret },
+    );
+
+    expect(result.connection.ok).toBe(true);
+    expect(promptSecret).not.toHaveBeenCalled();
+  });
+
+  it("replaces a persisted credential rejected by the server", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-setup-replace-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.json");
+    await installAgent({
+      agent: "codex",
+      configPath,
+      serverUrl: "https://runtraice.com",
+      apiKey: "expired-key",
+      credentialStore: "file",
+      codexHome: join(directory, "codex"),
+    });
+    const promptSecret = vi.fn(async () => "replacement-key");
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ error: "invalid_api_key" }, { status: 401 }))
+      .mockImplementationOnce(async (_url, init) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer replacement-key");
+        return Response.json({ usage: [] });
+      });
+
+    await setupAgent(
+      {
+        agent: "codex",
+        configPath,
+        service: false,
+        backfill: false,
+        credentialStore: "file",
+        codexHome: join(directory, "codex"),
+      },
+      { fetchImpl, promptSecret },
+    );
+
+    expect(promptSecret).toHaveBeenCalledWith("Stored trAIce API key was rejected. Enter a new API key: ");
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
+    expect(await readCollectorCredential(config.credential!)).toBe("replacement-key");
   });
 });
 

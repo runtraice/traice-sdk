@@ -4,6 +4,7 @@ import packageMetadata from "../package.json";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { installAgent } from "./install";
 import { runCollector } from "./run";
+import { setupAgent } from "./setup";
 import type { AgentName } from "./types";
 
 const program = new Command();
@@ -12,6 +13,57 @@ program
   .name("traice-collector")
   .description("Collect local coding-agent usage for trAIce.")
   .version(packageMetadata.version);
+
+program
+  .command("setup")
+  .description("Securely configure an agent, validate access, run a bounded backfill, and start a background service")
+  .argument("<agent>", "agent to set up: claude-code or codex")
+  .option("--config <path>", "collector config path")
+  .option("--server-url <url>", "trAIce app URL")
+  .option("--api-key <key>", "trAIce API key")
+  .option("--api-key-stdin", "read trAIce API key from stdin")
+  .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
+  .option("--employee-email <email>", "employee email")
+  .option("--employee-name <name>", "employee display name")
+  .option("--employee-external-id <id>", "employee external ID")
+  .option("--team-name <name>", "team display name")
+  .option("--team-external-id <id>", "team external ID")
+  .option("--source-principal <value>", "device/user source principal")
+  .option("--seat-monthly-usd <amount>", "monthly agent seat commitment")
+  .option("--listen-host <host>", "local OTLP host")
+  .option("--listen-port <port>", "local OTLP port")
+  .option("--include-prompts", "enable prompt logging where the agent supports it")
+  .option("--claude-home <path>", "Claude Code home")
+  .option("--codex-home <path>", "Codex home")
+  .option("--backfill-days <days>", "Codex history window from 1 to 30 days", "7")
+  .option("--no-backfill", "skip historical Codex usage")
+  .option("--no-service", "skip background service installation")
+  .action(async (agent: string, options: Record<string, unknown>) => {
+    const result = await setupAgent({
+      agent: parseAgent(agent),
+      configPath: stringOption(options.config),
+      serverUrl: stringOption(options.serverUrl),
+      apiKey: stringOption(options.apiKey),
+      apiKeyStdin: Boolean(options.apiKeyStdin),
+      credentialStore: credentialStoreOption(options.credentialStore),
+      employeeEmail: stringOption(options.employeeEmail),
+      employeeName: stringOption(options.employeeName),
+      employeeExternalId: stringOption(options.employeeExternalId),
+      teamName: stringOption(options.teamName),
+      teamExternalId: stringOption(options.teamExternalId),
+      sourcePrincipal: stringOption(options.sourcePrincipal),
+      seatMonthlyUsd: numberOption(options.seatMonthlyUsd),
+      listenHost: stringOption(options.listenHost),
+      listenPort: numberOption(options.listenPort),
+      includePrompts: Boolean(options.includePrompts),
+      claudeHome: stringOption(options.claudeHome),
+      codexHome: stringOption(options.codexHome),
+      backfill: Boolean(options.backfill),
+      backfillDays: numberOption(options.backfillDays),
+      service: Boolean(options.service),
+    });
+    console.log(JSON.stringify(result, null, 2));
+  });
 
 program
   .command("install")
