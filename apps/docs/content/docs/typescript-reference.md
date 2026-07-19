@@ -47,7 +47,8 @@ The package entrypoint is [`packages/sdk/src/index.ts`](https://github.com/runtr
 | `getBudgetStatus` | `() => BudgetStatus[]`                                   | Read current process-local budget accumulators                                        | [index.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/index.ts) |
 | `resetBudget`     | `() => void`                                             | Clear process-local budget rules and accumulators                                     | [index.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/index.ts) |
 
-These helpers are process-local. They do not provide distributed caching or workspace-wide budget enforcement.
+These helpers are process-local. For cached workspace-wide budget advice, use
+the `CloudAdapter` policy methods below.
 
 ## Pricing APIs
 
@@ -81,6 +82,10 @@ Every adapter implements `CostAdapter` with an asynchronous `write(event)` metho
 | `write(event)`                                       | Buffer a local `CostEvent` for cloud delivery                                        |
 | `flush()`                                            | Send buffered events and wait for pending decision telemetry                         |
 | `warmEnforcement()`                                  | Fetch and cache current rules and experiment evidence before serving traffic         |
+| `warmPolicy()`                                       | Fetch and cache workspace, feature, and user budget status                           |
+| `getBudgetAdvice(context?)`                          | Return cached matches, utilization, reason, and advisory downgrade/block booleans    |
+| `shouldDowngrade(context?)`                          | Return cached advice at the 80% warning threshold; cold/error policy returns false   |
+| `isBlocked(context?)`                                | Return cached advice at the 100% exceeded threshold; cold/error policy returns false |
 | `enforceRequest(request, providerCall, context?)`    | Execute supported active rules for one opted-in request path                         |
 | `enforceExactCache(request, providerCall, context?)` | Execute only an active exact-cache rule and otherwise pass through                   |
 | `getExactCacheStats()`                               | Return process-local exact-cache hits, misses, bypasses, size, hit rate, and savings |

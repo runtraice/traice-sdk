@@ -54,6 +54,9 @@ export { ConsoleAdapter, LocalAdapter, WebhookAdapter, OTelAdapter, CloudAdapter
 export { TraiceEnforcementError } from "./adapters";
 export type {
   BlockingRuleAction,
+  BudgetAdvice,
+  BudgetPolicyContext,
+  BudgetPolicyMatch,
   CloudAdapterConfig,
   EnforcementEvidence,
   EnforcementErrorContext,

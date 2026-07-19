@@ -201,6 +201,35 @@ The package exports helpers for Express, Next.js, and LangChain:
 
 These helpers use the same global SDK configuration and attribution model as `meter()`.
 
+## Advisory workspace budgets
+
+Use cloud budget policy when your application should remain the final decision
+maker. Warm it once during startup; the request path then reads memory only.
+
+```typescript
+const cloud = new CloudAdapter({ apiKey: process.env.TRAICE_API_KEY! });
+await cloud.warmPolicy();
+
+const budget = cloud.getBudgetAdvice({
+  feature: "support-summary",
+  userId: currentUser.id,
+});
+
+if (budget.isBlocked) return fallbackWithoutAnLlm();
+const model = budget.shouldDowngrade ? "gpt-4o-mini" : "gpt-4o";
+const response = await openai.chat.completions.create({ model, messages });
+```
+
+`shouldDowngrade()` uses the 80% warning threshold and `isBlocked()` uses the
+100% exceeded threshold across matching workspace, feature, and user budgets.
+Both are advisory: your code chooses the fallback or model. A cold, expired,
+or failed cache returns false and refreshes asynchronously, so this path is
+fail-open and adds no policy network read to the call.
+
+Use `getBudgetAdvice()` when you need the matching scopes, utilization, or
+reason, and `getEnforcementStats()` to observe policy refresh failures and
+fail-open checks.
+
 ## Active request enforcement
 
 `CloudAdapter.enforceRequest()` executes supported active request rules for an explicitly wrapped path: exact cache, deny, retry cap, evidence-gated swap or downgrade, and one-shot fallback.

@@ -27,18 +27,27 @@ describe("CloudAdapter", () => {
   let receivedBodies: any[];
   let receivedHeaders: any;
   let rulesResponse: Record<string, unknown>;
+  let policyResponse: Record<string, unknown>;
+  let policyResponseStatus: number;
   let writeResponseStatus: number;
 
   beforeEach((done) => {
     receivedBodies = [];
     receivedHeaders = {};
     rulesResponse = { ttlSeconds: 60, rules: [] };
+    policyResponse = { ttlSeconds: 60, budgets: [] };
+    policyResponseStatus = 200;
     writeResponseStatus = 200;
     server = http.createServer((req, res) => {
       receivedHeaders = req.headers;
       if (req.method === "GET" && req.url === "/v1/rules") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(rulesResponse));
+        return;
+      }
+      if (req.method === "GET" && req.url === "/v1/policy") {
+        res.writeHead(policyResponseStatus, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(policyResponse));
         return;
       }
       let body = "";
@@ -376,6 +385,79 @@ describe("CloudAdapter", () => {
 
     await adapter.flush();
     expect(receivedBodies).toHaveLength(1);
+  });
+
+  describe("advisory budget policy", () => {
+    it("fails open while cold, then matches workspace, feature, and user budgets from cache", async () => {
+      policyResponse = {
+        ttlSeconds: 60,
+        budgets: [
+          { scope: "WORKSPACE", scopeValue: null, pct: 25 },
+          { scope: "FEATURE", scopeValue: "support", pct: 85 },
+          { scope: "FEATURE", scopeValue: "unrelated", pct: 250 },
+          { scope: "USER", scopeValue: "user-1", pct: 120 },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+
+      expect(adapter.getBudgetAdvice({ feature: "support" })).toEqual({
+        available: false,
+        shouldDowngrade: false,
+        isBlocked: false,
+        maxUtilizationPct: null,
+        reason: "policy_unavailable",
+        matches: [],
+      });
+      expect(await adapter.warmPolicy()).toBe(true);
+
+      expect(adapter.getBudgetAdvice({ feature: "support" })).toEqual({
+        available: true,
+        shouldDowngrade: true,
+        isBlocked: false,
+        maxUtilizationPct: 85,
+        reason: "approaching_limit",
+        matches: [
+          { scope: "FEATURE", scopeValue: "support", utilizationPct: 85 },
+          { scope: "WORKSPACE", scopeValue: null, utilizationPct: 25 },
+        ],
+      });
+      expect(adapter.isBlocked({ feature: "support", userId: "user-1" })).toBe(true);
+      expect(adapter.shouldDowngrade({ feature: "other" })).toBe(false);
+      expect(adapter.getEnforcementStats()).toMatchObject({
+        policyRefreshes: 1,
+        policyRefreshFailures: 0,
+        policyChecks: 4,
+        policyFailOpenChecks: 1,
+        policyDowngradeRecommendations: 1,
+        policyBlocks: 1,
+      });
+      await adapter.flush();
+    });
+
+    it("reports refresh failures without ever recommending a block", async () => {
+      policyResponseStatus = 503;
+      const onEnforcementError = jest.fn();
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+        onEnforcementError,
+      });
+
+      expect(await adapter.warmPolicy()).toBe(false);
+      expect(adapter.isBlocked({ feature: "support" })).toBe(false);
+      expect(onEnforcementError).toHaveBeenCalledWith(expect.any(Error), {
+        operation: "policy_refresh",
+        status: 503,
+      });
+      await adapter.flush();
+      expect(adapter.getEnforcementStats()).toMatchObject({
+        policyRefreshFailures: 2,
+        policyFailOpenChecks: 1,
+      });
+    });
   });
 
   describe("enforceExactCache", () => {
