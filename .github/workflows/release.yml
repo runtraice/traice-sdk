@@ -41,23 +41,35 @@ jobs:
       - name: Determine unpublished packages
         id: release_plan
         if: steps.changesets.outputs.pending == 'false'
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         shell: bash
         run: |
-          packages=()
+          package_links=()
           for package_dir in packages/protocol packages/collector packages/sdk; do
             package_name="$(node -p "require('./${package_dir}/package.json').name")"
             local_version="$(node -p "require('./${package_dir}/package.json').version")"
             published_version="$(npm view "$package_name" version 2>/dev/null || true)"
             if [[ "$local_version" != "$published_version" ]]; then
-              packages+=("${package_name}@${local_version}")
+              package_url="https://www.npmjs.com/package/${package_name}/v/${local_version}"
+              package_links+=("<${package_url}|${package_name}@${local_version}>")
             fi
           done
 
-          if (( ${#packages[@]} > 0 )); then
-            printf -v package_list '%s, ' "${packages[@]}"
+          if (( ${#package_links[@]} > 0 )); then
+            source_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+            source_label="commit ${GITHUB_SHA:0:7}"
+            commit_subject="${COMMIT_MESSAGE%%$'\n'*}"
+            if [[ "$commit_subject" =~ \(#([0-9]+)\)$ ]]; then
+              pull_number="${BASH_REMATCH[1]}"
+              source_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${pull_number}"
+              source_label="PR #${pull_number}"
+            fi
+
+            printf -v package_list '%s, ' "${package_links[@]}"
             package_list="${package_list%, }"
             echo "pending=true" >> "$GITHUB_OUTPUT"
-            echo "message=Published ${package_list} to npm (latest)." >> "$GITHUB_OUTPUT"
+            echo "message=Published ${package_list} to npm (latest) from <${source_url}|${source_label}>." >> "$GITHUB_OUTPUT"
           else
             echo "pending=false" >> "$GITHUB_OUTPUT"
             echo "No unpublished package versions found."
@@ -139,14 +151,27 @@ jobs:
       - name: Notify Slack of published Python package
         if: env.SLACK_SDK_RELEASES_WEBHOOK != ''
         env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           SLACK_SDK_RELEASES_WEBHOOK: ${{ secrets.SLACK_SDK_RELEASES_WEBHOOK }}
-          RELEASE_MESSAGE: Published traice-sdk==${{ needs.python-release-check.outputs.version }} to PyPI.
+          VERSION: ${{ needs.python-release-check.outputs.version }}
         shell: bash
         run: |
           if [[ "$SLACK_SDK_RELEASES_WEBHOOK" != https://hooks.slack.com/services/* ]]; then
             echo "::warning::SLACK_SDK_RELEASES_WEBHOOK must contain only a Slack webhook URL; skipping notification."
             exit 0
           fi
-          payload="$(python -c 'import json, os; print(json.dumps({"text": os.environ["RELEASE_MESSAGE"]}))')"
+
+          source_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}"
+          source_label="commit ${GITHUB_SHA:0:7}"
+          commit_subject="${COMMIT_MESSAGE%%$'\n'*}"
+          if [[ "$commit_subject" =~ \(#([0-9]+)\)$ ]]; then
+            pull_number="${BASH_REMATCH[1]}"
+            source_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${pull_number}"
+            source_label="PR #${pull_number}"
+          fi
+
+          package_url="https://pypi.org/project/traice-sdk/${VERSION}/"
+          release_message="Published <${package_url}|traice-sdk==${VERSION}> to PyPI from <${source_url}|${source_label}>."
+          payload="$(python -c 'import json, sys; print(json.dumps({"text": sys.argv[1]}))' "$release_message")"
           curl -f -sS -X POST -H 'Content-type: application/json' \
             -d "$payload" --url "$SLACK_SDK_RELEASES_WEBHOOK"
