@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.4.1
+
+### Patch Changes
+
+- 4f86186: Support explicit provider identifiers and normalized AI SDK token usage in `meter()`.
+
 ## 0.4.0
 
 ### Minor Changes
