@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.4.4
+
+### Patch Changes
+
+- e8cb483: Add fail-open workspace budget advice with cached downgrade and block helpers plus policy health telemetry.
+
 ## 0.4.3
 
 ### Patch Changes
