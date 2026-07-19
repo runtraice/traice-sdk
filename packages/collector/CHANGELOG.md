@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.2.8
+
+### Patch Changes
+
+- da4c582: Confirm employee and team identity during first-run setup, with Git email comparison and automation-safe defaults.
+
 ## 0.2.7
 
 ### Patch Changes
