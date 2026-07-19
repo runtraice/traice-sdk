@@ -127,6 +127,8 @@ export type {
   LiteLlmImportOptions,
   VendorImportResult,
 } from "./vendor-imports";
+export { exportPolicy } from "./policy";
+export type { ExportPolicyOptions, PortablePolicyBudget, PortablePolicyBundle, PortablePolicyEvidence } from "./policy";
 
 // ── Default config ──────────────────────────────────────────────
 

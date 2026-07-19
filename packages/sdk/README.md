@@ -74,6 +74,14 @@ traice import litellm --since 30d
 
 Langfuse uses `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` with `traice import langfuse`. Importers request usage/cost fields, not prompts or responses, and stable vendor IDs make repeated backfills idempotent. See the [integration guide](../../apps/docs/content/docs/integrations.md).
 
+Export a versioned snapshot of user-authored rules, experiment evidence, and budget utilization for a gateway adapter or custom wrapper:
+
+```sh
+traice policy export --output traice-policy.json
+```
+
+The portable bundle contains no credentials and is not a lossy conversion to vendor-specific gateway configuration.
+
 ## Adapters
 
 - `console`: print cost events locally.

@@ -18,6 +18,7 @@ import { detectTokenAbuse } from "./analytics/token-abuse";
 import { askTraice, confirmAskAction, prepareAskAction, type AskActionInput } from "./ask";
 import { deleteCliCredential, resolveCliCredential, storeCliCredential } from "./cli-credentials";
 import { importLangfuse, importLiteLlm, parseImportRange, type VendorImportResult } from "./vendor-imports";
+import { exportPolicy } from "./policy";
 
 const DEFAULT_FILE = "./.traice-costs/events.ndjson";
 
@@ -303,6 +304,34 @@ async function runPrepareAction(action: AskActionInput, opts: { serverUrl?: stri
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
+
+const policyCommand = program.command("policy").description("Read portable workspace enforcement policy");
+
+policyCommand
+  .command("export")
+  .description("Export user-authored rules, evidence, and budget snapshots as portable JSON")
+  .option("--server-url <url>", "trAIce server URL")
+  .option("--output <file>", "Write JSON to a new file instead of stdout")
+  .option("--force", "Replace an existing output file")
+  .action(async (opts) => {
+    try {
+      const credential = await resolveCliCredential(opts.serverUrl);
+      const bundle = await exportPolicy(credential);
+      const json = `${JSON.stringify(bundle, null, 2)}\n`;
+      if (!opts.output) {
+        process.stdout.write(json);
+        return;
+      }
+      if (fs.existsSync(opts.output) && !opts.force) {
+        throw new Error(`Output file already exists: ${opts.output}. Pass --force to replace it.`);
+      }
+      fs.writeFileSync(opts.output, json, { encoding: "utf8", mode: 0o600, flag: opts.force ? "w" : "wx" });
+      console.log(chalk.green(`Exported portable policy to ${opts.output}.`));
+    } catch (error) {
+      console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+      process.exitCode = 1;
+    }
+  });
 
 const importCommand = program
   .command("import")

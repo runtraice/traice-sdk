@@ -88,6 +88,18 @@ Use `--source-key` when you need a durable identity independent of the Langfuse 
 - `--dry-run` fetches and maps records but does not write product events.
 - Vendor credentials stay in the local process. trAIce receives only the normalized event and its workspace API key.
 
+## Export policy to a gateway or custom wrapper
+
+Export the workspace's current user-authored enforcement policy as portable JSON:
+
+```sh
+traice policy export --output traice-policy.json
+```
+
+The bundle contains active and shadow rules, current experiment evidence, and budget utilization snapshots. It contains no API keys. The command refuses to overwrite an existing file unless you pass `--force`.
+
+This is a versioned trAIce policy bundle for gateway adapters and custom wrappers. It is not generated LiteLLM YAML: budget predicates, evidence gates, and decision-record semantics cannot be represented safely as a static LiteLLM configuration. An adapter must preserve those semantics and fail open when it cannot evaluate them.
+
 ## Related pages
 
 - [Install Guide](/docs/install)

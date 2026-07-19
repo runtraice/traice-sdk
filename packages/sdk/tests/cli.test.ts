@@ -91,11 +91,12 @@ describe("CLI report", () => {
     expect(output.trim()).toBe(packageMetadata.version);
   });
 
-  it("ships the traice alias plus ask, confirmed-action, and import commands", () => {
+  it("ships the traice alias plus ask, confirmed-action, policy, and import commands", () => {
     const packageMetadata = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
     const askOutput = execSync(`node ${CLI_PATH} ask --help`, { encoding: "utf-8" });
     const actionOutput = execSync(`node ${CLI_PATH} action --help`, { encoding: "utf-8" });
     const importOutput = execSync(`node ${CLI_PATH} import --help`, { encoding: "utf-8" });
+    const policyOutput = execSync(`node ${CLI_PATH} policy --help`, { encoding: "utf-8" });
 
     expect(packageMetadata.bin.traice).toBe("./dist/cli.cjs");
     expect(askOutput).toContain("Ask a natural-language question");
@@ -105,6 +106,7 @@ describe("CLI report", () => {
     expect(actionOutput).toContain("confirm");
     expect(importOutput).toContain("litellm");
     expect(importOutput).toContain("langfuse");
+    expect(policyOutput).toContain("export");
   });
 
   it("default report shows features", () => {
