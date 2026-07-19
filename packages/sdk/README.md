@@ -69,32 +69,46 @@ npx @traice/sdk anomalies --threshold 2
 - `webhook`: send events to an HTTP endpoint.
 - `otel`: emit OpenTelemetry metrics.
 
-## Active exact-cache guardrails
+## Active request enforcement
 
-An active `CACHE_EXACT` rule in trAIce can short-circuit identical non-streaming
-requests through a bounded, process-local cache:
+`CloudAdapter.enforceRequest()` executes active exact-cache, deny, and retry-cap
+rules. Keep one adapter per process and pass the effective request to the
+provider callback:
 
 ```ts
-import { CloudAdapter } from "@traice/sdk";
+import { CloudAdapter, TraiceEnforcementError } from "@traice/sdk";
 
 const cloud = new CloudAdapter({ apiKey: process.env.TRAICE_API_KEY! });
 const request = { model: "gpt-4o-mini", messages, temperature: 0 };
 
-const response = await cloud.enforceExactCache(request, () => openai.chat.completions.create(request), {
-  feature: "support",
-  provider: "openai",
-});
+try {
+  const response = await cloud.enforceRequest(
+    request,
+    (effectiveRequest) => openai.chat.completions.create(effectiveRequest),
+    { feature: "support", retryCount: 0, provider: "openai" },
+  );
+} catch (error) {
+  if (error instanceof TraiceEnforcementError) {
+    return { status: 429, body: error.toJSON() };
+  }
+  throw error;
+}
 
 console.log(cloud.getExactCacheStats());
 ```
 
-The request hash includes the complete normalized request and is scoped to the
-workspace API key and rule. Rule lookup, cache bookkeeping, and Decision Record
-telemetry fail open. Use `{ bypass: true }` or the
-`x-traice-cache-bypass: 1` header for a per-call bypass. Streaming requests are
-always passed through because provider stream objects cannot be replayed safely.
-Matched hits and misses are reported to trAIce so the Guardrails page can show
-the real cache hit rate; payloads remain process-local.
+An active `DENY` rule blocks a matching call. An active `CAP_RETRIES` rule
+blocks only when `retryCount` is greater than its configured `maxRetries`.
+Both return a structured `TraiceEnforcementError` and do not call the provider.
+Shadow rules, unsupported actions, malformed rules, and rule API failures pass
+through unchanged. Decision telemetry is best-effort and never includes the
+request or response payload.
+
+For exact caching, the request hash includes the complete normalized request
+and is scoped to the workspace API key and rule. Use `{ bypass: true }` for all
+request enforcement, or the `x-traice-cache-bypass: 1` header for a cache-only
+bypass. Streaming requests are never cached. The existing
+`enforceExactCache()` method remains available for cache-only integrations.
 
 ## Enforcement decision core
 
@@ -105,10 +119,10 @@ It returns either `PASS_THROUGH` or an active/shadow decision with a structured
 reason. The SDK exports its request, rule, context, and decision types for
 custom wrappers and deterministic tests.
 
-This API plans a decision; it does not itself call a model provider. In this
-release, `CloudAdapter.enforceExactCache()` is still the only built-in executor.
-Swap, downgrade, deny, retry-cap, fallback, and route execution are not yet
-enabled.
+This API plans a decision; it does not itself call a model provider.
+`CloudAdapter.enforceRequest()` executes exact-cache, deny, and retry-cap
+decisions. Swap, downgrade, fallback, semantic-cache, and route execution remain
+disabled until their safety contracts are released.
 
 ## Privacy
 

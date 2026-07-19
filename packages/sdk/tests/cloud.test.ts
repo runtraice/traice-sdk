@@ -1,4 +1,4 @@
-import { CloudAdapter, toCloudEvent } from "../src/adapters/cloud";
+import { CloudAdapter, TraiceEnforcementError, toCloudEvent } from "../src/adapters/cloud";
 import { CostEvent } from "../src/types";
 import * as http from "http";
 
@@ -549,6 +549,103 @@ describe("CloudAdapter", () => {
       await expect(adapter.enforceExactCache(request, provider)).rejects.toThrow("provider failed");
       await adapter.flush();
 
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("enforceRequest", () => {
+    const request = {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hello" }],
+    };
+
+    function activeRule(action: "DENY" | "CAP_RETRIES", actionParams: Record<string, unknown> = {}) {
+      return {
+        id: `rule-${action.toLowerCase()}`,
+        name: action === "DENY" ? "Block support calls" : "Stop retry loops",
+        state: "ACTIVE",
+        priority: 10,
+        condition: { type: "always" },
+        action,
+        actionParams,
+        requireEquivalencePct: null,
+        modelAllowlist: [],
+      };
+    }
+
+    it("blocks an active deny rule without calling the provider and posts a Decision Record", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule("DENY")] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+
+      const blocked = adapter.enforceRequest(request, provider, { feature: "support" });
+      await expect(blocked).rejects.toBeInstanceOf(TraiceEnforcementError);
+      await expect(blocked).rejects.toMatchObject({
+        code: "TRAICE_REQUEST_BLOCKED",
+        action: "DENY",
+        ruleId: "rule-deny",
+      });
+      await adapter.flush();
+
+      expect(provider).not.toHaveBeenCalled();
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          ruleId: "rule-deny",
+          action: "DENY",
+          requestedModel: "gpt-4o-mini",
+        }),
+      );
+    });
+
+    it("passes through shadow deny rules", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [{ ...activeRule("DENY"), state: "SHADOW" }],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+
+      await expect(adapter.enforceRequest(request, provider)).resolves.toEqual({ ok: true });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledWith(request);
+      expect(receivedBodies.some((body) => body.ruleId)).toBe(false);
+    });
+
+    it("allows configured retries and blocks only the first retry over the cap", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [activeRule("CAP_RETRIES", { maxRetries: 2 })] };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+
+      await expect(adapter.enforceRequest(request, provider, { retryCount: 2 })).resolves.toEqual({ ok: true });
+      await expect(adapter.enforceRequest(request, provider, { retryCount: 3 })).rejects.toMatchObject({
+        action: "CAP_RETRIES",
+        ruleId: "rule-cap_retries",
+      });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(receivedBodies).toContainEqual(expect.objectContaining({ action: "CAP_RETRIES", retryCount: 3 }));
+    });
+
+    it("fails open when rules cannot be fetched", async () => {
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: "http://127.0.0.1:1/v1/events",
+        enforcementTimeoutMs: 100,
+      });
+      const provider = jest.fn(async () => ({ ok: true }));
+
+      await expect(adapter.enforceRequest(request, provider)).resolves.toEqual({ ok: true });
       expect(provider).toHaveBeenCalledTimes(1);
     });
   });

@@ -8,7 +8,15 @@ export { LocalAdapter } from "./local";
 export { WebhookAdapter } from "./webhook";
 export { OTelAdapter } from "./otel";
 export { CloudAdapter } from "./cloud";
-export type { CloudAdapterConfig, ExactCacheContext, ExactCacheRequest, ExactCacheStats } from "./cloud";
+export { TraiceEnforcementError } from "./cloud";
+export type {
+  BlockingRuleAction,
+  CloudAdapterConfig,
+  ExactCacheContext,
+  ExactCacheRequest,
+  ExactCacheStats,
+  RequestEnforcementContext,
+} from "./cloud";
 
 export interface AdapterResolveOptions {
   localPath?: string;

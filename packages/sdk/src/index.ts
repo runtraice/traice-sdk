@@ -51,7 +51,15 @@ export {
 
 // Re-export adapters
 export { ConsoleAdapter, LocalAdapter, WebhookAdapter, OTelAdapter, CloudAdapter, createAdapter } from "./adapters";
-export type { CloudAdapterConfig, ExactCacheContext, ExactCacheRequest, ExactCacheStats } from "./adapters";
+export { TraiceEnforcementError } from "./adapters";
+export type {
+  BlockingRuleAction,
+  CloudAdapterConfig,
+  ExactCacheContext,
+  ExactCacheRequest,
+  ExactCacheStats,
+  RequestEnforcementContext,
+} from "./adapters";
 
 // Re-export the pure, I/O-free enforcement decision core
 export { decide } from "./enforcement";

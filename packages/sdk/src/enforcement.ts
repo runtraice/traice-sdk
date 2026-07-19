@@ -88,6 +88,12 @@ export function decide(
     const isRouting = ROUTING_ACTIONS.has(rule.action);
     const targetModel = typeof rule.actionParams.targetModel === "string" ? rule.actionParams.targetModel : null;
 
+    if (rule.action === "CAP_RETRIES") {
+      const maxRetries = nonNegativeInteger(rule.actionParams.maxRetries);
+      const retryCount = request.retryCount ?? 0;
+      if (maxRetries == null || retryCount <= maxRetries) continue;
+    }
+
     if (isRouting && targetModel && rule.modelAllowlist.length > 0 && !rule.modelAllowlist.includes(targetModel)) {
       continue;
     }
@@ -119,6 +125,11 @@ export function decide(
   }
 
   return PASS_THROUGH;
+}
+
+function nonNegativeInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return null;
+  return value;
 }
 
 function matchCondition(

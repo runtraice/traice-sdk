@@ -91,6 +91,27 @@ describe("decide", () => {
     });
   });
 
+  it("selects a retry cap only after the configured retry allowance is exceeded", () => {
+    const capped = rule({
+      action: "CAP_RETRIES",
+      actionParams: { maxRetries: 2 },
+    });
+    const fallback = rule({ id: "fallback", priority: 200 });
+
+    expect(decide({ model: "gpt-4o-mini", retryCount: 2 }, [capped, fallback])).toMatchObject({
+      ruleId: "fallback",
+    });
+    expect(decide({ model: "gpt-4o-mini", retryCount: 3 }, [capped, fallback])).toMatchObject({
+      ruleId: "rule-1",
+      action: "CAP_RETRIES",
+    });
+  });
+
+  it("fails safe when a retry-cap rule has malformed action parameters", () => {
+    const malformed = rule({ action: "CAP_RETRIES", actionParams: { maxRetries: "2" } });
+    expect(decide({ model: "gpt-4o-mini", retryCount: 3 }, [malformed])).toMatchObject({ matched: false });
+  });
+
   it("fails safe for an unknown persisted condition", () => {
     const candidate = rule({ condition: { type: "unknown" } as unknown as EnforcementRule["condition"] });
     expect(decide({ model: "gpt-4o-mini" }, [candidate])).toMatchObject({ matched: false });
