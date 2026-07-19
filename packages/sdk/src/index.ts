@@ -728,7 +728,7 @@ export class CostMeter {
       options,
       adapters,
       config.defaultTags ?? {},
-      config.provider,
+      options.provider ?? config.provider,
       config.onError,
       config.verbose,
     ) as T;
