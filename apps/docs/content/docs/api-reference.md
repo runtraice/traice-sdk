@@ -23,6 +23,20 @@ Main exports:
 - `WebhookAdapter`
 - `OTelAdapter`
 
+## `traice-sdk` for Python
+
+Main exports:
+
+- `configure`
+- `track`
+- `flush`
+- `shutdown`
+- `configure_pricing`
+- `TraiceClient`
+- `TraiceCallbackHandler`
+
+See [Python SDK](python-sdk) for configuration, attribution fields, and delivery behavior.
+
 ## `@traice/collector`
 
 Main exports:

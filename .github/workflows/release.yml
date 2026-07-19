@@ -88,3 +88,63 @@ jobs:
           payload="$(node -e 'console.log(JSON.stringify({text: process.argv[1]}))' "$RELEASE_MESSAGE")"
           curl -f -sS -X POST -H 'Content-type: application/json' \
             -d "$payload" --url "$SLACK_SDK_RELEASES_WEBHOOK"
+
+  python-release-check:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.version.outputs.publish }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Check whether the Python version is new
+        id: version
+        working-directory: packages/python
+        run: |
+          version="$(python -c 'exec(open("src/traice/_version.py").read()); print(__version__)')"
+          response_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' "https://pypi.org/pypi/traice-sdk/${version}/json")"
+          if [[ "$response_code" == "404" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$response_code" == "200" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unexpected PyPI response: HTTP $response_code" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  publish-python:
+    runs-on: ubuntu-latest
+    needs: python-release-check
+    if: needs.python-release-check.outputs.publish == 'true'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/traice-sdk/${{ needs.python-release-check.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade build
+      - run: python -m build
+        working-directory: packages/python
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Notify Slack of published Python package
+        if: env.SLACK_SDK_RELEASES_WEBHOOK != ''
+        env:
+          SLACK_SDK_RELEASES_WEBHOOK: ${{ secrets.SLACK_SDK_RELEASES_WEBHOOK }}
+          RELEASE_MESSAGE: Published traice-sdk==${{ needs.python-release-check.outputs.version }} to PyPI.
+        shell: bash
+        run: |
+          if [[ "$SLACK_SDK_RELEASES_WEBHOOK" != https://hooks.slack.com/services/* ]]; then
+            echo "::warning::SLACK_SDK_RELEASES_WEBHOOK must contain only a Slack webhook URL; skipping notification."
+            exit 0
+          fi
+          payload="$(python -c 'import json, os; print(json.dumps({"text": os.environ["RELEASE_MESSAGE"]}))')"
+          curl -f -sS -X POST -H 'Content-type: application/json' \
+            -d "$payload" --url "$SLACK_SDK_RELEASES_WEBHOOK"

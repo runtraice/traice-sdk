@@ -6,9 +6,10 @@ order: 1
 
 # Introduction
 
-The public trAIce repository contains three packages:
+The public trAIce repository contains four packages:
 
 - `@traice/sdk` for product-runtime LLM cost attribution.
+- `traice-sdk` for Python product-runtime collection, imported as `traice`.
 - `@traice/collector` for local coding-agent telemetry collection.
 - `@traice/protocol` for shared event types and normalization helpers.
 

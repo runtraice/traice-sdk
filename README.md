@@ -4,15 +4,16 @@ Public SDKs and coding-agent collectors for trAIce.
 
 ## Packages
 
-| Package             | Purpose                                         |
-| ------------------- | ----------------------------------------------- |
-| `@traice/sdk`       | Runtime LLM cost attribution for your product.  |
-| `@traice/collector` | Local collector for coding-agent usage signals. |
-| `@traice/protocol`  | Shared event schemas and normalization helpers. |
+| Package             | Purpose                                          |
+| ------------------- | ------------------------------------------------ |
+| `@traice/sdk`       | TypeScript runtime LLM cost attribution.         |
+| `traice-sdk`        | Python runtime collection, imported as `traice`. |
+| `@traice/collector` | Local collector for coding-agent usage signals.  |
+| `@traice/protocol`  | Shared event schemas and normalization helpers.  |
 
 ## Install
 
-TypeScript and JavaScript projects are both supported.
+TypeScript, JavaScript, and Python projects are supported.
 
 ```sh
 npm install @traice/sdk
@@ -27,13 +28,12 @@ configure({
 });
 
 const result = await meter(
-  "assistant-reply",
   () =>
     openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: "Summarize this ticket" }],
     }),
-  { userId: "user_123", tenantId: "acme" },
+  { feature: "assistant-reply", userId: "user_123", tenantId: "acme" },
 );
 ```
 
@@ -42,6 +42,8 @@ CommonJS works too:
 ```js
 const { configure, meter } = require("@traice/sdk");
 ```
+
+Python applications install `traice-sdk` from PyPI and import `traice`. The [Python SDK guide](https://runtraice.github.io/traice-sdk/docs/python-sdk) covers decorators, context managers, batching, and LangChain callbacks.
 
 ## Coding-Agent Collection
 
