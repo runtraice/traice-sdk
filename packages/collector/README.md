@@ -15,6 +15,10 @@ npx @traice/collector@latest setup claude-code \
 `setup` prompts for the API key only when a valid saved credential is unavailable, patches the agent settings, and
 installs a background user service. It is safe to rerun.
 
+On the first interactive run, setup compares the requested employee email with the local Git email and asks which
+identity to use. It also confirms a standard team name so reporting does not split across spelling variants. Use
+`--yes` with explicit flags for unattended installation.
+
 Prompt logging stays disabled unless you explicitly pass `--include-prompts`.
 
 ## Codex

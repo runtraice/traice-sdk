@@ -8,6 +8,8 @@ export type {
 export { DEFAULT_CONFIG_PATH, loadCollectorConfig, writeCollectorConfig } from "./config";
 export { readCollectorCredential, storeCollectorCredential } from "./credentials";
 export { installCollectorService } from "./service";
+export { resolveFirstRunSetupIdentity, STANDARD_TEAMS } from "./identity";
+export type { SetupIdentityInput } from "./identity";
 export { setupAgent, verifyCollectorConnection } from "./setup";
 export { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "./status";
 export type { CollectorServiceState, CollectorStatusResult } from "./status";
