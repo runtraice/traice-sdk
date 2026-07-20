@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.7.1
+
+### Patch Changes
+
+- b3c148f: Retain explicitly requested model identifiers when failed or nonstandard responses do not report a model. Add current GPT-5.4 through GPT-5.6 pricing and model-specific cache rates.
+
 ## 0.7.0
 
 ### Minor Changes
