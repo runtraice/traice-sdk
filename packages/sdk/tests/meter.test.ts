@@ -737,6 +737,37 @@ describe("meter() when wrapped function throws (P1)", () => {
     expect(event.totalCostUSD).toBe(0);
   });
 
+  it("retains the requested model when the call fails", async () => {
+    await expect(
+      meter(
+        async () => {
+          throw new Error("blocked by policy");
+        },
+        { provider: "google-vertex", model: "gemini-3.1-flash-lite", awaitWrites: true },
+      ),
+    ).rejects.toThrow("blocked by policy");
+
+    expect(testAdapter.events[0]).toMatchObject({
+      provider: "google-vertex",
+      model: "gemini-3.1-flash-lite",
+      status: "error",
+    });
+  });
+
+  it("uses the requested model when a successful response omits it", async () => {
+    await meter(async () => ({ result: "ok" }), {
+      provider: "google-vertex",
+      model: "gemini-3.1-flash-lite",
+      awaitWrites: true,
+    });
+
+    expect(testAdapter.events[0]).toMatchObject({
+      provider: "google-vertex",
+      model: "gemini-3.1-flash-lite",
+      status: "success",
+    });
+  });
+
   it("increments eventsTracked for failed calls", async () => {
     try {
       await meter(

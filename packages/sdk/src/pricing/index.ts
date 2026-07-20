@@ -55,8 +55,8 @@ export function calculateCost(
   const multipliers = CACHE_MULTIPLIERS[provider] ?? { read: 1, write: 1 };
   const inputCostUSD =
     (cache.regularInputTokens / 1_000_000) * pricing.input +
-    (cache.cacheReadTokens / 1_000_000) * pricing.input * multipliers.read +
-    (cache.cacheWriteTokens / 1_000_000) * pricing.input * multipliers.write;
+    (cache.cacheReadTokens / 1_000_000) * (pricing.cacheRead ?? pricing.input * multipliers.read) +
+    (cache.cacheWriteTokens / 1_000_000) * (pricing.cacheWrite ?? pricing.input * multipliers.write);
   const outputCostUSD = (outputTokens / 1_000_000) * pricing.output;
   const totalCostUSD = inputCostUSD + outputCostUSD;
 

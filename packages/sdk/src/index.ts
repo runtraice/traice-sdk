@@ -283,6 +283,11 @@ function extractModel(response: any): string {
   return response?.model ?? "unknown";
 }
 
+function resolveModel(response: any, requestedModel?: string): string {
+  const reportedModel = extractModel(response);
+  return reportedModel === "unknown" ? (requestedModel ?? reportedModel) : reportedModel;
+}
+
 type TokenUsage = {
   inputTokens: number;
   outputTokens: number;
@@ -471,7 +476,7 @@ export async function meter<T>(fn: () => Promise<T>, options: MeterOptions = {})
     const latencyMs = Date.now() - startTime;
     const event = buildEvent(
       options.provider ?? "custom",
-      "unknown",
+      options.model ?? "unknown",
       0,
       0,
       0,
@@ -489,7 +494,7 @@ export async function meter<T>(fn: () => Promise<T>, options: MeterOptions = {})
 
   const latencyMs = Date.now() - startTime;
   const provider = options.provider ?? detectProvider(response);
-  const model = extractModel(response);
+  const model = resolveModel(response, options.model);
   const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = extractTokens(response, provider);
 
   const event = buildEvent(
@@ -540,7 +545,7 @@ export async function cachedMeter<T>(
   if (cached !== undefined) {
     // Cache hit: record $0 cost event
     const provider = options.provider ?? detectProvider(cached);
-    const model = extractModel(cached);
+    const model = resolveModel(cached, options.model);
     const event = buildEvent(provider, model, 0, 0, 0, 0, 0, options, globalConfig.defaultTags);
     event.cached = true;
     event.totalCostUSD = 0;
@@ -559,7 +564,7 @@ export async function cachedMeter<T>(
   const latencyMs = Date.now() - startTime;
 
   const provider = options.provider ?? detectProvider(response);
-  const model = extractModel(response);
+  const model = resolveModel(response, options.model);
   const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = extractTokens(response, provider);
   const { inputCostUSD, outputCostUSD, totalCostUSD } = calculateCost(
     provider,
@@ -629,7 +634,7 @@ export class CostMeter {
       const latencyMs = Date.now() - startTime;
       const event = buildEvent(
         options.provider ?? this.config.provider ?? "custom",
-        "unknown",
+        options.model ?? "unknown",
         0,
         0,
         0,
@@ -647,7 +652,7 @@ export class CostMeter {
 
     const latencyMs = Date.now() - startTime;
     const provider = options.provider ?? this.config.provider ?? detectProvider(response);
-    const model = extractModel(response);
+    const model = resolveModel(response, options.model);
     const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = extractTokens(response, provider);
 
     const event = buildEvent(
@@ -885,7 +890,7 @@ function wrapStream<T extends AsyncIterable<any>>(
               const provider = providerHint ?? usage.provider;
               const event = buildEvent(
                 provider,
-                usage.model,
+                usage.model === "unknown" ? (options.model ?? usage.model) : usage.model,
                 usage.inputTokens,
                 usage.outputTokens,
                 usage.cacheReadTokens,
@@ -903,7 +908,7 @@ function wrapStream<T extends AsyncIterable<any>>(
             const latencyMs = Date.now() - startTime;
             const event = buildEvent(
               providerHint ?? "custom",
-              "unknown",
+              options.model ?? "unknown",
               0,
               0,
               0,
@@ -991,7 +996,7 @@ export async function meterStream<T extends AsyncIterable<any>>(
     const latencyMs = Date.now() - startTime;
     const event = buildEvent(
       options.provider ?? "custom",
-      "unknown",
+      options.model ?? "unknown",
       0,
       0,
       0,

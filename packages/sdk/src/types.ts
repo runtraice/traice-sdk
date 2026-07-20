@@ -57,6 +57,8 @@ export type ErrorHandler = (error: Error, event?: CostEvent) => void;
 export interface MeterOptions {
   /** Explicit provider identifier for responses whose shape cannot identify the provider. */
   provider?: string;
+  /** Requested model identifier, used when an error or response does not report a model. */
+  model?: string;
   feature?: string;
   userId?: string;
   tenantId?: string;
