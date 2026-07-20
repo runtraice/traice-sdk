@@ -1,6 +1,6 @@
 {
   "name": "@traice/sdk",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Per-feature, per-user cost attribution and reporting for LLM API calls.",
   "license": "MIT",
   "repository": {
