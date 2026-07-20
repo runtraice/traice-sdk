@@ -82,6 +82,19 @@ describe("calculateCost", () => {
       const result = calculateCost("openai", "gpt-4o-2024-08-06", 1000, 500);
       expect(result.totalCostUSD).toBeCloseTo(0.0075, 6);
     });
+
+    it("uses current GPT-5.6 Sol cache read and write rates", () => {
+      const result = calculateCost("openai", "gpt-5.6-sol", 10_000, 500, 6_000, 1_000);
+      expect(result.inputCostUSD).toBeCloseTo(0.02425, 6);
+      expect(result.outputCostUSD).toBeCloseTo(0.015, 6);
+      expect(result.totalCostUSD).toBeCloseTo(0.03925, 6);
+    });
+
+    it("includes current GPT-5.4 through GPT-5.6 model pricing", () => {
+      expect(getAvailableModels("openai")).toEqual(
+        expect.arrayContaining(["gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]),
+      );
+    });
   });
 
   describe("edge cases", () => {
