@@ -87,7 +87,11 @@ The file contains the trAIce server URL, a non-secret credential reference, empl
 - Linux Secret Service.
 - A user-only protected file when an operating-system credential store is unavailable.
 
-Use `--credential-store keyring` to require the native store or `--credential-store file` to explicitly select the protected-file backend. Do not place an API key in a launchd plist, systemd unit, scheduled task, shell history, or committed configuration.
+Use `--credential-store keyring` to require the native store or `--credential-store file` to explicitly select the protected-file backend. Do not place an API key in a launchd plist, systemd unit, Windows Startup launcher, shell history, or committed configuration.
+
+On Windows, setup runs for the current user and does not require Administrator access. It creates a hidden Startup
+launcher and keeps its credential in Windows Credential Manager. See the [Codex Windows setup](/docs/codex#windows-setup)
+for separate Command Prompt and PowerShell commands, Node.js installation, and rejected-key troubleshooting.
 
 ## CLI commands
 

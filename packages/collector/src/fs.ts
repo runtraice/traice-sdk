@@ -80,18 +80,13 @@ export async function readHiddenSecret(prompt = "trAIce API key: "): Promise<str
       else resolve(value.trim());
     };
     const onData = (chunk: Buffer | string) => {
-      for (const character of String(chunk)) {
-        if (character === "\u0003") {
-          finish(new Error("Setup cancelled."));
-          return;
-        }
-        if (character === "\r" || character === "\n") {
-          finish();
-          return;
-        }
-        if (character === "\u007f" || character === "\b") value = value.slice(0, -1);
-        else value += character;
-      }
+      const result = processHiddenSecretInput(value, String(chunk));
+      const hadValue = value.length > 0;
+      value = result.value;
+      if (!hadValue && value.length > 0) process.stdout.write("****");
+      if (hadValue && value.length === 0) process.stdout.write("\b\b\b\b    \b\b\b\b");
+      if (result.cancelled) finish(new Error("Setup cancelled."));
+      else if (result.submitted) finish();
     };
 
     process.stdout.write(prompt);
@@ -101,6 +96,21 @@ export async function readHiddenSecret(prompt = "trAIce API key: "): Promise<str
   });
 }
 
+export function processHiddenSecretInput(
+  currentValue: string,
+  chunk: string,
+): { value: string; submitted: boolean; cancelled: boolean } {
+  let value = currentValue;
+  for (const character of chunk) {
+    if (character === "\u0003") return { value, submitted: false, cancelled: true };
+    if (character === "\r" || character === "\n") return { value, submitted: true, cancelled: false };
+    if (character === "\u007f" || character === "\b") value = value.slice(0, -1);
+    else value += character;
+  }
+  return { value, submitted: false, cancelled: false };
+}
+
 export function normalizeUrl(value: string): string {
-  return value.replace(/\/+$/, "");
+  const normalized = value.replace(/\/+$/, "");
+  return normalized === "https://runtraice.com" ? "https://www.runtraice.com" : normalized;
 }

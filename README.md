@@ -49,7 +49,7 @@ Python applications install `traice-sdk` from PyPI and import `traice`. The [Pyt
 
 ```sh
 npx @traice/collector@latest install claude-code \
-  --server-url https://runtraice.com \
+  --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --team-name Engineering
 

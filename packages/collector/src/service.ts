@@ -17,6 +17,7 @@ export interface CollectorServiceResult {
 interface ServiceDependencies {
   platform?: NodeJS.Platform;
   home?: string;
+  appData?: string;
   nodePath?: string;
   uid?: number;
   prepareRuntime?: () => { nodePath: string; cliPath: string };
@@ -65,10 +66,31 @@ export function installCollectorService(
   }
 
   if (platform === "win32") {
-    const definitionPath = "Task Scheduler: trAIce Collector";
-    const taskCommand = windowsCommand(runtime.nodePath, runtime.cliPath, options.configPath, options.agent);
-    run("schtasks.exe", ["/Create", "/TN", "trAIce Collector", "/TR", taskCommand, "/SC", "ONLOGON", "/F"]);
-    run("schtasks.exe", ["/Run", "/TN", "trAIce Collector"]);
+    const serviceDir = resolve(home, ".traice/collector/service");
+    const logsDir = resolve(home, ".traice/collector/logs");
+    const commandPath = resolve(serviceDir, "traice-collector.cmd");
+    const startupDir = resolve(
+      dependencies.appData ?? process.env.APPDATA ?? resolve(home, "AppData/Roaming"),
+      "Microsoft/Windows/Start Menu/Programs/Startup",
+    );
+    const definitionPath = resolve(startupDir, "trAIce Collector.vbs");
+    mkdirSync(serviceDir, { recursive: true, mode: 0o700 });
+    mkdirSync(logsDir, { recursive: true, mode: 0o700 });
+    mkdirSync(startupDir, { recursive: true });
+    writeFileSync(
+      commandPath,
+      windowsRestartScript({
+        ...runtime,
+        configPath: options.configPath,
+        agent: options.agent,
+        stdoutPath: resolve(logsDir, "collector.log"),
+        stderrPath: resolve(logsDir, "collector.err"),
+      }),
+    );
+    writeFileSync(definitionPath, windowsHiddenLauncher(commandPath));
+    run("schtasks.exe", ["/End", "/TN", "trAIce Collector"], true);
+    run("schtasks.exe", ["/Delete", "/TN", "trAIce Collector", "/F"], true);
+    run("wscript.exe", [definitionPath]);
     return { platform, status: "installed", definitionPath, ...runtime };
   }
 
@@ -143,10 +165,34 @@ WantedBy=default.target
 `;
 }
 
-function windowsCommand(nodePath: string, cliPath: string, configPath: string, agent: AgentName): string {
-  return [nodePath, cliPath, "collect", "--agent", agent, "--config", configPath]
-    .map((value) => `"${value.replaceAll('"', '\\"')}"`)
+function windowsRestartScript(options: {
+  nodePath: string;
+  cliPath: string;
+  configPath: string;
+  agent: AgentName;
+  stdoutPath: string;
+  stderrPath: string;
+}): string {
+  const command = [
+    options.nodePath,
+    options.cliPath,
+    "collect",
+    "--agent",
+    options.agent,
+    "--config",
+    options.configPath,
+  ]
+    .map(windowsBatchQuote)
     .join(" ");
+  return `@echo off\r\n:restart\r\n${command} 1>>${windowsBatchQuote(options.stdoutPath)} 2>>${windowsBatchQuote(options.stderrPath)}\r\ntimeout /t 5 /nobreak >nul\r\ngoto restart\r\n`;
+}
+
+function windowsHiddenLauncher(commandPath: string): string {
+  return `Set shell = CreateObject("WScript.Shell")\r\nshell.Run Chr(34) & "${commandPath.replaceAll('"', '""')}" & Chr(34), 0, False\r\n`;
+}
+
+function windowsBatchQuote(value: string): string {
+  return `"${value.replaceAll("%", "%%")}"`;
 }
 
 function systemdQuote(value: string): string {

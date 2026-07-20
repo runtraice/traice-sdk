@@ -18,8 +18,9 @@ describe("collector first-run identity", () => {
     expect(result).toEqual({ employeeEmail: "developer@example.com", teamName: "Engineering" });
     expect(prompt.mock.calls[0]?.[0]).toContain("workspace@example.com");
     expect(prompt.mock.calls[0]?.[0]).toContain("developer@example.com");
-    expect(prompt.mock.calls[1]?.[0]).toContain("Engineering (selected)");
+    expect(prompt.mock.calls[1]?.[0]).toContain("Engineering (default)");
     expect(prompt.mock.calls[1]?.[0]).toContain("Product");
+    expect(prompt.mock.calls[1]?.[0]).toContain("Press Enter to use 1 (Engineering), or type 1-8");
   });
 
   it("supports a typed employee email and custom team", async () => {

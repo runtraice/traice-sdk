@@ -44,4 +44,4 @@ Prompt logging is off by default. Only pass `--include-prompts` when your organi
 
 Use the native service definitions in the [Codex guide](/docs/codex#background-service), replacing `--agent codex`
 with `--agent claude-code`. Credentials remain in Keychain, Credential Manager, Secret Service, or the protected-file
-fallback; never place the API key in a plist, systemd unit, or scheduled-task command.
+fallback; never place the API key in a plist, systemd unit, or Windows Startup launcher.

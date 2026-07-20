@@ -35,6 +35,7 @@ interface StatusDependencies {
   fetchImpl?: typeof fetch;
   platform?: NodeJS.Platform;
   home?: string;
+  appData?: string;
   uid?: number;
   checkService?: () => CollectorStatusResult["service"];
 }
@@ -42,6 +43,7 @@ interface StatusDependencies {
 interface ServiceStatusDependencies {
   platform?: NodeJS.Platform;
   home?: string;
+  appData?: string;
   uid?: number;
   run?: (command: string, args: string[]) => { status: number | null; stdout: string; stderr: string };
 }
@@ -138,6 +140,18 @@ export function getCollectorServiceStatus(
   }
 
   if (platform === "win32") {
+    const definitionPath = resolve(
+      dependencies.appData ?? process.env.APPDATA ?? resolve(home, "AppData/Roaming"),
+      "Microsoft/Windows/Start Menu/Programs/Startup/trAIce Collector.vbs",
+    );
+    if (existsSync(definitionPath)) {
+      return {
+        ok: true,
+        platform,
+        state: "installed",
+        definitionPath,
+      };
+    }
     const result = run("schtasks.exe", ["/Query", "/TN", "trAIce Collector", "/FO", "LIST"]);
     const installed = result.status === 0;
     const state = !installed ? "not-installed" : /\bRunning\b/i.test(result.stdout) ? "running" : "installed";
@@ -145,7 +159,7 @@ export function getCollectorServiceStatus(
       ok: installed,
       platform,
       state,
-      definitionPath: "Task Scheduler: trAIce Collector",
+      definitionPath: installed ? "Task Scheduler: trAIce Collector" : definitionPath,
     };
   }
 
