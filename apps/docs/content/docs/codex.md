@@ -24,6 +24,44 @@ process manager will run collection.
 
 Codex project-local telemetry settings may not control routing. Prefer user-level configuration for device installs.
 
+## Windows setup
+
+Use the command that matches the terminal. Command Prompt does not understand PowerShell backticks.
+
+### Command Prompt
+
+Keep the setup command on one line:
+
+```bat
+npx --yes @traice/collector@latest setup codex --server-url "https://www.runtraice.com" --employee-email "you@company.com" --team-name "Engineering" --backfill-days 7 --yes
+```
+
+### PowerShell
+
+PowerShell supports a backtick at the end of each continued line:
+
+```powershell
+npx --yes @traice/collector@latest setup codex `
+  --server-url 'https://www.runtraice.com' `
+  --employee-email 'you@company.com' `
+  --team-name 'Engineering' `
+  --backfill-days 7 `
+  --yes
+```
+
+Run setup as the Windows user whose Codex usage should be collected. Administrator access is not required. The API-key
+prompt shows `****` after a key is pasted without revealing its value.
+
+If `npx` is not recognized, install Node.js LTS, reopen the terminal, and rerun setup:
+
+```bat
+winget install --id OpenJS.NodeJS.LTS --exact --accept-source-agreements --accept-package-agreements
+```
+
+If setup says that a saved API key was rejected, create a new collector key in the Internal Spend source modal and
+paste the complete value. A rejected key is revoked, incomplete, associated with another trAIce workspace, or being
+sent to the wrong trAIce server. Running as Administrator does not change API-key validation.
+
 ## Manual history backfill
 
 Live collection does not replay old sessions automatically. To inspect a bounded window first:
@@ -48,7 +86,7 @@ reported as dropped and do not increase stored usage, token totals, or spend.
 
 - **macOS:** install a user `launchd` LaunchAgent with `RunAtLoad` and `KeepAlive`.
 - **Linux:** install a `systemd --user` service; enable it with `systemctl --user enable --now traice-collector`.
-- **Windows:** create a per-user Task Scheduler task triggered at logon with restart-on-failure enabled.
+- **Windows:** install a hidden per-user Startup launcher with restart-on-failure behavior.
 
 The service uses a persistent package runtime rather than an `npx` cache or shell-specific Node path. This lets it
 start reliably at login. Credentials remain outside the service definition and are resolved from the reference in

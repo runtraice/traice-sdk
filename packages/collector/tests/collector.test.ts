@@ -423,6 +423,57 @@ describe("@traice/collector", () => {
     ]);
   });
 
+  it("installs a hidden per-user Windows startup launcher without requiring Task Scheduler", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-windows-service-"));
+    temporaryDirectories.push(directory);
+    const appData = join(directory, "AppData", "Roaming");
+    const configPath = join(directory, ".traice", "collector", "config.json");
+    const commands: Array<{ command: string; args: string[]; ignoreFailure?: boolean }> = [];
+
+    const result = installCollectorService(
+      { agent: "codex", configPath, packageVersion: "0.2.8" },
+      {
+        platform: "win32",
+        home: directory,
+        appData,
+        prepareRuntime: () => ({
+          nodePath: "C:\\Program Files\\nodejs\\node.exe",
+          cliPath: join(directory, ".traice", "collector", "runtime", "cli.cjs"),
+        }),
+        run: (command, args, ignoreFailure) => commands.push({ command, args, ignoreFailure }),
+      },
+    );
+
+    const commandPath = join(directory, ".traice", "collector", "service", "traice-collector.cmd");
+    const command = readFileSync(commandPath, "utf8");
+    const launcher = readFileSync(result.definitionPath, "utf8");
+    expect(command).toContain('"C:\\Program Files\\nodejs\\node.exe"');
+    expect(command).toContain(":restart");
+    expect(command).toContain("timeout /t 5 /nobreak");
+    expect(command).not.toContain("apiKey");
+    expect(launcher).toContain("WScript.Shell");
+    expect(launcher).toContain(commandPath);
+    expect(commands).toEqual([
+      { command: "schtasks.exe", args: ["/End", "/TN", "trAIce Collector"], ignoreFailure: true },
+      {
+        command: "schtasks.exe",
+        args: ["/Delete", "/TN", "trAIce Collector", "/F"],
+        ignoreFailure: true,
+      },
+      { command: "wscript.exe", args: [result.definitionPath], ignoreFailure: undefined },
+    ]);
+    expect(
+      getCollectorServiceStatus({
+        platform: "win32",
+        home: directory,
+        appData,
+        run: () => {
+          throw new Error("Task Scheduler should not be queried");
+        },
+      }),
+    ).toMatchObject({ ok: true, state: "installed", definitionPath: result.definitionPath });
+  });
+
   it("reuses a valid persisted credential without prompting", async () => {
     const directory = mkdtempSync(join(tmpdir(), "traice-collector-setup-reuse-"));
     temporaryDirectories.push(directory);
@@ -465,6 +516,7 @@ describe("@traice/collector", () => {
       codexHome: join(directory, "codex"),
     });
     const promptSecret = vi.fn(async () => "replacement-key");
+    const report = vi.fn();
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ error: "invalid_api_key" }, { status: 401 }))
@@ -482,10 +534,12 @@ describe("@traice/collector", () => {
         credentialStore: "file",
         codexHome: join(directory, "codex"),
       },
-      { fetchImpl, promptSecret },
+      { fetchImpl, promptSecret, report },
     );
 
-    expect(promptSecret).toHaveBeenCalledWith("Stored trAIce API key was rejected. Enter a new API key: ");
+    expect(report).toHaveBeenCalledWith(expect.stringContaining("rejected by https://www.runtraice.com"));
+    expect(report).toHaveBeenCalledWith(expect.stringContaining("Administrator will not fix"));
+    expect(promptSecret).toHaveBeenCalledWith("Paste a newly created trAIce API key (input is masked): ");
     const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
     expect(await readCollectorCredential(config.credential!)).toBe("replacement-key");
   });
@@ -521,7 +575,7 @@ describe("@traice/collector", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      config: { ok: true, serverUrl: "https://runtraice.com", agents: ["codex"] },
+      config: { ok: true, serverUrl: "https://www.runtraice.com", agents: ["codex"] },
       credential: { ok: true, backend: "protected-file" },
       service: { ok: true, state: "running" },
       listener: { ok: true },

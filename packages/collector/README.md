@@ -34,6 +34,29 @@ npx @traice/collector@latest setup codex \
 Codex setup backfills the previous 7 days by default. Set `--backfill-days` from 1 to 30, use `--no-backfill` to skip
 history, or use `--no-service` when another process manager will run the collector.
 
+### Windows
+
+Use one line in Command Prompt:
+
+```bat
+npx --yes @traice/collector@latest setup codex --employee-email "you@company.com" --team-name "Engineering" --backfill-days 7 --yes
+```
+
+Use backticks only in PowerShell:
+
+```powershell
+npx --yes @traice/collector@latest setup codex `
+  --employee-email 'you@company.com' `
+  --team-name 'Engineering' `
+  --backfill-days 7 `
+  --yes
+```
+
+Setup uses a hidden per-user Startup launcher, so Administrator access is not required. If `npx` is unavailable,
+install Node.js LTS with `winget install --id OpenJS.NodeJS.LTS --exact`, reopen the terminal, and retry. The API-key
+prompt displays `****` after paste. A rejected saved key must be replaced with a complete, active key for the intended
+workspace; elevation does not affect server authentication.
+
 ## Status and help
 
 Check the saved configuration, credential, background service, local listener, and authenticated server connection:

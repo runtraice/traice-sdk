@@ -24,6 +24,7 @@ export interface CollectorSetupResult {
 interface SetupDependencies {
   fetchImpl?: typeof fetch;
   promptSecret?: (prompt?: string) => Promise<string>;
+  report?: (message: string) => void;
   installService?: typeof installCollectorService;
   runBackfill?: typeof backfillCodex;
 }
@@ -42,13 +43,19 @@ export async function setupAgent(
   dependencies: SetupDependencies = {},
 ): Promise<CollectorSetupResult> {
   const promptSecret = dependencies.promptSecret ?? readHiddenSecret;
+  const report = dependencies.report ?? console.error;
   let install = await installWithPrompt(options, promptSecret);
 
   try {
     await verifyCollectorConnection(install.configPath, dependencies.fetchImpl);
   } catch (error) {
     if (!(error instanceof CollectorConnectionError) || error.status !== 401 || hasProvidedKey(options)) throw error;
-    const apiKey = await promptSecret("Stored trAIce API key was rejected. Enter a new API key: ");
+    const serverUrl = loadCollectorConfig(install.configPath).serverUrl;
+    report(
+      `The saved API key was rejected by ${serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
+        "Running as Administrator will not fix API-key validation.",
+    );
+    const apiKey = await promptSecret("Paste a newly created trAIce API key (input is masked): ");
     install = await installAgent({ ...options, apiKey, apiKeyStdin: false, patchSettings: true });
     await verifyCollectorConnection(install.configPath, dependencies.fetchImpl);
   }
@@ -100,7 +107,10 @@ export async function verifyCollectorConnection(configPath?: string, fetchImpl: 
   if (response.ok) return;
   const detail = await response.text().catch(() => "");
   if (response.status === 401) {
-    throw new CollectorConnectionError("The trAIce server rejected the stored API key.", 401);
+    throw new CollectorConnectionError(
+      `The trAIce server at ${config.serverUrl} rejected the API key. Check that it is active, copied completely, and belongs to the intended workspace.`,
+      401,
+    );
   }
   throw new CollectorConnectionError(
     `Collector connection check returned ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`,

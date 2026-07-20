@@ -86,10 +86,15 @@ async function chooseOption(
   prompt: (question: string) => Promise<string>,
 ): Promise<string> {
   const menu = options
-    .map((option, index) => `  ${index + 1}. ${option}${index === defaultIndex ? " (selected)" : ""}`)
+    .map((option, index) => `  ${index + 1}. ${option}${index === defaultIndex ? " (default)" : ""}`)
     .join("\n");
   while (true) {
-    const answer = (await prompt(`${title}:\n${menu}\nChoose [${defaultIndex + 1}]: `)).trim();
+    const defaultOption = options[defaultIndex]!;
+    const answer = (
+      await prompt(
+        `${title}:\n${menu}\nPress Enter to use ${defaultIndex + 1} (${defaultOption}), or type 1-${options.length}: `,
+      )
+    ).trim();
     if (!answer) return options[defaultIndex]!;
     const index = Number(answer) - 1;
     if (Number.isInteger(index) && options[index]) return options[index];

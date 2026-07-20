@@ -105,7 +105,7 @@ program
   .description("Configure one agent without installing a background service or running history backfill")
   .argument("<agent>", "agent to install: claude-code or codex")
   .option("--config <path>", "collector config path")
-  .option("--server-url <url>", "trAIce app URL", "https://runtraice.com")
+  .option("--server-url <url>", "trAIce app URL", "https://www.runtraice.com")
   .option("--api-key <key>", "trAIce API key")
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
