@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.7.0
+
+### Minor Changes
+
+- 5321e9a: Add opt-in process-local semantic-cache execution and evidence-gated, explicitly allowlisted route execution to the cloud enforcement wrapper.
+
 ## 0.6.0
 
 ### Minor Changes
