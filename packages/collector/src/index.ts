@@ -3,6 +3,7 @@ export type {
   CollectorConfig,
   CollectorInstallOptions,
   CollectorRunOptions,
+  CollectorWorkspaceProfile,
   OtlpNormalizeOptions,
 } from "./types";
 export { DEFAULT_CONFIG_PATH, loadCollectorConfig, writeCollectorConfig } from "./config";
@@ -15,6 +16,19 @@ export {
 } from "./auth";
 export type { CollectorLoginResult, CollectorOAuthTokenBundle } from "./auth";
 export { readCollectorCredential, storeCollectorCredential } from "./credentials";
+export {
+  DEFAULT_PROFILE,
+  activeProfileName,
+  collectorProfile,
+  collectorProfileSummaries,
+  configuredProfileNames,
+  configForProfile,
+  normalizeProfileName,
+  selectedProfileNames,
+  setActiveCollectorProfile,
+  setCollectorProfileMirror,
+} from "./profiles";
+export type { CollectorProfileSummary } from "./profiles";
 export { installCollectorService } from "./service";
 export { resolveFirstRunSetupIdentity, STANDARD_TEAMS } from "./identity";
 export type { SetupIdentityInput } from "./identity";

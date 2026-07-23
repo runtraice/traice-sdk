@@ -5,6 +5,7 @@ import type { InternalUsageEvent } from "@traice/protocol";
 import { createCollectorAccessTokenProvider } from "./auth";
 import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
 import { resolveHome } from "./fs";
+import { activeProfileName, configForProfile, normalizeProfileName } from "./profiles";
 import { forwardEvents } from "./run";
 
 interface TokenUsage {
@@ -48,6 +49,7 @@ export interface CodexBackfillDryRunOptions {
 
 export interface CodexBackfillOptions extends CodexBackfillDryRunOptions {
   configPath?: string;
+  profile?: string;
   onProgress?: (progress: { processed: number; total: number; accepted: number }) => void;
 }
 
@@ -89,8 +91,10 @@ export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexB
 export async function backfillCodex(options: CodexBackfillOptions): Promise<CodexBackfillSummary> {
   const result = scanCodexHistory(options);
   const configPath = resolveConfigPath(options.configPath);
-  const config = loadCollectorConfig(configPath);
-  const getAccessToken = createCollectorAccessTokenProvider(configPath);
+  const rootConfig = loadCollectorConfig(configPath);
+  const profileName = normalizeProfileName(options.profile ?? activeProfileName(rootConfig));
+  const config = configForProfile(rootConfig, profileName);
+  const getAccessToken = createCollectorAccessTokenProvider(configPath, {}, profileName);
   await getAccessToken();
 
   const source = config.sources.codex ?? defaultSourceForAgent("codex");

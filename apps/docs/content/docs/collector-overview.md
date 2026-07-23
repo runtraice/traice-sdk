@@ -64,11 +64,32 @@ npx @traice/collector@latest collect
 
 The default listener binds to `127.0.0.1:4318`. Use `--agent`, `--listen-host`, or `--listen-port` to override the saved configuration for one run.
 
-The listener durably appends accepted local telemetry under
-`~/.traice/collector/state/outbox.ndjson` before returning HTTP 202. It then
-delivers strict batches in the background. A backend outage therefore does not
-hold agent export requests open, and queued events survive collector restarts.
-The outbox retains at most 10,000 events and drops the oldest event on overflow.
+The listener durably appends accepted local telemetry under `~/.traice/collector/state/` before returning HTTP 202.
+The default profile uses `outbox.ndjson`; named profiles use one isolated outbox per workspace. The collector then
+delivers strict batches in the background. A backend outage therefore does not hold agent export requests open, and
+queued events survive collector restarts. Each outbox retains at most 10,000 events and drops its oldest event on
+overflow.
+
+## Send to multiple workspaces
+
+Authorize named workspace profiles, select one primary destination, and explicitly opt other workspaces into
+mirroring:
+
+```bash
+npx --yes @traice/collector@latest auth login --profile live-demo --workspace live-demo
+npx --yes @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
+npx @traice/collector@latest profile use live-demo
+npx @traice/collector@latest profile mirror add test-zoro
+npx @traice/collector@latest profile list
+```
+
+The collector keeps one local OTLP listener and one background service. It reloads profile selection from the config
+and forwards each normalized event to the active workspace and every explicit mirror. Credentials, retries, and
+delivery results remain isolated per workspace. Deduplication is workspace-scoped, so a retry is stored once in each
+destination while an intentional mirror is represented once in every selected workspace.
+
+Use `status --profile <name>` to verify one profile, `backfill codex --profile <name> --since <window>` for an explicit
+historical destination, and `auth logout --profile <name>` to revoke one workspace grant.
 
 ## Inspect Codex history
 
@@ -117,6 +138,7 @@ for separate Command Prompt and PowerShell commands, Node.js installation, and r
 | `status`                          | Check configuration, credentials, service, listener, and server access         |
 | `collect`                         | Run the OTLP listener and forward normalized events                            |
 | `backfill codex --since <window>` | Inspect or upload bounded Codex history                                        |
+| `profile list/use/mirror`         | Select a primary workspace and explicit live mirrors                           |
 | `help [command]`                  | Show current command and option help                                           |
 
 The CLI implementation is public in [`packages/collector/src/cli.ts`](https://github.com/runtraice/traice-sdk/blob/main/packages/collector/src/cli.ts).
@@ -130,6 +152,8 @@ unattended configuration:
 | ----------------------------- | ------------------------------------------------------------- |
 | `--server-url <url>`          | Use staging or another trAIce deployment                      |
 | `--workspace <slug-or-id>`    | Preselect a workspace during browser authorization            |
+| `--profile <name>`            | Save, select, inspect, or backfill a named workspace profile  |
+| `--mirror <name>`             | Add a one-run mirror override to `collect`                    |
 | `--employee-email <email>`    | Set the employee identity without an interactive question     |
 | `--employee-name <name>`      | Set the optional employee display name                        |
 | `--team-name <name>`          | Set the reporting team without an interactive question        |

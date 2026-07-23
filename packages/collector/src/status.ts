@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
 import { readCollectorCredential } from "./credentials";
+import { activeProfileName, configForProfile, normalizeProfileName } from "./profiles";
 import { verifyCollectorConnection } from "./setup";
 import type { AgentName, CollectorCredential } from "./types";
 
@@ -17,6 +18,7 @@ export interface CollectorStatusResult {
     serverUrl?: string;
     listenUrl?: string;
     agents?: AgentName[];
+    profile?: string;
     message?: string;
   };
   credential: { ok: boolean; backend?: CollectorCredential["backend"]; message?: string };
@@ -49,16 +51,16 @@ interface ServiceStatusDependencies {
 }
 
 export async function getCollectorStatus(
-  options: { configPath?: string; timeoutMs?: number } = {},
+  options: { configPath?: string; timeoutMs?: number; profile?: string } = {},
   dependencies: StatusDependencies = {},
 ): Promise<CollectorStatusResult> {
   const configPath = resolveConfigPath(options.configPath);
   const timeoutMs = boundedTimeout(options.timeoutMs);
   const service = (dependencies.checkService ?? (() => getCollectorServiceStatus(dependencies)))();
 
-  let config;
+  let rootConfig;
   try {
-    config = loadCollectorConfig(configPath);
+    rootConfig = loadCollectorConfig(configPath);
   } catch (error) {
     const message = errorMessage(error);
     return {
@@ -71,12 +73,27 @@ export async function getCollectorStatus(
     };
   }
 
-  const listenUrl = `http://${displayHost(config.listenHost)}:${config.listenPort}`;
+  const profileName = normalizeProfileName(options.profile ?? activeProfileName(rootConfig));
+  let config;
+  try {
+    config = configForProfile(rootConfig, profileName);
+  } catch (error) {
+    const message = errorMessage(error);
+    return {
+      ok: false,
+      config: { ok: false, path: configPath, profile: profileName, message },
+      credential: { ok: false, message },
+      service,
+      listener: { ok: false, message: "Skipped because the selected profile is not configured." },
+      server: { ok: false, message: "Skipped because the selected profile is not configured." },
+    };
+  }
+  const listenUrl = `http://${displayHost(rootConfig.listenHost)}:${rootConfig.listenPort}`;
   const serverUrl = config.serverUrl;
   const credential = await checkCredential(config.credential, config.apiKey);
   const [listener, server] = await Promise.all([
     checkListener(listenUrl, timeoutMs, dependencies.fetchImpl),
-    checkServer(configPath, serverUrl, timeoutMs, dependencies.fetchImpl),
+    checkServer(configPath, serverUrl, timeoutMs, dependencies.fetchImpl, profileName),
   ]);
 
   return {
@@ -87,6 +104,7 @@ export async function getCollectorStatus(
       serverUrl,
       listenUrl,
       agents: config.enabledAgents,
+      profile: profileName,
     },
     credential,
     service,
@@ -177,6 +195,7 @@ export function formatCollectorStatus(result: CollectorStatusResult): string {
     `Config: ${checkLabel(result.config.ok)} ${result.config.path}`,
   ];
   if (result.config.serverUrl) lines.push(`Server: ${checkLabel(result.server.ok)} ${result.config.serverUrl}`);
+  if (result.config.profile) lines.push(`Profile: ${result.config.profile}`);
   if (result.config.listenUrl) lines.push(`Listener: ${checkLabel(result.listener.ok)} ${result.config.listenUrl}`);
   lines.push(
     `Credential: ${checkLabel(result.credential.ok)}${result.credential.backend ? ` ${result.credential.backend}` : ""}`,
@@ -238,11 +257,12 @@ async function checkServer(
   serverUrl: string,
   timeoutMs: number,
   fetchImpl: typeof fetch = fetch,
+  profile?: string,
 ): Promise<CollectorStatusResult["server"]> {
   const timedFetch: typeof fetch = (input, init) =>
     fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   try {
-    await verifyCollectorConnection(configPath, timedFetch);
+    await verifyCollectorConnection(configPath, timedFetch, profile);
     return { ok: true, url: serverUrl };
   } catch (error) {
     return { ok: false, url: serverUrl, message: errorMessage(error) };

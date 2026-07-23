@@ -144,6 +144,55 @@ describe("collector OAuth", () => {
     expect(stored.refreshToken).toBe("tr_oauth_rt_secret");
   });
 
+  it("stores named workspace profiles in separate credential entries", async () => {
+    const directory = temporaryDirectory("traice-oauth-profiles-");
+    const configPath = join(directory, "config.json");
+    await loginAndStoreCollectorAuthorization(
+      { configPath, serverUrl: "https://runtraice.com", credentialStore: "file", noBrowser: true },
+      {
+        fetchImpl: successfulLoginFetch(),
+        report: () => {},
+        sleep: async () => {},
+        now: () => Date.parse("2030-07-23T09:00:00.000Z"),
+      },
+    );
+    await loginAndStoreCollectorAuthorization(
+      {
+        configPath,
+        serverUrl: "https://runtraice.com",
+        credentialStore: "file",
+        noBrowser: true,
+        profile: "test-zoro",
+      },
+      {
+        fetchImpl: successfulLoginFetch(),
+        report: () => {},
+        sleep: async () => {},
+        now: () => Date.parse("2030-07-23T09:01:00.000Z"),
+      },
+    );
+
+    const config = loadCollectorConfig(configPath);
+    expect(config.authorization?.workspaceName).toBe("Acme");
+    expect(config.profiles?.["test-zoro"]?.authorization?.workspaceName).toBe("Acme");
+    expect(config.profiles?.["test-zoro"]?.credential).not.toEqual(config.credential);
+    expect(config.profiles?.["test-zoro"]?.credential).toMatchObject({
+      backend: "protected-file",
+    });
+    expect(await readCollectorCredential(config.credential!)).toContain("tr_oauth_at_secret");
+    expect(await readCollectorCredential(config.profiles!["test-zoro"]!.credential!)).toContain("tr_oauth_at_secret");
+
+    const revoke = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+    await expect(logoutCollector(configPath, revoke, "test-zoro")).resolves.toEqual({
+      removed: true,
+      remoteRevoked: true,
+    });
+    const afterLogout = loadCollectorConfig(configPath);
+    expect(afterLogout.profiles?.["test-zoro"]).toBeUndefined();
+    expect(afterLogout.authorization?.workspaceName).toBe("Acme");
+    expect(await readCollectorCredential(afterLogout.credential!)).toContain("tr_oauth_at_secret");
+  });
+
   it("refreshes an expiring access token and persists the rotated bundle", async () => {
     const directory = temporaryDirectory("traice-oauth-refresh-");
     const configPath = join(directory, "config.json");

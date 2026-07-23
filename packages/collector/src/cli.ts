@@ -3,9 +3,17 @@ import { Command } from "commander";
 import packageMetadata from "../package.json";
 import { loginAndStoreCollectorAuthorization, logoutCollector } from "./auth";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
-import { loadCollectorConfig } from "./config";
+import { loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
 import { installAgent } from "./install";
 import { resolveFirstRunSetupIdentity } from "./identity";
+import {
+  collectorProfile,
+  collectorProfileSummaries,
+  configForProfile,
+  normalizeProfileName,
+  setActiveCollectorProfile,
+  setCollectorProfileMirror,
+} from "./profiles";
 import { runCollector } from "./run";
 import { setupAgent } from "./setup";
 import { verifyCollectorConnection } from "./setup";
@@ -39,6 +47,7 @@ authCommand
   .option("--server-url <url>", "trAIce app URL")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect in the browser")
+  .option("--profile <name>", "save the authorization as a named workspace profile")
   .option("--no-browser", "print the authorization link without opening a browser")
   .action(async (options: Record<string, unknown>) => {
     const result = await loginAndStoreCollectorAuthorization({
@@ -46,9 +55,10 @@ authCommand
       serverUrl: stringOption(options.serverUrl),
       credentialStore: credentialStoreOption(options.credentialStore),
       workspaceHint: stringOption(options.workspace),
+      profile: stringOption(options.profile),
       noBrowser: Boolean(options.browser === false),
     });
-    console.log(`Authorized ${result.authorization.workspaceName}.`);
+    console.log(`Authorized ${result.authorization.workspaceName} as profile "${result.profile}".`);
     if (result.authorization.userEmail) console.log(`Signed in as ${result.authorization.userEmail}.`);
     console.log(`Credential stored in ${result.credential.backend}.`);
     if (result.credentialWarning) console.error(`[traice-collector] ${result.credentialWarning}`);
@@ -58,21 +68,25 @@ authCommand
   .command("status")
   .description("Show the saved browser authorization and verify it with trAIce")
   .option("--config <path>", "collector config path")
+  .option("--profile <name>", "workspace profile to inspect")
   .option("--json", "print machine-readable JSON")
   .action(async (options: Record<string, unknown>) => {
     const configPath = stringOption(options.config);
     let authorization: CollectorOAuthAuthorization | null = null;
+    let profile = stringOption(options.profile);
     let ok = false;
     let error: string | undefined;
     try {
       const config = loadCollectorConfig(configPath);
-      authorization = config.authorization ?? null;
-      await verifyCollectorConnection(configPath);
+      profile = normalizeProfileName(profile ?? config.activeProfile);
+      const selected = configForProfile(config, profile);
+      authorization = selected.authorization ?? null;
+      await verifyCollectorConnection(configPath, fetch, profile);
       ok = true;
     } catch (statusError) {
       error = statusError instanceof Error ? statusError.message : String(statusError);
     }
-    const result = { ok, authorization, ...(error ? { error } : {}) };
+    const result = { ok, profile, authorization, ...(error ? { error } : {}) };
     if (options.json) console.log(JSON.stringify(result, null, 2));
     else if (!authorization) {
       console.log(ok ? "Connected with a workspace API key." : "No browser-authorized collector session is saved.");
@@ -89,13 +103,16 @@ authCommand
   .command("logout")
   .description("Revoke the browser-authorized collector session and remove it locally")
   .option("--config <path>", "collector config path")
+  .option("--profile <name>", "workspace profile to revoke")
   .action(async (options: Record<string, unknown>) => {
-    const result = await logoutCollector(stringOption(options.config));
+    const result = await logoutCollector(stringOption(options.config), fetch, stringOption(options.profile));
     if (!result.removed) {
       console.log("No browser-authorized collector session was found.");
       return;
     }
-    console.log("Removed the saved collector authorization.");
+    console.log(
+      `Removed the saved collector authorization${options.profile ? ` for profile "${options.profile}"` : ""}.`,
+    );
     if (!result.remoteRevoked) {
       console.error("The server session could not be revoked. Revoke it from trAIce API keys and collector sessions.");
     }
@@ -105,11 +122,13 @@ program
   .command("status")
   .description("Check configuration, credentials, background service, listener, and server access")
   .option("--config <path>", "collector config path")
+  .option("--profile <name>", "workspace profile to check")
   .option("--timeout <milliseconds>", "network check timeout from 250 to 30000 milliseconds", "3000")
   .option("--json", "print machine-readable JSON")
   .action(async (options: Record<string, unknown>) => {
     const result = await getCollectorStatus({
       configPath: stringOption(options.config),
+      profile: stringOption(options.profile),
       timeoutMs: integerOption(options.timeout, "timeout"),
     });
     console.log(options.json ? JSON.stringify(result, null, 2) : formatCollectorStatus(result));
@@ -126,6 +145,7 @@ program
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect during browser authorization")
+  .option("--profile <name>", "authorize and make a named workspace profile active")
   .option("--no-browser", "print the authorization link without opening a browser")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
@@ -158,6 +178,7 @@ program
       apiKeyStdin: Boolean(options.apiKeyStdin),
       credentialStore: credentialStoreOption(options.credentialStore),
       workspaceHint: stringOption(options.workspace),
+      profile: stringOption(options.profile),
       noBrowser: Boolean(options.browser === false),
       employeeEmail: identity.employeeEmail,
       employeeName: stringOption(options.employeeName),
@@ -187,6 +208,7 @@ program
   .option("--api-key <key>", "trAIce API key")
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
+  .option("--profile <name>", "configure a named workspace profile")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
   .option("--employee-external-id <id>", "employee external ID")
@@ -208,6 +230,7 @@ program
       apiKey: stringOption(options.apiKey),
       apiKeyStdin: Boolean(options.apiKeyStdin),
       credentialStore: credentialStoreOption(options.credentialStore),
+      profile: stringOption(options.profile),
       employeeEmail: stringOption(options.employeeEmail),
       employeeName: stringOption(options.employeeName),
       employeeExternalId: stringOption(options.employeeExternalId),
@@ -232,12 +255,16 @@ program
   .option("--agent <agent>", "only normalize this agent")
   .option("--listen-host <host>", "override local OTLP host")
   .option("--listen-port <port>", "override local OTLP port")
+  .option("--profile <name>", "override the active workspace profile for this run")
+  .option("--mirror <profile>", "also send to a named profile; repeat for multiple mirrors", collectValues, [])
   .action(async (options: Record<string, unknown>) => {
     await runCollector({
       configPath: stringOption(options.config),
       agent: options.agent ? parseAgent(String(options.agent)) : undefined,
       listenHost: stringOption(options.listenHost),
       listenPort: numberOption(options.listenPort),
+      profile: stringOption(options.profile),
+      mirrorProfiles: stringArrayOption(options.mirror),
     });
   });
 
@@ -248,6 +275,7 @@ program
   .requiredOption("--since <date-or-duration>", "earliest event, for example 14d or 2026-07-01")
   .option("--until <date-or-duration>", "exclusive upper boundary; defaults to now")
   .option("--config <path>", "collector config path")
+  .option("--profile <name>", "workspace profile that receives the backfill")
   .option("--codex-home <path>", "Codex home", "~/.codex")
   .option("--dry-run", "inspect local history without sending data")
   .action(async (agent: string, options: Record<string, unknown>) => {
@@ -259,6 +287,7 @@ program
       ? dryRunCodexBackfill({ codexHome: stringOption(options.codexHome), since, until })
       : await backfillCodex({
           configPath: stringOption(options.config),
+          profile: stringOption(options.profile),
           codexHome: stringOption(options.codexHome),
           since,
           until,
@@ -267,6 +296,59 @@ program
           },
         });
     console.log(JSON.stringify(result, null, 2));
+  });
+
+const profileCommand = program.command("profile").description("Manage workspace destinations for one collector");
+
+profileCommand
+  .command("list")
+  .description("List configured workspace profiles and mirror state")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const summaries = collectorProfileSummaries(loadCollectorConfig(stringOption(options.config)));
+    if (options.json) {
+      console.log(JSON.stringify(summaries, null, 2));
+      return;
+    }
+    for (const profile of summaries) {
+      const roles = [profile.active ? "active" : "", profile.mirror ? "mirror" : ""].filter(Boolean).join(", ");
+      console.log(
+        `${profile.name}${roles ? ` (${roles})` : ""}: ${profile.workspaceName ?? profile.workspaceId ?? "API key"} at ${profile.serverUrl}`,
+      );
+    }
+  });
+
+profileCommand
+  .command("use")
+  .description("Select the primary workspace profile")
+  .argument("<profile>", "profile name")
+  .option("--config <path>", "collector config path")
+  .action((profile: string, options: Record<string, unknown>) => {
+    updateProfiles(stringOption(options.config), (config) => setActiveCollectorProfile(config, profile));
+    console.log(`Collector profile "${normalizeProfileName(profile)}" is now active.`);
+  });
+
+const mirrorCommand = profileCommand.command("mirror").description("Manage explicit workspace mirrors");
+
+mirrorCommand
+  .command("add")
+  .description("Send live events to another workspace in addition to the active profile")
+  .argument("<profile>", "profile name")
+  .option("--config <path>", "collector config path")
+  .action((profile: string, options: Record<string, unknown>) => {
+    updateProfiles(stringOption(options.config), (config) => setCollectorProfileMirror(config, profile, true));
+    console.log(`Collector profile "${normalizeProfileName(profile)}" is now a mirror.`);
+  });
+
+mirrorCommand
+  .command("remove")
+  .description("Stop mirroring live events to a workspace profile")
+  .argument("<profile>", "profile name")
+  .option("--config <path>", "collector config path")
+  .action((profile: string, options: Record<string, unknown>) => {
+    updateProfiles(stringOption(options.config), (config) => setCollectorProfileMirror(config, profile, false));
+    console.log(`Collector profile "${normalizeProfileName(profile)}" is no longer a mirror.`);
   });
 
 const cliArguments = process.argv.length <= 2 ? [...process.argv, "help"] : process.argv;
@@ -300,4 +382,29 @@ function integerOption(value: unknown, name: string): number | undefined {
 function credentialStoreOption(value: unknown): "auto" | "keyring" | "file" {
   if (value === "auto" || value === "keyring" || value === "file") return value;
   throw new Error(`Invalid credential store: ${String(value)}. Expected auto, keyring, or file.`);
+}
+
+function collectValues(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function stringArrayOption(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  return values.length > 0 ? values : undefined;
+}
+
+function updateProfiles(
+  configPath: string | undefined,
+  update: (config: ReturnType<typeof loadCollectorConfig>) => ReturnType<typeof loadCollectorConfig>,
+) {
+  const resolved = resolveConfigPath(configPath);
+  const config = update(loadCollectorConfig(resolved));
+  config.updatedAt = new Date().toISOString();
+  writeCollectorConfig(config, resolved);
+  for (const name of [config.activeProfile, ...(config.mirrorProfiles ?? [])].filter((value): value is string =>
+    Boolean(value),
+  )) {
+    collectorProfile(config, name);
+  }
 }

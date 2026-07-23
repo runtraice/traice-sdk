@@ -16,6 +16,13 @@ export interface CollectorOAuthAuthorization {
   authorizedAt: string;
 }
 
+export interface CollectorWorkspaceProfile {
+  serverUrl: string;
+  /** Optional only while a legacy default profile still contains a plaintext apiKey. */
+  credential?: CollectorCredential;
+  authorization?: CollectorOAuthAuthorization;
+}
+
 export interface CollectorConfig {
   version: 1;
   createdAt: string;
@@ -25,6 +32,12 @@ export interface CollectorConfig {
   apiKey?: string;
   credential?: CollectorCredential;
   authorization?: CollectorOAuthAuthorization;
+  /** Additional workspace-scoped destinations. The legacy top-level destination is named "default". */
+  profiles?: Record<string, CollectorWorkspaceProfile>;
+  /** Primary destination for live collection. Defaults to the legacy "default" destination. */
+  activeProfile?: string;
+  /** Explicit best-effort copies after the primary destination succeeds. */
+  mirrorProfiles?: string[];
   listenHost: string;
   listenPort: number;
   includePrompts: boolean;
@@ -44,6 +57,7 @@ export interface CollectorInstallOptions {
   credentialStore?: CredentialStoreMode;
   noBrowser?: boolean;
   workspaceHint?: string;
+  profile?: string;
   employeeEmail?: string;
   employeeName?: string;
   employeeExternalId?: string;
@@ -66,6 +80,8 @@ export interface CollectorRunOptions {
   once?: boolean;
   listenHost?: string;
   listenPort?: number;
+  profile?: string;
+  mirrorProfiles?: string[];
 }
 
 export interface OtlpNormalizeOptions {

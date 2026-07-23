@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { AsyncEntry } from "@napi-rs/keyring";
 import { readJsonFile } from "./fs";
+import { DEFAULT_PROFILE, normalizeProfileName } from "./profiles";
 import type { CollectorCredential, CredentialStoreMode } from "./types";
 
 const KEYRING_SERVICE = "trAIce Collector";
@@ -27,8 +28,10 @@ export async function storeCollectorCredential(
   apiKey: string,
   mode: CredentialStoreMode = "auto",
   dependencies: CredentialStoreDependencies = {},
+  profileName = DEFAULT_PROFILE,
 ): Promise<StoredCredentialResult> {
-  const account = credentialAccount(configPath);
+  const profile = normalizeProfileName(profileName);
+  const account = credentialAccount(configPath, profile);
   if (mode !== "file") {
     try {
       const entry = (dependencies.createKeyringEntry ?? createNativeEntry)(KEYRING_SERVICE, account);
@@ -38,7 +41,7 @@ export async function storeCollectorCredential(
       if (mode === "keyring") {
         throw new Error(`OS credential store unavailable: ${errorMessage(error)}`);
       }
-      const credential = writeProtectedFile(configPath, apiKey);
+      const credential = writeProtectedFile(configPath, apiKey, profile);
       return {
         credential,
         warning: `OS credential store unavailable; using a user-only protected file (${errorMessage(error)}).`,
@@ -46,7 +49,7 @@ export async function storeCollectorCredential(
     }
   }
 
-  return { credential: writeProtectedFile(configPath, apiKey) };
+  return { credential: writeProtectedFile(configPath, apiKey, profile) };
 }
 
 export async function readCollectorCredential(
@@ -94,8 +97,10 @@ export async function deleteCollectorCredential(
   rmSync(credential.path, { force: true });
 }
 
-export function credentialAccount(configPath: string): string {
-  return `config-${createHash("sha256").update(resolve(configPath)).digest("hex").slice(0, 24)}`;
+export function credentialAccount(configPath: string, profileName = DEFAULT_PROFILE): string {
+  const profile = normalizeProfileName(profileName);
+  const input = profile === DEFAULT_PROFILE ? resolve(configPath) : `${resolve(configPath)}\0${profile}`;
+  return `config-${createHash("sha256").update(input).digest("hex").slice(0, 24)}`;
 }
 
 function createNativeEntry(service: string, account: string): KeyringEntry {
@@ -118,9 +123,12 @@ async function setKeyringPassword(entry: KeyringEntry, value: string): Promise<v
   if ((await entry.getPassword()) !== value) throw new Error("credential verification failed");
 }
 
-function writeProtectedFile(configPath: string, apiKey: string): CollectorCredential {
+function writeProtectedFile(configPath: string, apiKey: string, profileName: string): CollectorCredential {
   const directory = dirname(resolve(configPath));
-  const path = resolve(directory, "credentials.json");
+  const profile = normalizeProfileName(profileName);
+  const suffix =
+    profile === DEFAULT_PROFILE ? "" : `-${createHash("sha256").update(profile).digest("hex").slice(0, 12)}`;
+  const path = resolve(directory, `credentials${suffix}.json`);
   writeProtectedCredentialFile(path, apiKey);
   return { backend: "protected-file", path };
 }

@@ -4,6 +4,7 @@ import { backfillCodex, type CodexBackfillSummary } from "./backfill";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
 import { normalizeUrl, readHiddenSecret } from "./fs";
 import { installAgent, type InstallResult } from "./install";
+import { activeProfileName, collectorProfile, normalizeProfileName } from "./profiles";
 import { installCollectorService, type CollectorServiceResult } from "./service";
 import type { CollectorInstallOptions } from "./types";
 
@@ -52,21 +53,22 @@ export async function setupAgent(
   let install = await installWithAuthorization(options, promptSecret, report, dependencies);
 
   try {
-    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl);
+    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl, install.profile);
   } catch (error) {
     if (!(error instanceof CollectorConnectionError) || error.status !== 401 || hasProvidedKey(options)) throw error;
     const config = loadCollectorConfig(install.configPath);
-    if (config.authorization?.type === "oauth") {
-      report(`The saved browser authorization for ${config.authorization.workspaceName} is no longer valid.`);
+    const profile = collectorProfile(config, install.profile);
+    if (profile.authorization?.type === "oauth") {
+      report(`The saved browser authorization for ${profile.authorization.workspaceName} is no longer valid.`);
     } else {
       report(
-        `The saved API key was rejected by ${config.serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
+        `The saved API key was rejected by ${profile.serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
           "Opening browser authorization instead.",
       );
     }
     await loginForSetup(options, report, dependencies);
     install = await installAgent({ ...options, patchSettings: true });
-    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl);
+    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl, install.profile);
   }
 
   const service =
@@ -82,6 +84,7 @@ export async function setupAgent(
     options.agent === "codex" && options.backfill !== false
       ? await (dependencies.runBackfill ?? backfillCodex)({
           configPath: install.configPath,
+          profile: install.profile,
           codexHome: options.codexHome,
           since: `${backfillDays}d`,
           onProgress: ({ processed, total, accepted }) => {
@@ -90,32 +93,39 @@ export async function setupAgent(
         })
       : undefined;
   const config = loadCollectorConfig(install.configPath);
+  const profile = collectorProfile(config, install.profile);
 
   return {
     ok: true,
     install,
-    connection: { ok: true, serverUrl: config.serverUrl },
+    connection: { ok: true, serverUrl: profile.serverUrl },
     ...(service ? { service } : {}),
     ...(backfill ? { backfill } : {}),
   };
 }
 
-export async function verifyCollectorConnection(configPath?: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+export async function verifyCollectorConnection(
+  configPath?: string,
+  fetchImpl: typeof fetch = fetch,
+  requestedProfile?: string,
+): Promise<void> {
   const resolved = resolveConfigPath(configPath);
   const config = loadCollectorConfig(resolved);
+  const profileName = normalizeProfileName(requestedProfile ?? activeProfileName(config));
+  const profile = collectorProfile(config, profileName);
   let accessToken: string;
   try {
-    accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl });
+    accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl, profile: profileName });
   } catch {
     throw new CollectorConnectionError("The stored trAIce credential is unavailable.", 401);
   }
-  const url = new URL("/api/v1/collector/me", config.serverUrl);
+  const url = new URL("/api/v1/collector/me", profile.serverUrl);
   const response = await fetchImpl(url, { headers: { authorization: `Bearer ${accessToken}` } });
   if (response.ok) return;
   const detail = await response.text().catch(() => "");
   if (response.status === 401) {
     throw new CollectorConnectionError(
-      `The trAIce server at ${config.serverUrl} rejected the collector credential. Reauthorize or check that the API key belongs to the intended workspace.`,
+      `The trAIce server at ${profile.serverUrl} rejected the collector credential. Reauthorize or check that the API key belongs to the intended workspace.`,
       401,
     );
   }
@@ -132,14 +142,23 @@ async function installWithAuthorization(
   dependencies: SetupDependencies,
 ): Promise<InstallResult> {
   const current = existingConfig(options.configPath);
+  const profileName = normalizeProfileName(options.profile ?? (current ? activeProfileName(current) : undefined));
+  let currentProfile: ReturnType<typeof collectorProfile> | null = null;
+  if (current) {
+    try {
+      currentProfile = collectorProfile(current, profileName);
+    } catch {
+      currentProfile = null;
+    }
+  }
   if (
     !hasProvidedKey(options) &&
     options.serverUrl &&
-    current &&
-    normalizeUrl(options.serverUrl) !== normalizeUrl(current.serverUrl)
+    currentProfile &&
+    normalizeUrl(options.serverUrl) !== normalizeUrl(currentProfile.serverUrl)
   ) {
     report(
-      `Authorizing ${normalizeUrl(options.serverUrl)} because the saved credential belongs to ${current.serverUrl}.`,
+      `Authorizing ${normalizeUrl(options.serverUrl)} because the saved credential belongs to ${currentProfile.serverUrl}.`,
     );
     await loginForSetup(options, report, dependencies);
   }
@@ -162,6 +181,8 @@ async function loginForSetup(
   report: (message: string) => void,
   dependencies: SetupDependencies,
 ) {
+  const current = existingConfig(options.configPath);
+  const profile = options.profile ?? (current ? activeProfileName(current) : undefined);
   return (dependencies.login ?? loginAndStoreCollectorAuthorization)(
     {
       configPath: options.configPath,
@@ -169,6 +190,7 @@ async function loginForSetup(
       credentialStore: options.credentialStore,
       noBrowser: options.noBrowser,
       workspaceHint: options.workspaceHint,
+      profile,
     },
     {
       fetchImpl: dependencies.fetchImpl,
