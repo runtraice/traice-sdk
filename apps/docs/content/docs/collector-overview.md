@@ -21,7 +21,7 @@ Product SDK events and collector events are separate. Use the collector for empl
 
 ## Recommended setup
 
-`setup` is the complete path. It confirms identity, obtains or reuses a workspace key, verifies server access, patches user-level agent telemetry, installs a background user service, and runs the supported bounded backfill.
+`setup` is the complete path. It confirms identity, opens a short-code browser authorization, verifies server access, patches user-level agent telemetry, installs a background user service, and runs the supported bounded backfill.
 
 ```bash
 npx @traice/collector@latest setup codex \
@@ -31,6 +31,8 @@ npx @traice/collector@latest setup codex \
 ```
 
 Use `setup claude-code` for Claude Code. Add `--no-service` when another process manager will own the collector. Add `--no-backfill` or `--backfill-days N` for Codex history behavior.
+
+The authorization URL can be opened on any device. For an SSH or headless session, add `--no-browser`, then open the printed URL and enter the code.
 
 ## Check collector health
 
@@ -80,14 +82,14 @@ Private device configuration is stored at:
 ~/.traice/collector/config.json
 ```
 
-The file contains the trAIce server URL, a non-secret credential reference, employee and team mapping, enabled adapters, sources, and local listener settings. The API key is stored separately:
+The file contains the trAIce server URL, non-secret authorization metadata and a credential reference, employee and team mapping, enabled adapters, sources, and local listener settings. Short-lived access and rotating refresh credentials are stored separately:
 
 - macOS Keychain.
 - Windows Credential Manager.
 - Linux Secret Service.
 - A user-only protected file when an operating-system credential store is unavailable.
 
-Use `--credential-store keyring` to require the native store or `--credential-store file` to explicitly select the protected-file backend. Do not place an API key in a launchd plist, systemd unit, Windows Startup launcher, shell history, or committed configuration.
+Use `--credential-store keyring` to require the native store or `--credential-store file` to explicitly select the protected-file backend. Do not place credentials in a launchd plist, systemd unit, Windows Startup launcher, shell history, or committed configuration.
 
 On Windows, setup runs for the current user and does not require Administrator access. It creates a hidden Startup
 launcher and keeps its credential in Windows Credential Manager. See the [Codex Windows setup](/docs/codex#windows-setup)
@@ -97,6 +99,7 @@ for separate Command Prompt and PowerShell commands, Node.js installation, and r
 
 | Command                           | Purpose                                                                        |
 | --------------------------------- | ------------------------------------------------------------------------------ |
+| `auth login/status/logout`        | Authorize, inspect, or revoke the saved collector session                      |
 | `setup <agent>`                   | Configure, validate, backfill when supported, and install a background service |
 | `install <agent>`                 | Configure one agent without service installation or history backfill           |
 | `status`                          | Check configuration, credentials, service, listener, and server access         |
@@ -113,6 +116,7 @@ The package root exports setup, installation, status, service, credential, confi
 Primary APIs include:
 
 - `setupAgent`, `installAgent`, and `verifyCollectorConnection`.
+- `loginAndStoreCollectorAuthorization`, `resolveCollectorAccessToken`, and `logoutCollector`.
 - `getCollectorStatus`, `getCollectorServiceStatus`, and `formatCollectorStatus`.
 - `runCollector`, `backfillCodex`, and `dryRunCodexBackfill`.
 - `normalizeClaudeCodeOtlpLogs`, `normalizeClaudeCodeOtlpMetrics`, and `normalizeCodexOtlpLogs`.

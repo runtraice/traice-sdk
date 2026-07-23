@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { AsyncEntry } from "@napi-rs/keyring";
 import { readJsonFile } from "./fs";
@@ -10,6 +10,7 @@ const KEYRING_SERVICE = "trAIce Collector";
 interface KeyringEntry {
   setPassword(password: string): Promise<void>;
   getPassword(): Promise<string | undefined>;
+  deletePassword?(): Promise<unknown>;
 }
 
 export interface CredentialStoreDependencies {
@@ -31,8 +32,7 @@ export async function storeCollectorCredential(
   if (mode !== "file") {
     try {
       const entry = (dependencies.createKeyringEntry ?? createNativeEntry)(KEYRING_SERVICE, account);
-      await entry.setPassword(apiKey);
-      if ((await entry.getPassword()) !== apiKey) throw new Error("credential verification failed");
+      await setKeyringPassword(entry, apiKey);
       return { credential: { backend: "os-keyring", service: KEYRING_SERVICE, account } };
     } catch (error) {
       if (mode === "keyring") {
@@ -56,13 +56,42 @@ export async function readCollectorCredential(
   if (credential.backend === "os-keyring") {
     const entry = (dependencies.createKeyringEntry ?? createNativeEntry)(credential.service, credential.account);
     const apiKey = await entry.getPassword();
-    if (!apiKey) throw new Error("Collector API key was not found in the OS credential store. Re-run install.");
+    if (!apiKey) {
+      throw new Error("Collector credential was not found in the OS credential store. Run setup or auth login.");
+    }
     return apiKey;
   }
 
   const stored = readJsonFile<{ apiKey?: string }>(credential.path);
-  if (!stored?.apiKey) throw new Error(`Collector API key was not found in ${credential.path}. Re-run install.`);
+  if (!stored?.apiKey) {
+    throw new Error(`Collector credential was not found in ${credential.path}. Run setup or auth login.`);
+  }
   return stored.apiKey;
+}
+
+export async function writeCollectorCredential(
+  credential: CollectorCredential,
+  value: string,
+  dependencies: CredentialStoreDependencies = {},
+): Promise<void> {
+  if (credential.backend === "os-keyring") {
+    const entry = (dependencies.createKeyringEntry ?? createNativeEntry)(credential.service, credential.account);
+    await setKeyringPassword(entry, value);
+    return;
+  }
+  writeProtectedCredentialFile(credential.path, value);
+}
+
+export async function deleteCollectorCredential(
+  credential: CollectorCredential,
+  dependencies: CredentialStoreDependencies = {},
+): Promise<void> {
+  if (credential.backend === "os-keyring") {
+    const entry = (dependencies.createKeyringEntry ?? createNativeEntry)(credential.service, credential.account);
+    await entry.deletePassword?.();
+    return;
+  }
+  rmSync(credential.path, { force: true });
 }
 
 export function credentialAccount(configPath: string): string {
@@ -74,25 +103,42 @@ function createNativeEntry(service: string, account: string): KeyringEntry {
   return {
     setPassword: (password) => entry.setPassword(password),
     getPassword: () => entry.getPassword(),
+    deletePassword: () => entry.deletePassword(),
   };
+}
+
+async function setKeyringPassword(entry: KeyringEntry, value: string): Promise<void> {
+  try {
+    await entry.setPassword(value);
+  } catch (error) {
+    if (!entry.deletePassword || !/already exists/i.test(errorMessage(error))) throw error;
+    await entry.deletePassword();
+    await entry.setPassword(value);
+  }
+  if ((await entry.getPassword()) !== value) throw new Error("credential verification failed");
 }
 
 function writeProtectedFile(configPath: string, apiKey: string): CollectorCredential {
   const directory = dirname(resolve(configPath));
   const path = resolve(directory, "credentials.json");
+  writeProtectedCredentialFile(path, apiKey);
+  return { backend: "protected-file", path };
+}
+
+function writeProtectedCredentialFile(path: string, value: string): void {
+  const directory = dirname(resolve(path));
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   try {
     chmodSync(directory, 0o700);
   } catch {
     // Windows uses the ACL inherited from the user's profile directory.
   }
-  writeFileSync(path, `${JSON.stringify({ apiKey }, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(path, `${JSON.stringify({ apiKey: value }, null, 2)}\n`, { mode: 0o600 });
   try {
     chmodSync(path, 0o600);
   } catch {
     // Best effort on non-POSIX filesystems.
   }
-  return { backend: "protected-file", path };
 }
 
 function errorMessage(error: unknown): string {

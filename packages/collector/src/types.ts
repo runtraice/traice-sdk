@@ -6,6 +6,16 @@ export type CredentialStoreMode = "auto" | "keyring" | "file";
 export type CollectorCredential =
   { backend: "os-keyring"; service: string; account: string } | { backend: "protected-file"; path: string };
 
+export interface CollectorOAuthAuthorization {
+  type: "oauth";
+  clientId: "traice-collector";
+  workspaceId: string;
+  workspaceName: string;
+  userEmail?: string;
+  scopes: string[];
+  authorizedAt: string;
+}
+
 export interface CollectorConfig {
   version: 1;
   createdAt: string;
@@ -14,6 +24,7 @@ export interface CollectorConfig {
   /** @deprecated Migrated to credential on the next install or collect. */
   apiKey?: string;
   credential?: CollectorCredential;
+  authorization?: CollectorOAuthAuthorization;
   listenHost: string;
   listenPort: number;
   includePrompts: boolean;
@@ -31,6 +42,8 @@ export interface CollectorInstallOptions {
   apiKey?: string;
   apiKeyStdin?: boolean;
   credentialStore?: CredentialStoreMode;
+  noBrowser?: boolean;
+  workspaceHint?: string;
   employeeEmail?: string;
   employeeName?: string;
   employeeExternalId?: string;

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage } from "node:http";
 import type { InternalUsageEvent } from "@traice/protocol";
-import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
-import { readCollectorCredential, storeCollectorCredential } from "./credentials";
+import { createCollectorAccessTokenProvider } from "./auth";
+import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
@@ -16,16 +16,17 @@ export type ForwardDependencies = {
   batchSize?: number;
   maxAttempts?: number;
   onBatch?: (progress: { processed: number; total: number; accepted: number }) => void;
+  getAccessToken?: (forceRefresh?: boolean) => Promise<string>;
 };
-
-const enqueueForward = createSerializedEventForwarder();
 
 export async function runCollector(options: CollectorRunOptions = {}): Promise<void> {
   const configPath = resolveConfigPath(options.configPath);
   const config = loadCollectorConfig(configPath);
   const listenHost = options.listenHost ?? config.listenHost;
   const listenPort = options.listenPort ?? config.listenPort;
-  const apiKey = await resolveApiKey(config, configPath);
+  const getAccessToken = createCollectorAccessTokenProvider(configPath);
+  await getAccessToken();
+  const enqueueForward = createSerializedEventForwarder({ getAccessToken });
 
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
@@ -52,7 +53,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
 
     try {
       const events = normalizePayloadForRequest(req.url ?? "", payload, config, options.agent, receivedAt);
-      const sent = await enqueueForward({ ...config, apiKey }, events);
+      const sent = await enqueueForward(config, events);
       if (events.length > 0 || sent > 0) {
         console.log(JSON.stringify({ receivedAt, path: req.url, candidates: events.length, sent }));
       }
@@ -146,14 +147,17 @@ async function postBatch(
   const sleep = dependencies.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
   const maxAttempts = Math.max(1, dependencies.maxAttempts ?? MAX_FORWARD_ATTEMPTS);
   let lastError: unknown;
+  let refreshedAfterUnauthorized = false;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     let response: Response;
     try {
+      const accessToken = dependencies.getAccessToken ? await dependencies.getAccessToken(false) : config.apiKey;
+      if (!accessToken) throw new Error("No collector credential is available.");
       response = await fetchImpl(`${config.serverUrl}/api/v1/internal-usage`, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${config.apiKey}`,
+          authorization: `Bearer ${accessToken}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ events: batch }),
@@ -172,6 +176,11 @@ async function postBatch(
 
     const text = await response.text().catch(() => "");
     lastError = new Error(`POST /api/v1/internal-usage returned ${response.status}: ${text.slice(0, 500)}`);
+    if (response.status === 401 && dependencies.getAccessToken && !refreshedAfterUnauthorized) {
+      await dependencies.getAccessToken(true);
+      refreshedAfterUnauthorized = true;
+      continue;
+    }
     if (!isRetryableStatus(response.status)) throw lastError;
 
     if (attempt + 1 < maxAttempts) {
@@ -184,20 +193,6 @@ async function postBatch(
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
-}
-
-async function resolveApiKey(config: CollectorConfig, configPath: string): Promise<string> {
-  if (process.env.TRAICE_API_KEY) return process.env.TRAICE_API_KEY;
-  if (config.credential) return readCollectorCredential(config.credential);
-  if (config.apiKey) {
-    const stored = await storeCollectorCredential(configPath, config.apiKey);
-    config.credential = stored.credential;
-    delete config.apiKey;
-    writeCollectorConfig(config, configPath);
-    if (stored.warning) console.warn(`[traice-collector] ${stored.warning}`);
-    return readCollectorCredential(stored.credential);
-  }
-  throw new Error("Missing collector API key. Re-run install with TRAICE_API_KEY or --api-key-stdin.");
 }
 
 function toIngestEvent(event: InternalUsageEvent): Record<string, unknown> {

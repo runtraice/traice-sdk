@@ -18,7 +18,7 @@ npx @traice/collector@latest setup claude-code \
   --team-name Engineering
 ```
 
-The command prompts for an API key only when a valid saved key is unavailable. It verifies and saves the key, patches user-level `~/.claude/settings.json`, installs a background user service, and reports the result. It is safe to rerun. Add `--no-service` if another process manager will run collection.
+The command opens a short-code browser authorization when a valid saved session is unavailable. It stores the session securely, patches user-level `~/.claude/settings.json`, installs a background user service, and reports the result. It is safe to rerun. Add `--no-browser` for SSH, or `--no-service` if another process manager will run collection.
 
 Verify configuration, credentials, service state, the local listener, and server access:
 
@@ -44,4 +44,4 @@ Prompt logging is off by default. Only pass `--include-prompts` when your organi
 
 Use the native service definitions in the [Codex guide](/docs/codex#background-service), replacing `--agent codex`
 with `--agent claude-code`. Credentials remain in Keychain, Credential Manager, Secret Service, or the protected-file
-fallback; never place the API key in a plist, systemd unit, or Windows Startup launcher.
+fallback; never place a credential in a plist, systemd unit, or Windows Startup launcher.

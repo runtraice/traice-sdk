@@ -6,6 +6,14 @@ export type {
   OtlpNormalizeOptions,
 } from "./types";
 export { DEFAULT_CONFIG_PATH, loadCollectorConfig, writeCollectorConfig } from "./config";
+export {
+  createCollectorAccessTokenProvider,
+  loginAndStoreCollectorAuthorization,
+  loginCollectorOAuth,
+  logoutCollector,
+  resolveCollectorAccessToken,
+} from "./auth";
+export type { CollectorLoginResult, CollectorOAuthTokenBundle } from "./auth";
 export { readCollectorCredential, storeCollectorCredential } from "./credentials";
 export { installCollectorService } from "./service";
 export { resolveFirstRunSetupIdentity, STANDARD_TEAMS } from "./identity";

@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
+import { createCollectorAccessTokenProvider } from "./auth";
 import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
-import { readCollectorCredential } from "./credentials";
 import { resolveHome } from "./fs";
 import { forwardEvents } from "./run";
 
@@ -90,15 +90,13 @@ export async function backfillCodex(options: CodexBackfillOptions): Promise<Code
   const result = scanCodexHistory(options);
   const configPath = resolveConfigPath(options.configPath);
   const config = loadCollectorConfig(configPath);
-  const apiKey =
-    process.env.TRAICE_API_KEY ??
-    (config.credential ? await readCollectorCredential(config.credential) : config.apiKey);
-  if (!apiKey) throw new Error("Missing collector API key. Re-run install before backfilling.");
+  const getAccessToken = createCollectorAccessTokenProvider(configPath);
+  await getAccessToken();
 
   const source = config.sources.codex ?? defaultSourceForAgent("codex");
   const liveEvents = await fetchLiveEvents({
     serverUrl: config.serverUrl,
-    apiKey,
+    getAccessToken,
     since: result.summary.since,
     until: result.summary.until,
     sourceKey: source.sourceKey,
@@ -132,7 +130,11 @@ export async function backfillCodex(options: CodexBackfillOptions): Promise<Code
     });
   }
 
-  const accepted = await forwardEvents({ ...config, apiKey }, events, { batchSize: 50, onBatch: options.onProgress });
+  const accepted = await forwardEvents(config, events, {
+    batchSize: 50,
+    onBatch: options.onProgress,
+    getAccessToken,
+  });
   return {
     dryRun: false,
     sendsData: true,
@@ -268,18 +270,25 @@ function scanCodexHistory(options: CodexBackfillDryRunOptions): {
 
 async function fetchLiveEvents(options: {
   serverUrl: string;
-  apiKey: string;
+  getAccessToken: (forceRefresh?: boolean) => Promise<string>;
   since: string;
   until: string;
   sourceKey: string;
 }): Promise<HistoricalUsageEvent[]> {
-  const url = new URL("/api/v1/internal-usage", options.serverUrl);
+  const url = new URL("/api/v1/collector/usage", options.serverUrl);
   url.searchParams.set("limit", "500");
   url.searchParams.set("since", options.since);
-  url.searchParams.set("tool", "codex");
   url.searchParams.set("sourceKey", options.sourceKey);
-  const response = await fetch(url, { headers: { authorization: `Bearer ${options.apiKey}` } });
-  if (!response.ok) throw new Error(`GET /api/v1/internal-usage returned ${response.status}`);
+  url.searchParams.set("until", options.until);
+  let response = await fetch(url, {
+    headers: { authorization: `Bearer ${await options.getAccessToken(false)}` },
+  });
+  if (response.status === 401) {
+    response = await fetch(url, {
+      headers: { authorization: `Bearer ${await options.getAccessToken(true)}` },
+    });
+  }
+  if (!response.ok) throw new Error(`GET /api/v1/collector/usage returned ${response.status}`);
   const body = (await response.json()) as { usage?: Array<Record<string, unknown>> };
   const rows = Array.isArray(body.usage) ? body.usage : [];
   const until = new Date(options.until);

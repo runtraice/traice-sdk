@@ -368,6 +368,34 @@ describe("@traice/collector", () => {
     expect(JSON.stringify(result.credential)).not.toContain("secret-value");
   });
 
+  it("recovers when a native keyring requires deleting an existing item before replacement", async () => {
+    let value = "old-secret";
+    let firstWrite = true;
+    const setPassword = vi.fn(async (next: string) => {
+      if (firstWrite) {
+        firstWrite = false;
+        throw new Error("The specified item already exists in the keychain.");
+      }
+      value = next;
+    });
+    const deletePassword = vi.fn(async () => {
+      value = "";
+    });
+
+    const result = await storeCollectorCredential("/tmp/traice-keyring-replace/config.json", "new-secret", "keyring", {
+      createKeyringEntry: () => ({
+        setPassword,
+        getPassword: async () => value || undefined,
+        deletePassword,
+      }),
+    });
+
+    expect(result.credential.backend).toBe("os-keyring");
+    expect(deletePassword).toHaveBeenCalledOnce();
+    expect(setPassword).toHaveBeenCalledTimes(2);
+    expect(value).toBe("new-secret");
+  });
+
   it("uses a protected-file fallback without keeping the key in collector config", async () => {
     const directory = mkdtempSync(join(tmpdir(), "traice-collector-credentials-"));
     temporaryDirectories.push(directory);
