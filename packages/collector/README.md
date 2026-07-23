@@ -71,6 +71,12 @@ The maintained collector forwards live OTLP telemetry only; it does not scan
 or replay an unbounded history of local session files. Stop any legacy Codex
 collector process before starting `@traice/collector`.
 
+Live telemetry is durably queued in
+`~/.traice/collector/state/outbox.ndjson` before the local listener returns
+HTTP 202. Backend delivery runs asynchronously in batches, honors server retry
+guidance, and survives collector restarts. The outbox is bounded at 10,000
+events and drops the oldest event if that limit is reached.
+
 Inspect a bounded window of local Codex session history without sending data:
 
 ```sh

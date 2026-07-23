@@ -15,6 +15,8 @@ export type {
   BudgetPolicyContext,
   BudgetPolicyMatch,
   CloudAdapterConfig,
+  CloudDeliveryStats,
+  CloudDeliverySummary,
   EnforcementEvidence,
   EnforcementErrorContext,
   EnforcementStats,
@@ -31,6 +33,9 @@ export interface AdapterResolveOptions {
   localPath?: string;
   cloudApiKey?: string;
   cloudEndpoint?: string;
+  cloudMaxQueueSize?: number;
+  cloudCaptureContent?: boolean;
+  cloudDurableQueuePath?: string;
 }
 
 export function createAdapter(name: string, options: AdapterResolveOptions = {}): CostAdapter {
@@ -48,6 +53,9 @@ export function createAdapter(name: string, options: AdapterResolveOptions = {})
       return new CloudAdapter({
         apiKey: options.cloudApiKey,
         endpoint: options.cloudEndpoint,
+        maxQueueSize: options.cloudMaxQueueSize,
+        captureContent: options.cloudCaptureContent,
+        durableQueuePath: options.cloudDurableQueuePath,
       });
     default:
       throw new Error(

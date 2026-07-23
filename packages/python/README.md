@@ -101,6 +101,7 @@ configure(
     flush_interval=2.0,
     timeout=5.0,
     max_queue_size=5_000,
+    capture_content=False,
 )
 ```
 
@@ -112,7 +113,10 @@ from traice import flush
 flush(timeout=2.0)
 ```
 
-`configure()` returns a `TraiceClient`. Call `client.stats()` to inspect enqueued, sent, dropped, failed-batch, and queued counts.
+`configure()` returns a `TraiceClient`. Call `client.stats()` to inspect
+enqueued, sent, dropped, failed-batch, queued, deduplicated, quota-dropped, and
+retry counts. Events include stable source IDs so backend retries are
+idempotent.
 
 ## Errors
 
@@ -150,7 +154,10 @@ The handler captures the token usage and model information that LangChain expose
 
 ## Privacy
 
-The SDK sends usage metadata, attribution dimensions, and error text. It does not send prompts or model outputs. Do not place secrets or sensitive content in attribution fields or metadata.
+The SDK sends usage metadata, attribution dimensions, and error text. Prompt
+and output values are omitted by default. Set `capture_content=True` only when
+your organization has explicitly approved content collection. Do not place
+secrets or sensitive content in attribution fields or metadata.
 
 ## Development
 

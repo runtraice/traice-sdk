@@ -88,7 +88,7 @@ export function otelRecordToUsageEvent(
   record: NormalizedOtelRecord,
   source: CollectorSource,
   identity: CollectorIdentity,
-  defaults: { receivedAt?: string; agent: string },
+  defaults: { receivedAt?: string; agent: string; includePrompts?: boolean },
 ): InternalUsageEvent | null {
   const attrs = { ...record.resourceAttributes, ...record.attributes };
   const inputTokens = pickNumber(attrs, [
@@ -149,6 +149,14 @@ export function otelRecordToUsageEvent(
   const stepId = pickString(attrs, ["message.id", "request.id", "span.id", "step.id", "stepId"]);
   const model = pickString(attrs, ["model", "gen_ai.request.model", "gen_ai.response.model", "ai.model"]);
   const provider = pickString(attrs, ["provider", "gen_ai.system", "ai.provider"]);
+  const costUsd = pickNumber(attrs, ["cost_usd", "costUsd", "total_cost_usd", "gen_ai.usage.cost_usd"]);
+  const latencyMs = pickNumber(attrs, [
+    "latency_ms",
+    "latencyMs",
+    "duration_ms",
+    "durationMs",
+    "gen_ai.response.latency_ms",
+  ]);
   const sourceEventId =
     pickString(attrs, ["event.id", "event_id", "id"]) ??
     hashSourceEventId(defaults.agent, record.name, occurredAt, runId, stepId, attrs, record.body);
@@ -167,10 +175,15 @@ export function otelRecordToUsageEvent(
     cacheReadTokens,
     cacheWriteTokens,
     totalTokens,
+    costUsd,
+    ...(costUsd !== undefined ? { costBasis: "reported" } : {}),
+    latencyMs,
     status: statusFrom(record.severity, attrs),
     metadata: redactMetadata({
       eventName: record.name,
-      body: typeof record.body === "string" ? truncate(record.body, 300) : record.body,
+      ...(defaults.includePrompts
+        ? { body: typeof record.body === "string" ? truncate(record.body, 300) : record.body }
+        : {}),
       attributes: sanitizeAttributes(attrs),
     }) as JsonRecord,
   });
@@ -180,7 +193,7 @@ export function otelMetricPointToUsageEvent(
   point: NormalizedOtelMetricPoint,
   source: CollectorSource,
   identity: CollectorIdentity,
-  defaults: { receivedAt?: string; agent: string },
+  defaults: { receivedAt?: string; agent: string; includePrompts?: boolean },
 ): InternalUsageEvent | null {
   const attrs = { ...point.resourceAttributes, ...point.attributes };
   const metricName = point.metricName.toLowerCase();
@@ -328,10 +341,16 @@ function statusFrom(severity: string | undefined, attrs: Record<string, unknown>
 function sanitizeAttributes(attrs: Record<string, unknown>): JsonRecord {
   const output: JsonRecord = {};
   for (const [key, value] of Object.entries(attrs)) {
-    if (/prompt|completion|message|content|output|input/i.test(key)) continue;
+    if (!isAllowedMetadataAttribute(key)) continue;
     output[key] = valueToJson(value) ?? null;
   }
   return output;
+}
+
+function isAllowedMetadataAttribute(key: string): boolean {
+  return /^(event\.name|service\.(name|version)|deployment\.environment|environment|agent(\.|_)version|tool(\.|_)version|provider|model|gen_ai\.(system|request\.model|response\.(model|finish_reason))|status(\.code)?|(session|conversation|thread|run|step|span|request)\.(id|name)|runId|stepId)$/i.test(
+    key,
+  );
 }
 
 function hashSourceEventId(

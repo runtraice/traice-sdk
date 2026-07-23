@@ -97,7 +97,7 @@ Optional identity and allocation fields:
 | Execution       | `runId`, `stepId`                                                                   |
 | Usage           | `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `totalTokens` |
 | Cost            | `costUsd`, `costBasis`                                                              |
-| Result          | `status` with `success`, `error`, or `unknown`                                      |
+| Result          | `status` with `success`, `error`, or `unknown`; optional `latencyMs`                |
 | Context         | JSON-safe `metadata`                                                                |
 
 ## Protocol utilities

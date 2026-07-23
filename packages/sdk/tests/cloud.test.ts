@@ -53,9 +53,10 @@ describe("CloudAdapter", () => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
-        receivedBodies.push(JSON.parse(body));
+        const parsed = JSON.parse(body);
+        receivedBodies.push(parsed);
         res.writeHead(writeResponseStatus, { "Content-Type": "application/json" });
-        res.end('{"received":1}');
+        res.end(JSON.stringify({ accepted: parsed.events?.length ?? 1, deduplicated: 0, quotaDropped: 0 }));
       });
     });
     server.listen(0, () => {
@@ -100,6 +101,8 @@ describe("CloudAdapter", () => {
     expect(receivedBodies).toHaveLength(1);
     expect(receivedBodies[0].events).toHaveLength(1);
     expect(receivedBodies[0].events[0]).toEqual({
+      source: "traice-sdk",
+      externalId: "cloud-1",
       ts: "2025-04-05T10:00:00Z",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
@@ -136,8 +139,11 @@ describe("CloudAdapter", () => {
           metadata: { traceId: "trace-1" },
           tags: { tenantId: "legacy-tenant", suite: "smoke" },
         }),
+        { captureContent: true },
       ),
     ).toEqual({
+      source: "traice-sdk",
+      externalId: "evt-1",
       ts: "2025-04-05T10:00:00Z",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
@@ -182,6 +188,8 @@ describe("CloudAdapter", () => {
         }),
       ),
     ).toMatchObject({
+      source: "traice-sdk",
+      externalId: "evt-1",
       promptTokens: 10_000,
       outputTokens: 500,
       totalTokens: 10_500,
@@ -211,6 +219,8 @@ describe("CloudAdapter", () => {
         }),
       ),
     ).toEqual({
+      source: "traice-sdk",
+      externalId: "evt-1",
       ts: "2025-04-05T10:00:00Z",
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
@@ -240,6 +250,7 @@ describe("CloudAdapter", () => {
       apiKey: "test-key",
       endpoint: `http://localhost:${port}/v1/events`,
       batchSize: 1,
+      captureContent: true,
     });
 
     await adapter.write(
@@ -271,6 +282,8 @@ describe("CloudAdapter", () => {
       {
         events: [
           {
+            source: "traice-sdk",
+            externalId: "evt-1",
             ts: "2025-04-05T10:00:00Z",
             provider: "anthropic",
             model: "claude-sonnet-4-20250514",
@@ -364,6 +377,7 @@ describe("CloudAdapter", () => {
       apiKey: "test-key",
       endpoint: `http://localhost:${port}/v1/events`,
       batchSize: 1,
+      maxDeliveryAttempts: 1,
     });
 
     await expect(adapter.write(makeEvent())).rejects.toThrow("CloudAdapter failed: 500");
@@ -385,6 +399,43 @@ describe("CloudAdapter", () => {
 
     await adapter.flush();
     expect(receivedBodies).toHaveLength(1);
+  });
+
+  it("omits prompt and output unless content capture is explicitly enabled", () => {
+    const event = makeEvent({ prompt: "secret prompt", output: "secret output" });
+
+    expect(toCloudEvent(event)).not.toHaveProperty("prompt");
+    expect(toCloudEvent(event)).not.toHaveProperty("output");
+    expect(toCloudEvent(event, { captureContent: true })).toMatchObject({
+      prompt: "secret prompt",
+      output: "secret output",
+    });
+  });
+
+  it("bounds the queue, drops the oldest event, and reports delivery health", async () => {
+    const errors: Error[] = [];
+    const adapter = new CloudAdapter({
+      apiKey: "test-key",
+      endpoint: `http://localhost:${port}/v1/events`,
+      batchSize: 100,
+      maxQueueSize: 2,
+      flushIntervalMs: 60_000,
+      onDeliveryError: (error) => errors.push(error),
+    });
+
+    await adapter.write(makeEvent({ id: "oldest" }));
+    await adapter.write(makeEvent({ id: "kept-1" }));
+    await adapter.write(makeEvent({ id: "kept-2" }));
+    await adapter.flush();
+
+    expect(receivedBodies[0].events.map((event: any) => event.externalId)).toEqual(["kept-1", "kept-2"]);
+    expect(adapter.getDeliveryStats()).toMatchObject({
+      queued: 0,
+      accepted: 2,
+      queueDropped: 1,
+      failedBatches: 0,
+    });
+    expect(errors[0]?.message).toContain("queue full");
   });
 
   describe("advisory budget policy", () => {

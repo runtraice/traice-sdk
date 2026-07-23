@@ -8,6 +8,7 @@ export function normalizeCodexOtlpLogs(payload: unknown, options: OtlpNormalizeO
       otelRecordToUsageEvent(record, options.source, options.identity, {
         receivedAt: options.receivedAt,
         agent: "codex",
+        includePrompts: options.includePrompts,
       }),
     )
     .filter((event): event is InternalUsageEvent => event !== null);

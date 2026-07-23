@@ -28,10 +28,18 @@ import { configure } from "@traice/sdk";
 configure({
   adapters: ["cloud"],
   cloudApiKey: process.env.TRAICE_API_KEY,
+  cloudMaxQueueSize: 1_000,
+  cloudDurableQueuePath: "./.traice/outbox.ndjson",
 });
 ```
 
 `configure()` merges values into the current process-wide configuration. Call `resetConfig()` first when you need a clean configuration, primarily in tests.
+
+`cloudDurableQueuePath` is optional. Set it for long-running services that need
+events to survive a process restart. The queue is bounded by
+`cloudMaxQueueSize`; when full, the oldest event is removed so telemetry cannot
+grow memory or disk without limit. Restrict access to the queue file because it
+contains event metadata.
 
 ## Meter an OpenAI call
 
@@ -59,6 +67,9 @@ const completion = await meter(
 ```
 
 By default, adapter writes are fire-and-forget. Set `awaitWrites: true` on a call when delivery must finish before `meter()` resolves.
+
+Each cloud event carries the SDK event UUID as a stable `externalId`. Delivery
+retries are therefore idempotent and do not create a second usage row.
 
 ## Meter an Anthropic call
 
@@ -170,6 +181,11 @@ const cloud = new CloudAdapter({
   apiKey: process.env.TRAICE_API_KEY!,
   batchSize: 100,
   flushIntervalMs: 2_000,
+  durableQueuePath: "./.traice/outbox.ndjson",
+  requestTimeoutMs: 10_000,
+  maxDeliveryAttempts: 4,
+  onDelivery: (summary) => metrics.record(summary),
+  onDeliveryError: (error) => logger.warn({ error }, "trAIce delivery delayed"),
 });
 
 configure({
@@ -188,6 +204,17 @@ await flush();
 ```
 
 Use `getMeterStats()` to inspect tracked events, dropped events, adapter errors, and unknown models for the current process.
+
+For an explicitly constructed `CloudAdapter`, use `getDeliveryStats()` to
+inspect queue depth and age, accepted and deduplicated rows, quota drops,
+retries, failed batches, and the most recent success or error. Delivery uses
+one in-flight flush, strict batches, a request timeout, bounded exponential
+backoff, and `Retry-After` or rate-limit reset guidance from the server.
+
+Prompt and output samples are not sent by default, even when they are present
+on a local `CostEvent`. Set `captureContent: true` on `CloudAdapter`, or
+`cloudCaptureContent: true` in global configuration, only after the workspace
+has approved content collection.
 
 ## Framework integrations
 

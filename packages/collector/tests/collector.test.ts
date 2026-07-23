@@ -10,6 +10,7 @@ import { readCollectorCredential, storeCollectorCredential } from "../src/creden
 import { installAgent } from "../src/install";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "../src/adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "../src/adapters/codex";
+import { CollectorOutbox } from "../src/outbox";
 import { createSerializedEventForwarder, forwardEvents, normalizePayloadForRequest } from "../src/run";
 import { installCollectorService } from "../src/service";
 import { setupAgent } from "../src/setup";
@@ -47,6 +48,32 @@ describe("@traice/collector", () => {
       outputTokens: 8,
       totalTokens: 20,
     });
+    expect(events[0]?.metadata).not.toHaveProperty("body");
+  });
+
+  it("only includes OTLP bodies after explicit prompt capture opt-in", () => {
+    const events = normalizeClaudeCodeOtlpLogs(logPayload("claude", "claude-3-5-sonnet", 12, 8), {
+      source: defaultSourceForAgent("claude-code"),
+      identity,
+      receivedAt: "2026-07-10T00:00:00.000Z",
+      includePrompts: true,
+    });
+
+    expect(events[0]?.metadata).toMatchObject({ body: "response.completed" });
+  });
+
+  it("extracts reported cost and latency into first-class fields", () => {
+    const payload = logPayload("codex", "gpt-5-codex", 7, 2);
+    const attributes = (payload.resourceLogs[0].scopeLogs[0].logRecords[0] as any).attributes;
+    attributes.push({ key: "cost_usd", value: { doubleValue: 0.42 } });
+    attributes.push({ key: "duration_ms", value: { intValue: "875" } });
+    const [event] = normalizeCodexOtlpLogs(payload, {
+      source: defaultSourceForAgent("codex"),
+      identity,
+      receivedAt: "2026-07-10T00:00:00.000Z",
+    });
+
+    expect(event).toMatchObject({ costUsd: 0.42, costBasis: "reported", latencyMs: 875 });
   });
 
   it("normalizes Claude Code OTLP metric token points", () => {
@@ -313,11 +340,55 @@ describe("@traice/collector", () => {
       .mockResolvedValueOnce(Response.json({ accepted: 1 }));
     const sleep = vi.fn(async () => undefined);
 
-    await expect(forwardEvents(collectorConfig(), [usageEvent(1)], { fetchImpl, sleep, maxAttempts: 3 })).resolves.toBe(
-      1,
-    );
+    await expect(
+      forwardEvents(collectorConfig(), [usageEvent(1)], {
+        fetchImpl,
+        sleep,
+        maxAttempts: 3,
+        random: () => 0.5,
+      }),
+    ).resolves.toBe(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(250);
+  });
+
+  it("honors rate-limit retry guidance and caps the delay", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("busy", { status: 429, headers: { "Retry-After": "30" } }))
+      .mockResolvedValueOnce(Response.json({ accepted: 1 }));
+    const sleep = vi.fn(async () => undefined);
+
+    await forwardEvents(collectorConfig(), [usageEvent(1)], {
+      fetchImpl,
+      sleep,
+      maxAttempts: 2,
+      maxRetryDelayMs: 500,
+    });
+
+    expect(sleep).toHaveBeenCalledWith(500);
+  });
+
+  it("persists, bounds, reloads, and acknowledges the durable outbox", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-outbox-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "state", "outbox.ndjson");
+    const outbox = new CollectorOutbox(path, 2);
+    await outbox.initialize();
+
+    expect(await outbox.enqueue([usageEvent(1), usageEvent(2), usageEvent(3)])).toEqual({
+      queued: 2,
+      deduplicated: 0,
+      dropped: 1,
+    });
+    expect(outbox.stats()).toMatchObject({ queued: 2, overflowDropped: 1 });
+
+    const restored = new CollectorOutbox(path, 2);
+    await restored.initialize();
+    expect((await restored.peek(10)).map((event) => event.sourceEventId)).toEqual(["event-2", "event-3"]);
+    expect(await restored.enqueue([usageEvent(3)])).toMatchObject({ deduplicated: 1, queued: 0 });
+    await restored.acknowledge(["event-2", "event-3"]);
+    expect(restored.stats()).toMatchObject({ queued: 0, delivered: 2 });
   });
 
   it("serializes concurrent forwarding requests", async () => {

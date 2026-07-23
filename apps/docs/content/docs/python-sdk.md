@@ -45,12 +45,13 @@ client = configure(
 
 Configuration options:
 
-| Option           | Default        | Behavior                                                  |
-| ---------------- | -------------- | --------------------------------------------------------- |
-| `batch_size`     | `50`           | Wake the delivery worker when this many events are queued |
-| `flush_interval` | `5.0` seconds  | Maximum normal wait before a background flush             |
-| `timeout`        | `10.0` seconds | HTTP request timeout                                      |
-| `max_queue_size` | `1000`         | Maximum number of events held in memory                   |
+| Option            | Default        | Behavior                                                  |
+| ----------------- | -------------- | --------------------------------------------------------- |
+| `batch_size`      | `50`           | Wake the delivery worker when this many events are queued |
+| `flush_interval`  | `5.0` seconds  | Maximum normal wait before a background flush             |
+| `timeout`         | `10.0` seconds | HTTP request timeout                                      |
+| `max_queue_size`  | `1000`         | Maximum number of events held in memory                   |
+| `capture_content` | `False`        | Send explicitly supplied prompt or output samples         |
 
 Reconfiguring replaces the process-wide client after a best-effort close of the previous client.
 
@@ -154,7 +155,10 @@ Python uses snake_case arguments and converts them to the shared cloud fields.
 | `outcome`       | `outcome`    | Product or workflow result           |
 | `metadata`      | `metadata`   | JSON-serializable structured context |
 
-Every Python event adds `metadata.sdk: "python"` and the installed package version as `metadata.sdkVersion`. The SDK does not send prompts or model outputs.
+Every Python event adds `metadata.sdk: "python"` and the installed package
+version as `metadata.sdkVersion`. It also adds a stable UUID as `externalId`,
+so a delivery retry is deduplicated by the backend. Prompt and output
+dimensions are omitted unless `capture_content=True`.
 
 ## Flush and shutdown
 
@@ -182,6 +186,9 @@ print(stats.sent)
 print(stats.dropped)
 print(stats.failed_batches)
 print(stats.queued)
+print(stats.deduplicated)
+print(stats.quota_dropped)
+print(stats.retries)
 ```
 
 The queue drops the oldest event when `max_queue_size` is reached. Collection remains best-effort and never retries a provider request.

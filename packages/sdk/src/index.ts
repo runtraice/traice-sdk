@@ -58,6 +58,8 @@ export type {
   BudgetPolicyContext,
   BudgetPolicyMatch,
   CloudAdapterConfig,
+  CloudDeliveryStats,
+  CloudDeliverySummary,
   EnforcementEvidence,
   EnforcementErrorContext,
   EnforcementStats,
@@ -144,6 +146,9 @@ const DEFAULT_CONFIG: GlobalConfig = {
   warnOnMissingModel: true,
   cloudApiKey: undefined,
   cloudEndpoint: undefined,
+  cloudMaxQueueSize: undefined,
+  cloudCaptureContent: false,
+  cloudDurableQueuePath: undefined,
 };
 
 let globalConfig: GlobalConfig = { ...DEFAULT_CONFIG };
@@ -158,6 +163,9 @@ function getAdapters(): CostAdapter[] {
       localPath: globalConfig.localPath,
       cloudApiKey: globalConfig.cloudApiKey,
       cloudEndpoint: globalConfig.cloudEndpoint,
+      cloudMaxQueueSize: globalConfig.cloudMaxQueueSize,
+      cloudCaptureContent: globalConfig.cloudCaptureContent,
+      cloudDurableQueuePath: globalConfig.cloudDurableQueuePath,
     });
   }
   return adapterCache;

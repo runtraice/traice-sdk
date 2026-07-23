@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,6 +24,9 @@ class ClientStats:
     dropped: int
     failed_batches: int
     queued: int
+    deduplicated: int
+    quota_dropped: int
+    retries: int
 
 
 class TraiceClient:
@@ -37,7 +41,8 @@ class TraiceClient:
         flush_interval: float = 5.0,
         timeout: float = 10.0,
         max_queue_size: int = 1_000,
-        _transport: Optional[Callable[[str, bytes, Mapping[str, str], float], None]] = None,
+        capture_content: bool = False,
+        _transport: Optional[Callable[[str, bytes, Mapping[str, str], float], Any]] = None,
     ) -> None:
         if not api_key or not api_key.strip():
             raise ValueError("api_key is required")
@@ -52,6 +57,7 @@ class TraiceClient:
         self.flush_interval = flush_interval
         self.timeout = timeout
         self.max_queue_size = max_queue_size
+        self.capture_content = capture_content
         self._transport = _transport or _post
         self._buffer: deque[dict[str, Any]] = deque()
         self._condition = threading.Condition()
@@ -62,6 +68,9 @@ class TraiceClient:
         self._sent = 0
         self._dropped = 0
         self._failed_batches = 0
+        self._deduplicated = 0
+        self._quota_dropped = 0
+        self._retries = 0
         self._thread = threading.Thread(target=self._run, name="traice-flusher", daemon=True)
         self._thread.start()
 
@@ -90,6 +99,8 @@ class TraiceClient:
             metadata["errorMessage"] = str(error_message)[:2048]
 
         event: dict[str, Any] = {
+            "source": "traice-python",
+            "externalId": "py_" + uuid.uuid4().hex,
             "ts": _timestamp(),
             "provider": usage.provider,
             "model": usage.model,
@@ -110,7 +121,13 @@ class TraiceClient:
             "status": status,
             "metadata": metadata,
         }
-        event.update({_camel_case(key): value for key, value in dimensions.items() if value is not None})
+        event.update(
+            {
+                _camel_case(key): value
+                for key, value in dimensions.items()
+                if value is not None and (self.capture_content or key not in {"prompt", "output"})
+            }
+        )
         self.enqueue(event)
 
     def flush(self, timeout: Optional[float] = None) -> bool:
@@ -142,6 +159,9 @@ class TraiceClient:
                 dropped=self._dropped,
                 failed_batches=self._failed_batches,
                 queued=len(self._buffer),
+                deduplicated=self._deduplicated,
+                quota_dropped=self._quota_dropped,
+                retries=self._retries,
             )
 
     def _run(self) -> None:
@@ -160,21 +180,23 @@ class TraiceClient:
                     self._active = True
                     batch = [self._buffer.popleft() for _ in range(min(self.batch_size, len(self._buffer)))]
 
-                sent = self._send(batch)
+                summary = self._send(batch)
                 with self._condition:
-                    if sent:
-                        self._sent += len(batch)
+                    if summary is not None:
+                        self._sent += int(summary.get("accepted", len(batch)))
+                        self._deduplicated += int(summary.get("deduplicated", 0))
+                        self._quota_dropped += int(summary.get("quotaDropped", 0))
                     else:
                         self._dropped += len(batch)
                         self._failed_batches += 1
                     self._active = False
                     self._condition.notify_all()
 
-    def _send(self, batch: list[dict[str, Any]]) -> bool:
+    def _send(self, batch: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
         try:
             body = json.dumps({"events": batch}, separators=(",", ":"), allow_nan=False).encode("utf-8")
         except (TypeError, ValueError):
-            return False
+            return None
         headers = {
             "Authorization": "Bearer " + self.api_key,
             "Content-Type": "application/json",
@@ -183,12 +205,15 @@ class TraiceClient:
         }
         for attempt in range(2):
             try:
-                self._transport(self.endpoint, body, headers, self.timeout)
-                return True
+                result = self._transport(self.endpoint, body, headers, self.timeout)
+                if isinstance(result, Mapping):
+                    return dict(result)
+                return {"accepted": len(batch)}
             except Exception:
                 if attempt == 0:
+                    self._retries += 1
                     time.sleep(0.1)
-        return False
+        return None
 
 
 _global_lock = threading.Lock()
@@ -243,11 +268,16 @@ def _shutdown_at_exit() -> None:
 atexit.register(_shutdown_at_exit)
 
 
-def _post(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> None:
+def _post(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> dict[str, Any]:
     outgoing = request.Request(url, data=body, headers=dict(headers), method="POST")
     with request.urlopen(outgoing, timeout=timeout) as response:
         if not 200 <= response.status < 300:
             raise RuntimeError("trAIce returned HTTP " + str(response.status))
+        payload = response.read()
+        if not payload:
+            return {}
+        parsed = json.loads(payload)
+        return parsed if isinstance(parsed, dict) else {}
 
 
 def _event_endpoint(endpoint: str) -> str:
