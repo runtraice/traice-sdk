@@ -38,7 +38,7 @@ authCommand
   .option("--config <path>", "collector config path")
   .option("--server-url <url>", "trAIce app URL")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
-  .option("--workspace <id>", "workspace to preselect in the browser")
+  .option("--workspace <workspace>", "workspace slug or ID to preselect in the browser")
   .option("--no-browser", "print the authorization link without opening a browser")
   .action(async (options: Record<string, unknown>) => {
     const result = await loginAndStoreCollectorAuthorization({
@@ -125,7 +125,7 @@ program
   .option("--api-key <key>", "trAIce API key")
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
-  .option("--workspace <id>", "workspace to preselect during browser authorization")
+  .option("--workspace <workspace>", "workspace slug or ID to preselect during browser authorization")
   .option("--no-browser", "print the authorization link without opening a browser")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")

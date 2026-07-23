@@ -21,16 +21,17 @@ Product SDK events and collector events are separate. Use the collector for empl
 
 ## Recommended setup
 
-`setup` is the complete path. It confirms identity, opens a short-code browser authorization, verifies server access, patches user-level agent telemetry, installs a background user service, and runs the supported bounded backfill.
+Authorize the device, then run setup. Setup confirms identity, verifies server access, patches user-level agent
+telemetry, installs a background user service, and runs the supported bounded backfill.
 
 ```bash
-npx @traice/collector@latest setup codex \
-  --server-url https://www.runtraice.com \
-  --employee-email you@company.com \
-  --team-name Engineering
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup codex
 ```
 
-Use `setup claude-code` for Claude Code. Add `--no-service` when another process manager will own the collector. Add `--no-backfill` or `--backfill-days N` for Codex history behavior.
+You can run `setup` directly; it starts browser authorization when needed. Use `setup claude-code` for Claude Code.
+Add `--no-service` when another process manager will own the collector. Add `--no-backfill` or `--backfill-days N`
+for Codex history behavior.
 
 The authorization URL can be opened on any device. For an SSH or headless session, add `--no-browser`, then open the printed URL and enter the code.
 
@@ -108,6 +109,28 @@ for separate Command Prompt and PowerShell commands, Node.js installation, and r
 | `help [command]`                  | Show current command and option help                                           |
 
 The CLI implementation is public in [`packages/collector/src/cli.ts`](https://github.com/runtraice/traice-sdk/blob/main/packages/collector/src/cli.ts).
+
+### Common parameters
+
+The recommended commands omit defaults and ask for missing identity choices. Use these parameters for advanced or
+unattended configuration:
+
+| Option                        | Purpose                                                       |
+| ----------------------------- | ------------------------------------------------------------- |
+| `--server-url <url>`          | Use staging or another trAIce deployment                      |
+| `--workspace <slug-or-id>`    | Preselect a workspace during browser authorization            |
+| `--employee-email <email>`    | Set the employee identity without an interactive question     |
+| `--employee-name <name>`      | Set the optional employee display name                        |
+| `--team-name <name>`          | Set the reporting team without an interactive question        |
+| `--seat-monthly-usd <amount>` | Record an optional per-seat subscription commitment           |
+| `--backfill-days <1-30>`      | Change the default 7-day Codex backfill                       |
+| `--no-backfill`               | Skip Codex history                                            |
+| `--no-service`                | Do not install the background service                         |
+| `--no-browser`                | Print the authorization link for SSH or another device        |
+| `--credential-store <mode>`   | Select `auto`, `keyring`, or `file`                           |
+| `--yes`                       | Accept defaults for an explicitly configured unattended setup |
+
+Run `npx @traice/collector@latest help <command>` for every supported option.
 
 ## Programmatic API
 

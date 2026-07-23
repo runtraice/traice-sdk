@@ -11,17 +11,15 @@ order: 3
 Set up Codex, start collection in the background, and backfill the previous 7 days:
 
 ```sh
-npx @traice/collector@latest setup codex \
-  --server-url https://www.runtraice.com \
-  --employee-email you@company.com \
-  --team-name Engineering
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup codex
 ```
 
-The command opens a trAIce browser authorization when a valid saved session is unavailable. Confirm the short code and
-workspace, then setup patches user-level `~/.codex/config.toml`, installs a background user service, and reports the
-backfill result. It is safe to rerun. Use `--backfill-days N` for a 1 to 30 day window, `--no-backfill` to skip history,
-or `--no-service` if another process manager will run collection. Over SSH, add `--no-browser` and open the printed URL
-on any device.
+Confirm the short code and workspace in your browser. Setup patches user-level `~/.codex/config.toml`, installs a
+background user service, and reports the backfill result. You can run `setup` directly; it starts browser
+authorization when needed. It is safe to rerun. Use `--backfill-days N` for a 1 to 30 day window, `--no-backfill` to
+skip history, or `--no-service` if another process manager will run collection. Over SSH, add `--no-browser` to
+`auth login` and open the printed URL on any device.
 
 Codex project-local telemetry settings may not control routing. Prefer user-level configuration for device installs.
 
@@ -31,23 +29,20 @@ Use the command that matches the terminal. Command Prompt does not understand Po
 
 ### Command Prompt
 
-Keep the setup command on one line:
+Run these commands one at a time:
 
 ```bat
-npx --yes @traice/collector@latest setup codex --server-url "https://www.runtraice.com" --employee-email "you@company.com" --team-name "Engineering" --backfill-days 7 --yes
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup codex
 ```
 
 ### PowerShell
 
-PowerShell supports a backtick at the end of each continued line:
+Run the same commands one at a time:
 
 ```powershell
-npx --yes @traice/collector@latest setup codex `
-  --server-url 'https://www.runtraice.com' `
-  --employee-email 'you@company.com' `
-  --team-name 'Engineering' `
-  --backfill-days 7 `
-  --yes
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup codex
 ```
 
 Run setup as the Windows user whose Codex usage should be collected. Administrator access is not required. The

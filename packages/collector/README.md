@@ -5,16 +5,13 @@ Unified local collector for coding-agent usage.
 ## Claude Code
 
 ```sh
-npx @traice/collector@latest setup claude-code \
-  --server-url https://www.runtraice.com \
-  --employee-email you@company.com \
-  --employee-name "Your Name" \
-  --team-name Engineering
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup claude-code
 ```
 
-`setup` opens a browser authorization page when a valid saved credential is unavailable, patches the agent settings,
-and installs a background user service. Confirm the short code and workspace in trAIce. You do not need to copy an API
-key. It is safe to rerun.
+Authorize the device in your browser, then run `setup` to patch the agent settings and install a background user
+service. You can also run `setup` directly; it starts browser authorization when a valid saved session is unavailable.
+You do not need to copy an API key. Both commands are safe to rerun.
 
 On the first interactive run, setup compares the requested employee email with the local Git email and asks which
 identity to use. It also confirms a standard team name so reporting does not split across spelling variants. Use
@@ -25,11 +22,8 @@ Prompt logging stays disabled unless you explicitly pass `--include-prompts`.
 ## Codex
 
 ```sh
-npx @traice/collector@latest setup codex \
-  --server-url https://www.runtraice.com \
-  --employee-email you@company.com \
-  --team-name Engineering \
-  --backfill-days 7
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup codex
 ```
 
 Codex setup backfills the previous 7 days by default. Set `--backfill-days` from 1 to 30, use `--no-backfill` to skip
@@ -37,20 +31,18 @@ history, or use `--no-service` when another process manager will run the collect
 
 ### Windows
 
-Use one line in Command Prompt:
+Run these commands one at a time in Command Prompt:
 
 ```bat
-npx --yes @traice/collector@latest setup codex --employee-email "you@company.com" --team-name "Engineering" --backfill-days 7 --yes
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup codex
 ```
 
-Use backticks only in PowerShell:
+Run the same two commands one at a time in PowerShell:
 
 ```powershell
-npx --yes @traice/collector@latest setup codex `
-  --employee-email 'you@company.com' `
-  --team-name 'Engineering' `
-  --backfill-days 7 `
-  --yes
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup codex
 ```
 
 Setup uses a hidden per-user Startup launcher, so Administrator access is not required. If `npx` is unavailable,
@@ -103,7 +95,8 @@ Interactive `setup` uses OAuth 2.0 device authorization. It prints a short code 
 and waits for approval. The URL can be opened on another device, so the same flow works over SSH:
 
 ```sh
-npx @traice/collector@latest setup codex --no-browser --employee-email you@company.com --team-name Engineering
+npx --yes @traice/collector@latest auth login --no-browser
+npx --yes @traice/collector@latest setup codex
 ```
 
 Manage the saved session explicitly:
@@ -144,6 +137,28 @@ is not written to disk. Avoid `--api-key <value>` in a shared shell because it c
 process inspection.
 
 Existing configs containing a plaintext `apiKey` migrate automatically on the next `install` or `collect`.
+
+## CLI configuration and parameters
+
+The short commands above use the production trAIce server, ask for missing identity choices, install a background
+service, and backfill 7 days of Codex history. Override those defaults only when needed:
+
+| Option                        | Used by               | Purpose                                                                  |
+| ----------------------------- | --------------------- | ------------------------------------------------------------------------ |
+| `--server-url <url>`          | `auth login`, `setup` | Use another trAIce deployment, such as staging or a self-hosted instance |
+| `--workspace <slug-or-id>`    | `auth login`, `setup` | Preselect a workspace on the browser authorization page                  |
+| `--employee-email <email>`    | `setup`               | Set the employee identity without the interactive question               |
+| `--employee-name <name>`      | `setup`               | Set the optional employee display name                                   |
+| `--team-name <name>`          | `setup`               | Set the reporting team without the interactive question                  |
+| `--seat-monthly-usd <amount>` | `setup`               | Record an optional per-seat subscription commitment                      |
+| `--backfill-days <1-30>`      | `setup codex`         | Change the default 7-day history window                                  |
+| `--no-backfill`               | `setup codex`         | Skip Codex history                                                       |
+| `--no-service`                | `setup`               | Configure without installing the background user service                 |
+| `--no-browser`                | `auth login`, `setup` | Print the authorization link for SSH or another device                   |
+| `--credential-store <mode>`   | `auth login`, `setup` | Select `auto`, `keyring`, or `file` credential storage                   |
+| `--yes`                       | `setup`               | Accept defaults in an explicitly configured unattended setup             |
+
+Run `npx @traice/collector@latest help <command>` for the complete current option list.
 
 Any process running as the same OS user can potentially ask an unlocked credential manager for saved credentials.
 Keep the fallback file out of backups and profile sync. Revoke a browser-authorized device from `auth logout` or the
