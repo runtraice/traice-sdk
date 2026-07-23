@@ -117,19 +117,16 @@ other employee or team usage through the authenticated internal-usage API until 
 Install the local collector for Claude Code:
 
 ```sh
-npx @traice/collector@latest setup claude-code \
-  --server-url https://www.runtraice.com \
-  --employee-email you@company.com \
-  --employee-name "Your Name" \
-  --team-name Engineering \
-  --seat-monthly-usd 200
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup claude-code
 ```
 
-The command shows a short code, opens trAIce for approval, stores the renewable session in the operating system
-credential manager, patches the agent settings, and installs a background user service. Rerunning it updates the
-existing setup and reuses the saved authorization while it remains valid. Add `--no-browser` for SSH, or `--no-service`
-if another process manager will run the collector. API keys remain supported for CI, containers, and other unattended
-automation.
+Browser authorization stores the renewable session in the operating system credential manager. Setup patches the
+agent settings and installs a background user service. You can run `setup` directly; it starts browser authorization
+when needed. Rerunning either command is safe. Add `--no-browser` to `auth login` for SSH, or `--no-service` to setup if
+another process manager will run the collector. API keys remain supported for CI, containers, and other unattended
+automation. See [Collector Overview](/docs/collector-overview#common-parameters) for optional identity, subscription,
+backfill, server, and credential-storage parameters.
 
 Send an internal usage row directly:
 

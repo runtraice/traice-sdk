@@ -11,14 +11,14 @@ order: 2
 Run the complete setup:
 
 ```sh
-npx @traice/collector@latest setup claude-code \
-  --server-url https://www.runtraice.com \
-  --employee-email you@company.com \
-  --employee-name "Your Name" \
-  --team-name Engineering
+npx --yes @traice/collector@latest auth login
+npx --yes @traice/collector@latest setup claude-code
 ```
 
-The command opens a short-code browser authorization when a valid saved session is unavailable. It stores the session securely, patches user-level `~/.claude/settings.json`, installs a background user service, and reports the result. It is safe to rerun. Add `--no-browser` for SSH, or `--no-service` if another process manager will run collection.
+Authorize the device in your browser, then setup patches user-level `~/.claude/settings.json`, installs a background
+user service, and reports the result. You can run `setup` directly; it starts browser authorization when needed. It is
+safe to rerun. Add `--no-browser` to `auth login` for SSH, or `--no-service` to setup if another process manager will
+run collection.
 
 Verify configuration, credentials, service state, the local listener, and server access:
 

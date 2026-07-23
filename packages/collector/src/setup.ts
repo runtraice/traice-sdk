@@ -2,7 +2,7 @@ import packageMetadata from "../package.json";
 import { loginAndStoreCollectorAuthorization, resolveCollectorAccessToken, type CollectorLoginResult } from "./auth";
 import { backfillCodex, type CodexBackfillSummary } from "./backfill";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
-import { readHiddenSecret } from "./fs";
+import { normalizeUrl, readHiddenSecret } from "./fs";
 import { installAgent, type InstallResult } from "./install";
 import { installCollectorService, type CollectorServiceResult } from "./service";
 import type { CollectorInstallOptions } from "./types";
@@ -58,16 +58,14 @@ export async function setupAgent(
     const config = loadCollectorConfig(install.configPath);
     if (config.authorization?.type === "oauth") {
       report(`The saved browser authorization for ${config.authorization.workspaceName} is no longer valid.`);
-      await loginForSetup(options, report, dependencies);
-      install = await installAgent({ ...options, patchSettings: true });
     } else {
       report(
         `The saved API key was rejected by ${config.serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
-          "Running as Administrator will not fix API-key validation.",
+          "Opening browser authorization instead.",
       );
-      const apiKey = await promptSecret("Paste a newly created trAIce API key (input is masked): ");
-      install = await installAgent({ ...options, apiKey, apiKeyStdin: false, patchSettings: true });
     }
+    await loginForSetup(options, report, dependencies);
+    install = await installAgent({ ...options, patchSettings: true });
     await verifyCollectorConnection(install.configPath, dependencies.fetchImpl);
   }
 
@@ -133,6 +131,19 @@ async function installWithAuthorization(
   report: (message: string) => void,
   dependencies: SetupDependencies,
 ): Promise<InstallResult> {
+  const current = existingConfig(options.configPath);
+  if (
+    !hasProvidedKey(options) &&
+    options.serverUrl &&
+    current &&
+    normalizeUrl(options.serverUrl) !== normalizeUrl(current.serverUrl)
+  ) {
+    report(
+      `Authorizing ${normalizeUrl(options.serverUrl)} because the saved credential belongs to ${current.serverUrl}.`,
+    );
+    await loginForSetup(options, report, dependencies);
+  }
+
   try {
     return await installAgent({ ...options, patchSettings: true });
   } catch (error) {
@@ -165,6 +176,14 @@ async function loginForSetup(
       report,
     },
   );
+}
+
+function existingConfig(configPath?: string) {
+  try {
+    return loadCollectorConfig(configPath);
+  } catch {
+    return null;
+  }
 }
 
 function hasProvidedKey(options: CollectorSetupOptions): boolean {

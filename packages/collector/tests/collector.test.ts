@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loginAndStoreCollectorAuthorization } from "../src/auth";
 import { defaultSourceForAgent } from "../src/config";
 import { backfillCodex, dryRunCodexBackfill } from "../src/backfill";
 import { readCollectorCredential, storeCollectorCredential } from "../src/credentials";
@@ -531,7 +532,7 @@ describe("@traice/collector", () => {
     expect(promptSecret).not.toHaveBeenCalled();
   });
 
-  it("replaces a persisted credential rejected by the server", async () => {
+  it("replaces a persisted API key rejected by the server with browser authorization", async () => {
     const directory = mkdtempSync(join(tmpdir(), "traice-collector-setup-replace-"));
     temporaryDirectories.push(directory);
     const configPath = join(directory, "config.json");
@@ -543,15 +544,18 @@ describe("@traice/collector", () => {
       credentialStore: "file",
       codexHome: join(directory, "codex"),
     });
-    const promptSecret = vi.fn(async () => "replacement-key");
+    const promptSecret = vi.fn(async () => {
+      throw new Error("API key prompt should not run");
+    });
     const report = vi.fn();
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ error: "invalid_api_key" }, { status: 401 }))
       .mockImplementationOnce(async (_url, init) => {
-        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer replacement-key");
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer tr_oauth_at_secret");
         return Response.json({ usage: [] });
       });
+    const login = successfulBrowserLogin();
 
     await setupAgent(
       {
@@ -562,14 +566,66 @@ describe("@traice/collector", () => {
         credentialStore: "file",
         codexHome: join(directory, "codex"),
       },
-      { fetchImpl, promptSecret, report },
+      { fetchImpl, promptSecret, report, login },
     );
 
     expect(report).toHaveBeenCalledWith(expect.stringContaining("rejected by https://www.runtraice.com"));
-    expect(report).toHaveBeenCalledWith(expect.stringContaining("Administrator will not fix"));
-    expect(promptSecret).toHaveBeenCalledWith("Paste a newly created trAIce API key (input is masked): ");
+    expect(report).toHaveBeenCalledWith(expect.stringContaining("Opening browser authorization"));
+    expect(promptSecret).not.toHaveBeenCalled();
+    expect(login).toHaveBeenCalledOnce();
     const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
-    expect(await readCollectorCredential(config.credential!)).toBe("replacement-key");
+    expect(config.authorization).toMatchObject({
+      type: "oauth",
+      workspaceId: "workspace-1",
+      workspaceName: "Staging Workspace",
+    });
+    expect(await readCollectorCredential(config.credential!)).toContain("tr_oauth_at_secret");
+  });
+
+  it("authorizes a different server before presenting the saved credential", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-setup-server-change-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.json");
+    await installAgent({
+      agent: "codex",
+      configPath,
+      serverUrl: "https://www.runtraice.com",
+      apiKey: "production-key",
+      credentialStore: "file",
+      codexHome: join(directory, "codex"),
+    });
+    const login = successfulBrowserLogin();
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("https://staging.runtraice.com/api/v1/collector/me");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer tr_oauth_at_secret");
+      return Response.json({ usage: [] });
+    });
+
+    await setupAgent(
+      {
+        agent: "codex",
+        configPath,
+        serverUrl: "https://staging.runtraice.com",
+        workspaceHint: "friendly-workspace",
+        service: false,
+        backfill: false,
+        credentialStore: "file",
+        codexHome: join(directory, "codex"),
+      },
+      { fetchImpl, login },
+    );
+
+    expect(login).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serverUrl: "https://staging.runtraice.com",
+        workspaceHint: "friendly-workspace",
+      }),
+      expect.any(Object),
+    );
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
+    expect(config.serverUrl).toBe("https://staging.runtraice.com");
+    expect(config.authorization?.workspaceName).toBe("Staging Workspace");
   });
 
   it("reports a healthy collector without exposing its credential", async () => {
@@ -645,6 +701,48 @@ describe("@traice/collector", () => {
     expect(result).toMatchObject({ ok: false, state: "stopped", definitionPath });
   });
 });
+
+function successfulBrowserLogin() {
+  return vi.fn(
+    async (
+      options: Parameters<typeof loginAndStoreCollectorAuthorization>[0],
+      dependencies?: Parameters<typeof loginAndStoreCollectorAuthorization>[1],
+    ) =>
+      loginAndStoreCollectorAuthorization(
+        {
+          ...options,
+          noBrowser: true,
+        },
+        {
+          ...dependencies,
+          fetchImpl: vi
+            .fn<typeof fetch>()
+            .mockResolvedValueOnce(
+              Response.json({
+                device_code: "device-secret",
+                user_code: "ABCD-EFGH",
+                verification_uri: "https://staging.runtraice.com/device",
+                expires_in: 600,
+                interval: 5,
+              }),
+            )
+            .mockResolvedValueOnce(
+              Response.json({
+                access_token: "tr_oauth_at_secret",
+                refresh_token: "tr_oauth_rt_secret",
+                expires_in: 3600,
+                scope: "collector:status internal_usage:dedupe internal_usage:write",
+                workspace: { id: "workspace-1", name: "Staging Workspace" },
+                user: { email: "alex@example.com" },
+              }),
+            ),
+          report: () => {},
+          sleep: async () => {},
+          now: Date.now,
+        },
+      ),
+  );
+}
 
 function collectorConfig(): CollectorConfig {
   return {
