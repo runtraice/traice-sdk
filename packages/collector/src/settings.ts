@@ -167,17 +167,18 @@ function isTomlTableHeader(line: string): boolean {
 }
 
 function isOtelTable(line: string): boolean {
-  return /^\s*\[otel\]\s*(?:#.*)?(?:\n)?$/.test(line);
+  return /^\s*\[\s*(?:otel|"otel"|'otel')\s*\]\s*(?:#.*)?(?:\n)?$/.test(line);
 }
 
 function isOtelExporterTable(line: string): boolean {
-  return /^\s*\[otel\.exporter(?:\.|\])/.test(line);
+  return /^\s*\[\s*(?:otel|"otel"|'otel')\s*\.\s*(?:exporter|"exporter"|'exporter')(?:\s*\.|\s*\])/.test(line);
 }
 
 function managedOtelLine(line: string): boolean {
   if (line.trim() === CODEX_BEGIN || line.trim() === CODEX_END) return true;
-  const assignment = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/);
-  return assignment ? CODEX_MANAGED_KEYS.has(assignment[1]!) : false;
+  const assignment = line.match(/^\s*(?:([A-Za-z0-9_-]+)|"([^"]+)"|'([^']+)')\s*=/);
+  const key = assignment?.[1] ?? assignment?.[2] ?? assignment?.[3];
+  return key ? CODEX_MANAGED_KEYS.has(key) : false;
 }
 
 function safeDuplicateOtelLine(line: string): boolean {
@@ -191,7 +192,7 @@ function trimLeadingBlankLines(lines: string[]): string[] {
 }
 
 function countOtelTables(value: string): number {
-  return (value.match(/^\s*\[otel\]\s*(?:#.*)?$/gm) ?? []).length;
+  return (value.match(/^\s*\[\s*(?:otel|"otel"|'otel')\s*\]\s*(?:#.*)?$/gm) ?? []).length;
 }
 
 function atomicWrite(path: string, value: string): void {

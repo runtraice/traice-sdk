@@ -21,8 +21,10 @@ authorization when needed. It is safe to rerun. Use `--backfill-days N` for a 1 
 skip history, or `--no-service` if another process manager will run collection. Over SSH, add `--no-browser` to
 `auth login` and open the printed URL on any device.
 
-Rerunning setup replaces the existing marked trAIce block instead of appending another `[otel]` section. It also
-restarts the existing service and retries the bounded backfill. Stable event IDs keep repeated backfills idempotent.
+Setup merges trAIce-managed keys into an existing `[otel]` table, preserves unrelated OTel settings, and repairs
+duplicate tables created by older collector setup. Rerunning setup updates the same table instead of appending another
+one. It also restarts the existing service and retries the bounded backfill. Stable event IDs keep repeated backfills
+idempotent.
 
 Codex project-local telemetry settings may not control routing. Prefer user-level configuration for device installs.
 

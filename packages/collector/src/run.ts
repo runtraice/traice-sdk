@@ -58,20 +58,31 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   const listenPort = options.listenPort ?? config.listenPort;
   let stopped = false;
   const runtimes = new Map<string, CollectorDestinationRuntime>();
+  const runtimePromises = new Map<string, Promise<CollectorDestinationRuntime>>();
 
   const destinationRuntime = async (name: string): Promise<CollectorDestinationRuntime> => {
     const existing = runtimes.get(name);
     if (existing) return existing;
-    const outboxName = name === DEFAULT_PROFILE ? "outbox.ndjson" : `outbox-${name}.ndjson`;
-    const runtime: CollectorDestinationRuntime = {
-      name,
-      outbox: new CollectorOutbox(join(configDir(configPath), "state", outboxName), OUTBOX_MAX_EVENTS),
-      getAccessToken: createCollectorAccessTokenProvider(configPath, {}, name),
-      drainPromise: null,
-    };
-    await runtime.outbox.initialize();
-    runtimes.set(name, runtime);
-    return runtime;
+    const pending = runtimePromises.get(name);
+    if (pending) return pending;
+    const creation = (async () => {
+      const outboxName = name === DEFAULT_PROFILE ? "outbox.ndjson" : `outbox-${name}.ndjson`;
+      const runtime: CollectorDestinationRuntime = {
+        name,
+        outbox: new CollectorOutbox(join(configDir(configPath), "state", outboxName), OUTBOX_MAX_EVENTS),
+        getAccessToken: createCollectorAccessTokenProvider(configPath, {}, name),
+        drainPromise: null,
+      };
+      await runtime.outbox.initialize();
+      runtimes.set(name, runtime);
+      return runtime;
+    })();
+    runtimePromises.set(name, creation);
+    try {
+      return await creation;
+    } finally {
+      runtimePromises.delete(name);
+    }
   };
 
   const resolveDestinations = async (current: CollectorConfig) => {
