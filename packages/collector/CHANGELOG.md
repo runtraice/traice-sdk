@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.3.1
+
+### Patch Changes
+
+- fa80f98: Use browser authorization when a saved API key is rejected, and authorize a changed server before presenting any saved credential.
+
 ## 0.3.0
 
 ### Minor Changes

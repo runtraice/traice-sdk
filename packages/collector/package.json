@@ -1,6 +1,6 @@
 {
   "name": "@traice/collector",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local coding-agent usage collector for trAIce Internal Spend.",
   "license": "MIT",
   "type": "module",
