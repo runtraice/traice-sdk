@@ -32,6 +32,7 @@ export interface InternalUsageEvent {
   totalTokens?: number;
   costUsd?: number;
   costBasis?: string;
+  latencyMs?: number;
   status?: InternalUsageStatus;
   metadata?: JsonRecord;
 }

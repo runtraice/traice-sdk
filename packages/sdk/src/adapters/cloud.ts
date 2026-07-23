@@ -2,12 +2,29 @@ import { CostAdapter, CostEvent, EventMetadata } from "../types";
 import { calculateCost } from "../pricing";
 import { decide, type EnforcementRule } from "../enforcement";
 import * as crypto from "crypto";
+import { DurableCloudOutbox, type DurableQueuedCostEvent } from "./cloud-outbox";
 
 export interface CloudAdapterConfig {
   apiKey: string;
   endpoint?: string;
   batchSize?: number;
   flushIntervalMs?: number;
+  /** Maximum events retained in memory. The oldest event is dropped when full. Default: 1000. */
+  maxQueueSize?: number;
+  /** Per-request delivery timeout. Default: 10000. */
+  requestTimeoutMs?: number;
+  /** Attempts per delivery before the batch returns to the queue. Default: 4. */
+  maxDeliveryAttempts?: number;
+  /** Maximum retry delay, including server rate-limit guidance. Default: 60000. */
+  maxRetryDelayMs?: number;
+  /** Send prompt and output samples. Disabled by default. */
+  captureContent?: boolean;
+  /** Optional NDJSON path for a restart-safe delivery queue. */
+  durableQueuePath?: string;
+  /** Receives successful backend acknowledgement summaries. */
+  onDelivery?: (summary: CloudDeliverySummary) => void;
+  /** Receives background delivery failures and queue overflow errors. */
+  onDeliveryError?: (error: Error) => void;
   /** Maximum number of exact responses retained by this process. Default: 1000. */
   exactCacheMaxEntries?: number;
   /** Timeout for rules and decision API calls. Default: 2000. */
@@ -183,6 +200,8 @@ type EnforcementBudgetSnapshot = {
 };
 
 export interface CloudCostEvent {
+  source: "traice-sdk";
+  externalId: string;
   ts: string;
   provider: CostEvent["provider"];
   model: string;
@@ -219,6 +238,40 @@ export type CloudEventMetadata = EventMetadata & {
   tags?: Record<string, string>;
 };
 
+export type CloudDeliverySummary = {
+  accepted: number;
+  deduplicated: number;
+  quotaDropped: number;
+  dropped: number;
+  plan?: string;
+};
+
+export type CloudDeliveryStats = {
+  queued: number;
+  oldestQueuedAt: string | null;
+  accepted: number;
+  deduplicated: number;
+  quotaDropped: number;
+  rejected: number;
+  queueDropped: number;
+  failedBatches: number;
+  retries: number;
+  lastSuccessAt: string | null;
+  lastErrorAt: string | null;
+};
+
+type QueuedCostEvent = DurableQueuedCostEvent;
+
+class CloudDeliveryError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "CloudDeliveryError";
+  }
+}
+
 /**
  * Cloud adapter that sends cost events to the @traice/sdk cloud service.
  * Events are batched and flushed periodically for efficiency.
@@ -236,7 +289,16 @@ export class CloudAdapter implements CostAdapter {
   private apiKey: string;
   private endpoint: string;
   private batchSize: number;
-  private buffer: CostEvent[] = [];
+  private maxQueueSize: number;
+  private requestTimeoutMs: number;
+  private maxDeliveryAttempts: number;
+  private maxRetryDelayMs: number;
+  private captureContent: boolean;
+  private durableOutbox?: DurableCloudOutbox;
+  private onDelivery?: CloudAdapterConfig["onDelivery"];
+  private onDeliveryError?: CloudAdapterConfig["onDeliveryError"];
+  private buffer: QueuedCostEvent[] = [];
+  private flushPromise: Promise<void> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private policyTimer: ReturnType<typeof setInterval> | null = null;
   private exactCache = new Map<string, ExactCacheEntry>();
@@ -267,6 +329,17 @@ export class CloudAdapter implements CostAdapter {
   private semanticCacheBypasses = 0;
   private semanticCacheEmbeddingFailures = 0;
   private semanticCacheSavingsUsdMicros = 0;
+  private deliveryStats = {
+    accepted: 0,
+    deduplicated: 0,
+    quotaDropped: 0,
+    rejected: 0,
+    queueDropped: 0,
+    failedBatches: 0,
+    retries: 0,
+    lastSuccessAt: null as string | null,
+    lastErrorAt: null as string | null,
+  };
   private enforcementStats: EnforcementStats = {
     ruleRefreshes: 0,
     ruleRefreshFailures: 0,
@@ -284,7 +357,22 @@ export class CloudAdapter implements CostAdapter {
   constructor(config: CloudAdapterConfig) {
     this.apiKey = config.apiKey;
     this.endpoint = config.endpoint ?? "https://runtraice.com/api/v1/events";
-    this.batchSize = config.batchSize ?? 50;
+    this.batchSize = Math.max(1, Math.floor(config.batchSize ?? 50));
+    this.maxQueueSize = Math.max(1, Math.floor(config.maxQueueSize ?? 1000));
+    this.requestTimeoutMs = Math.max(100, Math.floor(config.requestTimeoutMs ?? 10_000));
+    this.maxDeliveryAttempts = Math.max(1, Math.floor(config.maxDeliveryAttempts ?? 4));
+    this.maxRetryDelayMs = Math.max(0, Math.floor(config.maxRetryDelayMs ?? 60_000));
+    this.captureContent = config.captureContent ?? false;
+    if (config.durableQueuePath) {
+      this.durableOutbox = new DurableCloudOutbox(config.durableQueuePath);
+      const restored = this.durableOutbox.load();
+      this.buffer = restored.slice(-this.maxQueueSize);
+      const restoredDropped = restored.length - this.buffer.length;
+      if (restoredDropped > 0) this.deliveryStats.queueDropped += restoredDropped;
+      this.durableOutbox.replaceSync(this.buffer);
+    }
+    this.onDelivery = config.onDelivery;
+    this.onDeliveryError = config.onDeliveryError;
     this.exactCacheMaxEntries = Math.max(1, Math.floor(config.exactCacheMaxEntries ?? 1000));
     this.semanticCacheConfig = config.semanticCache;
     this.semanticCacheMaxEntries = Math.max(1, Math.floor(config.semanticCache?.maxEntries ?? 250));
@@ -294,14 +382,30 @@ export class CloudAdapter implements CostAdapter {
     const flushMs = config.flushIntervalMs ?? 5000;
     const policyPollMs = Math.max(1000, Math.floor(config.budgetPolicyPollIntervalMs ?? 60_000));
 
-    this.timer = setInterval(() => this.flushBuffer(), flushMs);
+    this.timer = setInterval(() => {
+      this.flushBuffer().catch((error) => this.reportDeliveryError(asError(error)));
+    }, flushMs);
     if (this.timer.unref) this.timer.unref();
     this.policyTimer = setInterval(() => this.refreshPolicyInBackground(), policyPollMs);
     if (this.policyTimer.unref) this.policyTimer.unref();
   }
 
   async write(event: CostEvent): Promise<void> {
-    this.buffer.push(event);
+    const queued = { event, enqueuedAt: Date.now() };
+    let queueOverflowed = false;
+    if (this.buffer.length >= this.maxQueueSize) {
+      this.buffer.shift();
+      this.deliveryStats.queueDropped++;
+      queueOverflowed = true;
+      this.reportDeliveryError(
+        new Error(`CloudAdapter queue full; dropped oldest event at ${this.maxQueueSize} events`),
+      );
+    }
+    this.buffer.push(queued);
+    if (this.durableOutbox) {
+      if (queueOverflowed) await this.durableOutbox.replace(this.buffer);
+      else await this.durableOutbox.append(queued);
+    }
     if (this.buffer.length >= this.batchSize) {
       await this.flushBuffer();
     }
@@ -316,13 +420,20 @@ export class CloudAdapter implements CostAdapter {
       clearInterval(this.policyTimer);
       this.policyTimer = null;
     }
-    if (this.buffer.length > 0) {
-      await this.flushBuffer();
-    }
+    await this.flushBuffer();
     if (this.policyRefresh) {
       await Promise.allSettled([this.policyRefresh]);
     }
     await Promise.allSettled(Array.from(this.pendingDecisions));
+  }
+
+  /** Process-local delivery health. Values reset when a new adapter is created. */
+  getDeliveryStats(): CloudDeliveryStats {
+    return {
+      queued: this.buffer.length,
+      oldestQueuedAt: this.buffer[0] ? new Date(this.buffer[0].enqueuedAt).toISOString() : null,
+      ...this.deliveryStats,
+    };
   }
 
   /** Fetch and cache the current rules and experiment evidence before serving traffic. */
@@ -1048,37 +1159,113 @@ export class CloudAdapter implements CostAdapter {
     return url.toString();
   }
 
-  private async flushBuffer(): Promise<void> {
-    if (this.buffer.length === 0) return;
-    const batch = this.buffer.splice(0);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+  private flushBuffer(): Promise<void> {
+    if (this.flushPromise) return this.flushPromise;
+    if (this.buffer.length === 0) return Promise.resolve();
+    this.flushPromise = this.drainBuffer().finally(() => {
+      this.flushPromise = null;
+    });
+    return this.flushPromise;
+  }
 
-    try {
-      const response = await fetch(this.endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-          "X-Source": "traice-sdk",
-        },
-        body: JSON.stringify({ events: batch.map(toCloudEvent) }),
-        signal: controller.signal,
-      });
+  private async drainBuffer(): Promise<void> {
+    while (this.buffer.length > 0) {
+      const batch = this.buffer.splice(0, this.batchSize);
+      try {
+        await this.sendBatch(batch);
+        await this.persistDurableQueue();
+      } catch (error) {
+        this.deliveryStats.failedBatches++;
+        this.deliveryStats.lastErrorAt = new Date().toISOString();
+        if (error instanceof CloudDeliveryError && !error.retryable) {
+          this.deliveryStats.rejected += batch.length;
+          this.reportDeliveryError(error);
+        } else {
+          this.requeueFront(batch);
+        }
+        await this.persistDurableQueue();
+        throw error;
+      }
+    }
+  }
 
-      if (!response.ok) {
+  private async sendBatch(batch: QueuedCostEvent[]): Promise<void> {
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < this.maxDeliveryAttempts; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(this.endpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+            "X-Source": "traice-sdk",
+          },
+          body: JSON.stringify({
+            events: batch.map(({ event }) => toCloudEvent(event, { captureContent: this.captureContent })),
+          }),
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          const summary = deliverySummary(await response.json().catch(() => ({})), batch.length);
+          this.deliveryStats.accepted += summary.accepted;
+          this.deliveryStats.deduplicated += summary.deduplicated;
+          this.deliveryStats.quotaDropped += summary.quotaDropped;
+          this.deliveryStats.lastSuccessAt = new Date().toISOString();
+          try {
+            this.onDelivery?.(summary);
+          } catch {
+            // Delivery observers cannot affect telemetry.
+          }
+          return;
+        }
+
         const body = await response.text().catch(() => "");
-        throw new Error(`CloudAdapter failed: ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`);
+        const error = new CloudDeliveryError(
+          `CloudAdapter failed: ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`,
+          isRetryableDeliveryStatus(response.status),
+        );
+        if (!error.retryable) throw error;
+        lastError = error;
+        if (attempt + 1 < this.maxDeliveryAttempts) {
+          this.deliveryStats.retries++;
+          await sleep(retryDelayMs(response, attempt, this.maxRetryDelayMs));
+        }
+      } catch (error) {
+        if (error instanceof CloudDeliveryError && !error.retryable) throw error;
+        lastError = asError(error);
+        if (attempt + 1 < this.maxDeliveryAttempts) {
+          this.deliveryStats.retries++;
+          await sleep(jitteredBackoffMs(attempt, this.maxRetryDelayMs));
+        }
+      } finally {
+        clearTimeout(timeout);
       }
-    } catch (err) {
-      // On failure, put events back at the front of the buffer
-      // (up to batchSize to prevent unbounded growth)
-      if (this.buffer.length < this.batchSize * 2) {
-        this.buffer.unshift(...batch);
-      }
-      throw err;
-    } finally {
-      clearTimeout(timeout);
+    }
+    throw new CloudDeliveryError(lastError?.message ?? "CloudAdapter delivery failed", true);
+  }
+
+  private requeueFront(batch: QueuedCostEvent[]): void {
+    const room = Math.max(0, this.maxQueueSize - this.buffer.length);
+    const retained = batch.slice(Math.max(0, batch.length - room));
+    const dropped = batch.length - retained.length;
+    if (dropped > 0) {
+      this.deliveryStats.queueDropped += dropped;
+      this.reportDeliveryError(new Error(`CloudAdapter queue full; dropped ${dropped} failed delivery events`));
+    }
+    this.buffer.unshift(...retained);
+  }
+
+  private persistDurableQueue(): Promise<void> {
+    return this.durableOutbox?.replace(this.buffer) ?? Promise.resolve();
+  }
+
+  private reportDeliveryError(error: Error): void {
+    try {
+      this.onDeliveryError?.(error);
+    } catch {
+      // Delivery observers cannot affect telemetry.
     }
   }
 }
@@ -1309,8 +1496,10 @@ function nonNegativeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }
 
-export function toCloudEvent(event: CostEvent): CloudCostEvent {
+export function toCloudEvent(event: CostEvent, options: { captureContent?: boolean } = {}): CloudCostEvent {
   return omitUndefined({
+    source: "traice-sdk",
+    externalId: event.id,
     ts: event.timestamp,
     provider: event.provider,
     model: event.model,
@@ -1324,8 +1513,8 @@ export function toCloudEvent(event: CostEvent): CloudCostEvent {
     toolName: event.toolName ?? stringTag(event.tags, "toolName"),
     retryCount: event.retryCount ?? numberTag(event.tags, "retryCount"),
     outcome: event.outcome ?? stringTag(event.tags, "outcome"),
-    prompt: event.prompt,
-    output: event.output,
+    prompt: options.captureContent ? event.prompt : undefined,
+    output: options.captureContent ? event.output : undefined,
     promptTokens: event.inputTokens,
     outputTokens: event.outputTokens,
     totalTokens: event.totalTokens,
@@ -1336,6 +1525,45 @@ export function toCloudEvent(event: CostEvent): CloudCostEvent {
     status: event.status,
     metadata: toCloudMetadata(event),
   });
+}
+
+function deliverySummary(value: unknown, batchSize: number): CloudDeliverySummary {
+  const body = value != null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const accepted = nonNegativeNumber(body.accepted ?? body.received ?? batchSize);
+  const deduplicated = nonNegativeNumber(body.deduplicated);
+  const quotaDropped = nonNegativeNumber(body.quotaDropped);
+  const dropped = nonNegativeNumber(body.dropped ?? quotaDropped);
+  const plan = typeof body.plan === "string" ? body.plan : undefined;
+  return { accepted, deduplicated, quotaDropped, dropped, ...(plan ? { plan } : {}) };
+}
+
+function isRetryableDeliveryStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function retryDelayMs(response: Response, attempt: number, capMs: number): number {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) return Math.min(capMs, Math.max(0, seconds * 1000));
+    const dateMs = new Date(retryAfter).getTime();
+    if (Number.isFinite(dateMs)) return Math.min(capMs, Math.max(0, dateMs - Date.now()));
+  }
+  const resetHeader = response.headers.get("x-ratelimit-reset");
+  const resetSeconds = resetHeader == null ? Number.NaN : Number(resetHeader);
+  if (Number.isFinite(resetSeconds) && resetSeconds >= 0) {
+    return Math.min(capMs, resetSeconds * 1000);
+  }
+  return jitteredBackoffMs(attempt, capMs);
+}
+
+function jitteredBackoffMs(attempt: number, capMs: number): number {
+  const base = Math.min(capMs, 250 * 2 ** attempt);
+  return Math.min(capMs, Math.max(0, Math.round(base * (0.5 + Math.random()))));
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function toCloudMetadata(event: CostEvent): CloudEventMetadata {

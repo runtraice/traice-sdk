@@ -72,6 +72,7 @@ export interface OtlpNormalizeOptions {
   source: CollectorSource;
   identity: CollectorIdentity;
   receivedAt?: string;
+  includePrompts?: boolean;
 }
 
 export interface AgentAdapter {

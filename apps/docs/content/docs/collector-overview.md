@@ -49,6 +49,11 @@ The status command checks:
 - Local OTLP listener reachability.
 - trAIce server access.
 
+The listener also exposes delivery health on its local health endpoint,
+including queued event count, oldest queued event time, delivered and
+deduplicated counts, overflow drops, retries, failures, and the latest delivery
+timestamps.
+
 Use `--json` for machine-readable health checks. The command exits non-zero when the aggregate status is not healthy.
 
 ## Run in the foreground
@@ -58,6 +63,12 @@ npx @traice/collector@latest collect
 ```
 
 The default listener binds to `127.0.0.1:4318`. Use `--agent`, `--listen-host`, or `--listen-port` to override the saved configuration for one run.
+
+The listener durably appends accepted local telemetry under
+`~/.traice/collector/state/outbox.ndjson` before returning HTTP 202. It then
+delivers strict batches in the background. A backend outage therefore does not
+hold agent export requests open, and queued events survive collector restarts.
+The outbox retains at most 10,000 events and drops the oldest event on overflow.
 
 ## Inspect Codex history
 
@@ -149,7 +160,9 @@ Use the CLI for normal device installation. The programmatic surface is intended
 
 ## Privacy
 
-The collector sends usage and allocation metadata. Prompt and output capture is off by default. See [Privacy](/docs/privacy) before enabling `--include-prompts`.
+The collector sends usage and allocation metadata from an explicit allowlist.
+Prompt and output capture is off by default. See [Privacy](/docs/privacy)
+before enabling `--include-prompts`.
 
 ## Source and package
 

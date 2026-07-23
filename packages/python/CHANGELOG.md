@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add stable retry-safe event IDs and backend acknowledgement counters.
+- Omit prompt and output dimensions unless content capture is explicitly enabled.
+
 ## 0.1.1
 
 - Verify PyPI trusted publishing and linked Slack release notifications.

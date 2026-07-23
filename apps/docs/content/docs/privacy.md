@@ -18,9 +18,16 @@ Collectors send usage metadata needed for Internal Spend:
 
 Collectors do not send prompts or model outputs by default.
 
-Metadata is redacted for keys that look like secrets, tokens, cookies, passwords, or authorization values. Prompt-like attribute keys are dropped from normalized telemetry metadata.
+Collector metadata uses an explicit operational allowlist. Secret, token,
+cookie, password, authorization, and unrecognized OTLP attributes are not
+forwarded. The raw OTLP log body is excluded unless prompt capture is enabled.
 
 Use `--include-prompts` only when the organization explicitly approves prompt logging.
+
+The TypeScript and Python product SDKs also omit prompt and output samples by
+default. Enable `captureContent` or `capture_content` only after reviewing data
+classification, retention, and access controls. Durable local queues can
+contain event metadata and must use user-only file permissions.
 
 ## Product usage importers
 

@@ -8,6 +8,7 @@ export function normalizeClaudeCodeOtlpLogs(payload: unknown, options: OtlpNorma
       otelRecordToUsageEvent(record, options.source, options.identity, {
         receivedAt: options.receivedAt,
         agent: "claude-code",
+        includePrompts: options.includePrompts,
       }),
     )
     .filter((event): event is InternalUsageEvent => event !== null);
@@ -19,6 +20,7 @@ export function normalizeClaudeCodeOtlpMetrics(payload: unknown, options: OtlpNo
       otelMetricPointToUsageEvent(point, options.source, options.identity, {
         receivedAt: options.receivedAt,
         agent: "claude-code",
+        includePrompts: options.includePrompts,
       }),
     )
     .filter((event): event is InternalUsageEvent => event !== null);

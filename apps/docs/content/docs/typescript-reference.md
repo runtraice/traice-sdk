@@ -90,6 +90,12 @@ Every adapter implements `CostAdapter` with an asynchronous `write(event)` metho
 | `enforceExactCache(request, providerCall, context?)` | Execute only an active exact-cache rule and otherwise pass through                   |
 | `getExactCacheStats()`                               | Return process-local exact-cache hits, misses, bypasses, size, hit rate, and savings |
 | `getSemanticCacheStats()`                            | Return process-local semantic-cache health, hit rate, and estimated savings          |
+| `getDeliveryStats()`                                 | Return queue, acknowledgement, retry, failure, and delivery timestamp counters       |
+
+`CloudAdapterConfig` supports a bounded memory queue, request timeout, retry
+attempt and delay caps, delivery observers, privacy-safe content capture, and
+an optional `durableQueuePath`. Global configuration exposes
+`cloudMaxQueueSize`, `cloudCaptureContent`, and `cloudDurableQueuePath`.
 
 ## Request enforcement
 

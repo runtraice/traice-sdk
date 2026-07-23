@@ -24,7 +24,7 @@ from traice import configure, flush, track
 | `track`                 | `(feature=None, **options) -> Tracker`                                 | Create a decorator and sync or async context manager                       | [_tracking.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/_tracking.py)              |
 | `configure_pricing`     | `(provider, model, *, input_per_million, output_per_million) -> None`  | Add or replace local model pricing                                         | [_pricing.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/_pricing.py)                |
 | `TraiceClient`          | Background queue and delivery client                                   | Configure, enqueue, record, flush, close, and inspect one client           | [_client.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/_client.py)                  |
-| `ClientStats`           | Frozen data class                                                      | `enqueued`, `sent`, `dropped`, `failed_batches`, and `queued` counters     | [_client.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/_client.py)                  |
+| `ClientStats`           | Frozen data class                                                      | Queue, delivery acknowledgement, drop, failure, and retry counters         | [_client.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/_client.py)                  |
 | `Tracker`               | Decorator and context manager                                          | Track provider responses and errors without changing the provider result   | [_tracking.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/_tracking.py)              |
 | `TraiceCallbackHandler` | LangChain-compatible callback handler                                  | Track LLM callback lifecycle and usage without a hard LangChain dependency | [langchain.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/integrations/langchain.py) |
 | `__version__`           | String                                                                 | Installed Python package version                                           | [_version.py](https://github.com/runtraice/traice-sdk/blob/main/packages/python/src/traice/_version.py)                |
@@ -39,17 +39,19 @@ configure(
     flush_interval=5.0,
     timeout=10.0,
     max_queue_size=1_000,
+    capture_content=False,
 )
 ```
 
-| Parameter        | Type          | Rules                                                                        |
-| ---------------- | ------------- | ---------------------------------------------------------------------------- |
-| `api_key`        | `str \| None` | Falls back to `TRAICE_API_KEY`; a blank or missing value raises `ValueError` |
-| `endpoint`       | `str`         | Accepts a base URL or full `/api/v1/events` URL                              |
-| `batch_size`     | `int`         | Must be positive                                                             |
-| `flush_interval` | `float`       | Must be positive                                                             |
-| `timeout`        | `float`       | Must be positive                                                             |
-| `max_queue_size` | `int`         | Must be positive; the oldest event is dropped when full                      |
+| Parameter         | Type          | Rules                                                                        |
+| ----------------- | ------------- | ---------------------------------------------------------------------------- |
+| `api_key`         | `str \| None` | Falls back to `TRAICE_API_KEY`; a blank or missing value raises `ValueError` |
+| `endpoint`        | `str`         | Accepts a base URL or full `/api/v1/events` URL                              |
+| `batch_size`      | `int`         | Must be positive                                                             |
+| `flush_interval`  | `float`       | Must be positive                                                             |
+| `timeout`         | `float`       | Must be positive                                                             |
+| `max_queue_size`  | `int`         | Must be positive; the oldest event is dropped when full                      |
+| `capture_content` | `bool`        | Include supplied prompt and output dimensions; defaults to false             |
 
 Reconfiguration swaps the global client under a lock, then closes the previous client with a best-effort flush.
 

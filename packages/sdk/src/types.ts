@@ -106,6 +106,12 @@ export interface GlobalConfig {
   cloudApiKey?: string;
   /** Cloud API endpoint. Default: https://runtraice.com/api/v1/events */
   cloudEndpoint?: string;
+  /** Maximum cloud events retained in memory. Default: 1000. */
+  cloudMaxQueueSize?: number;
+  /** Send prompt and output samples to the cloud. Default: false. */
+  cloudCaptureContent?: boolean;
+  /** Optional NDJSON path for a restart-safe cloud delivery queue. */
+  cloudDurableQueuePath?: string;
 }
 
 export interface CostAdapter {

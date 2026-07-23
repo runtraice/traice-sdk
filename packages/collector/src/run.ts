@@ -1,20 +1,31 @@
 import { createServer, type IncomingMessage } from "node:http";
+import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { createCollectorAccessTokenProvider } from "./auth";
-import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
+import { configDir, defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
+import { CollectorOutbox } from "./outbox";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
 
 const MAX_BATCH_SIZE = 10;
 const MAX_FORWARD_ATTEMPTS = 4;
 const BASE_RETRY_DELAY_MS = 250;
+const MAX_RETRY_DELAY_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_LOCAL_BODY_BYTES = 1024 * 1024;
+const OUTBOX_MAX_EVENTS = 10_000;
+const OUTBOX_RETRY_INTERVAL_MS = 5_000;
 
 export type ForwardDependencies = {
   fetchImpl?: typeof fetch;
   sleep?: (delayMs: number) => Promise<void>;
   batchSize?: number;
   maxAttempts?: number;
+  requestTimeoutMs?: number;
+  maxRetryDelayMs?: number;
+  random?: () => number;
+  onRetry?: (delayMs: number) => void;
   onBatch?: (progress: { processed: number; total: number; accepted: number }) => void;
   getAccessToken?: (forceRefresh?: boolean) => Promise<string>;
 };
@@ -26,12 +37,54 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   const listenPort = options.listenPort ?? config.listenPort;
   const getAccessToken = createCollectorAccessTokenProvider(configPath);
   await getAccessToken();
-  const enqueueForward = createSerializedEventForwarder({ getAccessToken });
+  const outbox = new CollectorOutbox(join(configDir(configPath), "state", "outbox.ndjson"), OUTBOX_MAX_EVENTS);
+  await outbox.initialize();
+  let drainPromise: Promise<void> | null = null;
+  let stopped = false;
+  const drainOutbox = (): Promise<void> => {
+    if (drainPromise) return drainPromise;
+    drainPromise = (async () => {
+      while (!stopped) {
+        const events = await outbox.peek(MAX_BATCH_SIZE);
+        if (events.length === 0) return;
+        let retries = 0;
+        try {
+          await forwardEvents(config, events, {
+            getAccessToken,
+            onRetry: () => {
+              retries++;
+            },
+          });
+          await outbox.acknowledge(events.map((event) => event.sourceEventId));
+        } catch (error) {
+          outbox.recordFailure(retries);
+          console.error(
+            `[traice-collector] delivery delayed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return;
+        }
+      }
+    })().finally(() => {
+      drainPromise = null;
+    });
+    return drainPromise;
+  };
+  const retryTimer = setInterval(() => {
+    drainOutbox().catch(() => {});
+  }, OUTBOX_RETRY_INTERVAL_MS);
+  if (retryTimer.unref) retryTimer.unref();
 
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, service: "traice-collector", agents: config.enabledAgents }));
+      res.end(
+        JSON.stringify({
+          ok: true,
+          service: "traice-collector",
+          agents: config.enabledAgents,
+          delivery: outbox.stats(),
+        }),
+      );
       return;
     }
 
@@ -44,27 +97,30 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
     let payload: unknown;
 
     try {
-      payload = await readJsonBody(req);
+      payload = await readJsonBody(req, MAX_LOCAL_BODY_BYTES);
     } catch (error) {
-      res.writeHead(400, { "content-type": "application/json" });
+      res.writeHead(error instanceof LocalPayloadTooLargeError ? 413 : 400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: error instanceof Error ? error.message : "invalid request body" }));
       return;
     }
 
     try {
       const events = normalizePayloadForRequest(req.url ?? "", payload, config, options.agent, receivedAt);
-      const sent = await enqueueForward(config, events);
-      if (events.length > 0 || sent > 0) {
-        console.log(JSON.stringify({ receivedAt, path: req.url, candidates: events.length, sent }));
+      const queued = await outbox.enqueue(events);
+      if (events.length > 0) {
+        console.log(JSON.stringify({ receivedAt, path: req.url, candidates: events.length, ...queued }));
       }
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ accepted: sent, candidates: events.length }));
+      res.writeHead(202, { "content-type": "application/json" });
+      res.end(JSON.stringify({ accepted: queued.queued, candidates: events.length, ...queued }));
+      drainOutbox().catch(() => {});
     } catch (error) {
       console.error(`[traice-collector] ingest failed: ${error instanceof Error ? error.message : String(error)}`);
       res.writeHead(500, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "traice_collector_ingest_failed" }));
     }
   });
+  server.requestTimeout = 15_000;
+  server.headersTimeout = 10_000;
 
   await new Promise<void>((resolve) => {
     server.listen(listenPort, listenHost, () => resolve());
@@ -72,6 +128,17 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
 
   console.log(`trAIce collector listening on http://${listenHost}:${listenPort}`);
   console.log(`Forwarding internal usage to ${config.serverUrl}/api/v1/internal-usage`);
+  drainOutbox().catch(() => {});
+
+  const shutdown = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(retryTimer);
+    server.close();
+    drainPromise?.catch(() => {});
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 }
 
 export function normalizePayloadForRequest(
@@ -86,7 +153,12 @@ export function normalizePayloadForRequest(
 
   for (const agent of agents) {
     const source = config.sources[agent] ?? defaultSourceForAgent(agent);
-    const options: OtlpNormalizeOptions = { source, identity: config.identity, receivedAt };
+    const options: OtlpNormalizeOptions = {
+      source,
+      identity: config.identity,
+      receivedAt,
+      includePrompts: config.includePrompts,
+    };
 
     if (agent === "claude-code") {
       if (path.includes("metrics")) {
@@ -146,11 +218,16 @@ async function postBatch(
   const fetchImpl = dependencies.fetchImpl ?? fetch;
   const sleep = dependencies.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
   const maxAttempts = Math.max(1, dependencies.maxAttempts ?? MAX_FORWARD_ATTEMPTS);
+  const requestTimeoutMs = Math.max(100, dependencies.requestTimeoutMs ?? REQUEST_TIMEOUT_MS);
+  const maxRetryDelayMs = Math.max(0, dependencies.maxRetryDelayMs ?? MAX_RETRY_DELAY_MS);
+  const random = dependencies.random ?? Math.random;
   let lastError: unknown;
   let refreshedAfterUnauthorized = false;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     let response: Response;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
       const accessToken = dependencies.getAccessToken ? await dependencies.getAccessToken(false) : config.apiKey;
       if (!accessToken) throw new Error("No collector credential is available.");
@@ -161,13 +238,18 @@ async function postBatch(
           "content-type": "application/json",
         },
         body: JSON.stringify({ events: batch }),
+        signal: controller.signal,
       });
     } catch (error) {
       lastError = error;
       if (attempt + 1 < maxAttempts) {
-        await sleep(BASE_RETRY_DELAY_MS * 2 ** attempt);
+        const delayMs = jitteredBackoffMs(attempt, maxRetryDelayMs, random);
+        dependencies.onRetry?.(delayMs);
+        await sleep(delayMs);
       }
       continue;
+    } finally {
+      clearTimeout(timeout);
     }
 
     if (response.ok) {
@@ -184,7 +266,9 @@ async function postBatch(
     if (!isRetryableStatus(response.status)) throw lastError;
 
     if (attempt + 1 < maxAttempts) {
-      await sleep(BASE_RETRY_DELAY_MS * 2 ** attempt);
+      const delayMs = retryDelayMs(response, attempt, maxRetryDelayMs, random);
+      dependencies.onRetry?.(delayMs);
+      await sleep(delayMs);
     }
   }
 
@@ -193,6 +277,25 @@ async function postBatch(
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function retryDelayMs(response: Response, attempt: number, capMs: number, random: () => number): number {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) return Math.min(capMs, Math.max(0, seconds * 1000));
+    const dateMs = new Date(retryAfter).getTime();
+    if (Number.isFinite(dateMs)) return Math.min(capMs, Math.max(0, dateMs - Date.now()));
+  }
+  const resetHeader = response.headers.get("x-ratelimit-reset");
+  const resetSeconds = resetHeader == null ? Number.NaN : Number(resetHeader);
+  if (Number.isFinite(resetSeconds) && resetSeconds >= 0) return Math.min(capMs, resetSeconds * 1000);
+  return jitteredBackoffMs(attempt, capMs, random);
+}
+
+function jitteredBackoffMs(attempt: number, capMs: number, random: () => number): number {
+  const base = Math.min(capMs, BASE_RETRY_DELAY_MS * 2 ** attempt);
+  return Math.min(capMs, Math.max(0, Math.round(base * (0.5 + random()))));
 }
 
 function toIngestEvent(event: InternalUsageEvent): Record<string, unknown> {
@@ -223,10 +326,16 @@ function dedupeEvents(events: InternalUsageEvent[]): InternalUsageEvent[] {
   return output;
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+class LocalPayloadTooLargeError extends Error {}
+
+async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let bytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > maxBytes) throw new LocalPayloadTooLargeError(`request body exceeds ${maxBytes} bytes`);
+    chunks.push(buffer);
   }
   const text = Buffer.concat(chunks).toString("utf8");
   if (!text.trim()) return {};
