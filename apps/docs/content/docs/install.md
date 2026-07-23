@@ -1,6 +1,6 @@
 ---
 title: Install Guide
-excerpt: Sign in, create an API key, install the SDK or collector, and send your first trAIce event.
+excerpt: Sign in, configure an SDK or collector, and send your first trAIce event.
 section: Getting started
 sectionOrder: 1
 order: 2
@@ -15,7 +15,7 @@ This is the canonical setup guide for trAIce. Use it for a fresh workspace, a ne
 You need:
 
 - A trAIce account and workspace.
-- A trAIce API key from the app.
+- A trAIce API key for product-runtime events. Interactive collectors use browser authorization instead.
 - A TypeScript or Python project for product-runtime events, or any runtime that can send an HTTP POST.
 - Provider keys for OpenAI, Anthropic, Bedrock, or your LLM vendor. Those stay in your infrastructure.
 
@@ -125,9 +125,11 @@ npx @traice/collector@latest setup claude-code \
   --seat-monthly-usd 200
 ```
 
-The command prompts for an API key when needed, verifies it, saves it in the operating system credential manager,
-patches the agent settings, and installs a background user service. Rerunning it updates the existing setup and reuses
-the saved key when it is still valid. Add `--no-service` if another process manager will run the collector.
+The command shows a short code, opens trAIce for approval, stores the renewable session in the operating system
+credential manager, patches the agent settings, and installs a background user service. Rerunning it updates the
+existing setup and reuses the saved authorization while it remains valid. Add `--no-browser` for SSH, or `--no-service`
+if another process manager will run the collector. API keys remain supported for CI, containers, and other unattended
+automation.
 
 Send an internal usage row directly:
 

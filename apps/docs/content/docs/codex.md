@@ -17,10 +17,11 @@ npx @traice/collector@latest setup codex \
   --team-name Engineering
 ```
 
-The command prompts for an API key only when a valid saved key is unavailable. It verifies and saves the key, patches
-user-level `~/.codex/config.toml`, installs a background user service, and reports the backfill result. It is safe to
-rerun. Use `--backfill-days N` for a 1 to 30 day window, `--no-backfill` to skip history, or `--no-service` if another
-process manager will run collection.
+The command opens a trAIce browser authorization when a valid saved session is unavailable. Confirm the short code and
+workspace, then setup patches user-level `~/.codex/config.toml`, installs a background user service, and reports the
+backfill result. It is safe to rerun. Use `--backfill-days N` for a 1 to 30 day window, `--no-backfill` to skip history,
+or `--no-service` if another process manager will run collection. Over SSH, add `--no-browser` and open the printed URL
+on any device.
 
 Codex project-local telemetry settings may not control routing. Prefer user-level configuration for device installs.
 
@@ -49,8 +50,8 @@ npx --yes @traice/collector@latest setup codex `
   --yes
 ```
 
-Run setup as the Windows user whose Codex usage should be collected. Administrator access is not required. The API-key
-prompt shows `****` after a key is pasted without revealing its value.
+Run setup as the Windows user whose Codex usage should be collected. Administrator access is not required. The
+browser-authorized session is stored in Windows Credential Manager.
 
 If `npx` is not recognized, install Node.js LTS, reopen the terminal, and rerun setup:
 
@@ -58,9 +59,8 @@ If `npx` is not recognized, install Node.js LTS, reopen the terminal, and rerun 
 winget install --id OpenJS.NodeJS.LTS --exact --accept-source-agreements --accept-package-agreements
 ```
 
-If setup says that a saved API key was rejected, create a new collector key in the Internal Spend source modal and
-paste the complete value. A rejected key is revoked, incomplete, associated with another trAIce workspace, or being
-sent to the wrong trAIce server. Running as Administrator does not change API-key validation.
+If a saved browser authorization has expired or was revoked, rerun `auth login` or `setup`. Use `auth status` to verify
+the saved workspace and `auth logout` to revoke the grant and remove it from this device.
 
 ## Manual history backfill
 

@@ -38,7 +38,7 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
     credentialWarning = stored.warning;
   }
   if (!credential) {
-    throw new Error("Missing API key. Provide TRAICE_API_KEY or --api-key-stdin.");
+    throw new Error("Missing collector credential. Run auth login or provide TRAICE_API_KEY or --api-key-stdin.");
   }
   const listenHost = options.listenHost ?? current?.listenHost ?? "127.0.0.1";
   const listenPort = parsePort(options.listenPort ?? current?.listenPort, 4318);
@@ -53,11 +53,12 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
   const next = mergeConfigForAgent(current, options.agent, {
     serverUrl: normalizeUrl(options.serverUrl ?? current?.serverUrl ?? DEFAULT_SERVER_URL),
     credential,
+    ...(providedApiKey ? { authorization: undefined } : {}),
     listenHost,
     listenPort,
     includePrompts,
     identity: {
-      employeeEmail: options.employeeEmail ?? current?.identity.employeeEmail,
+      employeeEmail: options.employeeEmail ?? current?.identity.employeeEmail ?? current?.authorization?.userEmail,
       employeeName: options.employeeName ?? current?.identity.employeeName ?? userInfo().username,
       employeeExternalId: options.employeeExternalId ?? current?.identity.employeeExternalId,
       teamName: options.teamName ?? current?.identity.teamName,

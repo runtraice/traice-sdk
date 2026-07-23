@@ -48,15 +48,15 @@ Python applications install `traice-sdk` from PyPI and import `traice`. The [Pyt
 ## Coding-Agent Collection
 
 ```sh
-npx @traice/collector@latest install claude-code \
+npx @traice/collector@latest setup claude-code \
   --server-url https://www.runtraice.com \
   --employee-email you@company.com \
   --team-name Engineering
-
-npx @traice/collector@latest collect
 ```
 
-Collectors send internal usage rows to `/api/v1/internal-usage`. Product-runtime SDK events still go to `/api/v1/events`.
+Setup opens a short-code browser authorization, stores the renewable session in the operating system credential store,
+and installs a background user service. API keys remain available for unattended automation. Collectors send internal
+usage rows to `/api/v1/internal-usage`. Product-runtime SDK events still go to `/api/v1/events`.
 
 ## Ask trAIce
 

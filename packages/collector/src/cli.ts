@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import packageMetadata from "../package.json";
+import { loginAndStoreCollectorAuthorization, logoutCollector } from "./auth";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
+import { loadCollectorConfig } from "./config";
 import { installAgent } from "./install";
 import { resolveFirstRunSetupIdentity } from "./identity";
 import { runCollector } from "./run";
 import { setupAgent } from "./setup";
+import { verifyCollectorConnection } from "./setup";
 import { formatCollectorStatus, getCollectorStatus } from "./status";
-import type { AgentName } from "./types";
+import type { AgentName, CollectorOAuthAuthorization } from "./types";
 
 const program = new Command();
 
@@ -26,6 +29,77 @@ Examples:
   traice-collector status --json
   traice-collector help setup`,
   );
+
+const authCommand = program.command("auth").description("Manage browser authorization for the collector");
+
+authCommand
+  .command("login")
+  .description("Authorize the collector in a browser and save the session securely")
+  .option("--config <path>", "collector config path")
+  .option("--server-url <url>", "trAIce app URL")
+  .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
+  .option("--workspace <id>", "workspace to preselect in the browser")
+  .option("--no-browser", "print the authorization link without opening a browser")
+  .action(async (options: Record<string, unknown>) => {
+    const result = await loginAndStoreCollectorAuthorization({
+      configPath: stringOption(options.config),
+      serverUrl: stringOption(options.serverUrl),
+      credentialStore: credentialStoreOption(options.credentialStore),
+      workspaceHint: stringOption(options.workspace),
+      noBrowser: Boolean(options.browser === false),
+    });
+    console.log(`Authorized ${result.authorization.workspaceName}.`);
+    if (result.authorization.userEmail) console.log(`Signed in as ${result.authorization.userEmail}.`);
+    console.log(`Credential stored in ${result.credential.backend}.`);
+    if (result.credentialWarning) console.error(`[traice-collector] ${result.credentialWarning}`);
+  });
+
+authCommand
+  .command("status")
+  .description("Show the saved browser authorization and verify it with trAIce")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action(async (options: Record<string, unknown>) => {
+    const configPath = stringOption(options.config);
+    let authorization: CollectorOAuthAuthorization | null = null;
+    let ok = false;
+    let error: string | undefined;
+    try {
+      const config = loadCollectorConfig(configPath);
+      authorization = config.authorization ?? null;
+      await verifyCollectorConnection(configPath);
+      ok = true;
+    } catch (statusError) {
+      error = statusError instanceof Error ? statusError.message : String(statusError);
+    }
+    const result = { ok, authorization, ...(error ? { error } : {}) };
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else if (!authorization) {
+      console.log(ok ? "Connected with a workspace API key." : "No browser-authorized collector session is saved.");
+      if (error) console.error(error);
+    } else {
+      console.log(`${ok ? "Connected" : "Not connected"} to ${authorization.workspaceName}.`);
+      if (authorization.userEmail) console.log(`Authorized as ${authorization.userEmail}.`);
+      if (error) console.error(error);
+    }
+    if (!ok) process.exitCode = 1;
+  });
+
+authCommand
+  .command("logout")
+  .description("Revoke the browser-authorized collector session and remove it locally")
+  .option("--config <path>", "collector config path")
+  .action(async (options: Record<string, unknown>) => {
+    const result = await logoutCollector(stringOption(options.config));
+    if (!result.removed) {
+      console.log("No browser-authorized collector session was found.");
+      return;
+    }
+    console.log("Removed the saved collector authorization.");
+    if (!result.remoteRevoked) {
+      console.error("The server session could not be revoked. Revoke it from trAIce API keys and collector sessions.");
+    }
+  });
 
 program
   .command("status")
@@ -51,6 +125,8 @@ program
   .option("--api-key <key>", "trAIce API key")
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
+  .option("--workspace <id>", "workspace to preselect during browser authorization")
+  .option("--no-browser", "print the authorization link without opening a browser")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
   .option("--employee-external-id <id>", "employee external ID")
@@ -81,6 +157,8 @@ program
       apiKey: stringOption(options.apiKey),
       apiKeyStdin: Boolean(options.apiKeyStdin),
       credentialStore: credentialStoreOption(options.credentialStore),
+      workspaceHint: stringOption(options.workspace),
+      noBrowser: Boolean(options.browser === false),
       employeeEmail: identity.employeeEmail,
       employeeName: stringOption(options.employeeName),
       employeeExternalId: stringOption(options.employeeExternalId),

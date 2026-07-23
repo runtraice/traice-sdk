@@ -1,7 +1,7 @@
 import packageMetadata from "../package.json";
+import { loginAndStoreCollectorAuthorization, resolveCollectorAccessToken, type CollectorLoginResult } from "./auth";
 import { backfillCodex, type CodexBackfillSummary } from "./backfill";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
-import { readCollectorCredential } from "./credentials";
 import { readHiddenSecret } from "./fs";
 import { installAgent, type InstallResult } from "./install";
 import { installCollectorService, type CollectorServiceResult } from "./service";
@@ -25,6 +25,11 @@ interface SetupDependencies {
   fetchImpl?: typeof fetch;
   promptSecret?: (prompt?: string) => Promise<string>;
   report?: (message: string) => void;
+  openBrowser?: (url: string) => boolean;
+  login?: (
+    options: Parameters<typeof loginAndStoreCollectorAuthorization>[0],
+    dependencies?: Parameters<typeof loginAndStoreCollectorAuthorization>[1],
+  ) => Promise<CollectorLoginResult>;
   installService?: typeof installCollectorService;
   runBackfill?: typeof backfillCodex;
 }
@@ -44,19 +49,25 @@ export async function setupAgent(
 ): Promise<CollectorSetupResult> {
   const promptSecret = dependencies.promptSecret ?? readHiddenSecret;
   const report = dependencies.report ?? console.error;
-  let install = await installWithPrompt(options, promptSecret);
+  let install = await installWithAuthorization(options, promptSecret, report, dependencies);
 
   try {
     await verifyCollectorConnection(install.configPath, dependencies.fetchImpl);
   } catch (error) {
     if (!(error instanceof CollectorConnectionError) || error.status !== 401 || hasProvidedKey(options)) throw error;
-    const serverUrl = loadCollectorConfig(install.configPath).serverUrl;
-    report(
-      `The saved API key was rejected by ${serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
-        "Running as Administrator will not fix API-key validation.",
-    );
-    const apiKey = await promptSecret("Paste a newly created trAIce API key (input is masked): ");
-    install = await installAgent({ ...options, apiKey, apiKeyStdin: false, patchSettings: true });
+    const config = loadCollectorConfig(install.configPath);
+    if (config.authorization?.type === "oauth") {
+      report(`The saved browser authorization for ${config.authorization.workspaceName} is no longer valid.`);
+      await loginForSetup(options, report, dependencies);
+      install = await installAgent({ ...options, patchSettings: true });
+    } else {
+      report(
+        `The saved API key was rejected by ${config.serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
+          "Running as Administrator will not fix API-key validation.",
+      );
+      const apiKey = await promptSecret("Paste a newly created trAIce API key (input is masked): ");
+      install = await installAgent({ ...options, apiKey, apiKeyStdin: false, patchSettings: true });
+    }
     await verifyCollectorConnection(install.configPath, dependencies.fetchImpl);
   }
 
@@ -94,21 +105,19 @@ export async function setupAgent(
 export async function verifyCollectorConnection(configPath?: string, fetchImpl: typeof fetch = fetch): Promise<void> {
   const resolved = resolveConfigPath(configPath);
   const config = loadCollectorConfig(resolved);
-  let apiKey: string | undefined;
+  let accessToken: string;
   try {
-    apiKey = config.credential ? await readCollectorCredential(config.credential) : config.apiKey;
+    accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl });
   } catch {
-    throw new CollectorConnectionError("The stored trAIce API key is unavailable.", 401);
+    throw new CollectorConnectionError("The stored trAIce credential is unavailable.", 401);
   }
-  if (!apiKey) throw new Error("Missing collector API key. Run setup again.");
-  const url = new URL("/api/v1/internal-usage", config.serverUrl);
-  url.searchParams.set("limit", "1");
-  const response = await fetchImpl(url, { headers: { authorization: `Bearer ${apiKey}` } });
+  const url = new URL("/api/v1/collector/me", config.serverUrl);
+  const response = await fetchImpl(url, { headers: { authorization: `Bearer ${accessToken}` } });
   if (response.ok) return;
   const detail = await response.text().catch(() => "");
   if (response.status === 401) {
     throw new CollectorConnectionError(
-      `The trAIce server at ${config.serverUrl} rejected the API key. Check that it is active, copied completely, and belongs to the intended workspace.`,
+      `The trAIce server at ${config.serverUrl} rejected the collector credential. Reauthorize or check that the API key belongs to the intended workspace.`,
       401,
     );
   }
@@ -118,17 +127,44 @@ export async function verifyCollectorConnection(configPath?: string, fetchImpl: 
   );
 }
 
-async function installWithPrompt(
+async function installWithAuthorization(
   options: CollectorSetupOptions,
   promptSecret: (prompt?: string) => Promise<string>,
+  report: (message: string) => void,
+  dependencies: SetupDependencies,
 ): Promise<InstallResult> {
   try {
     return await installAgent({ ...options, patchSettings: true });
   } catch (error) {
-    if (!(error instanceof Error) || !error.message.startsWith("Missing API key")) throw error;
-    const apiKey = await promptSecret();
-    return installAgent({ ...options, apiKey, apiKeyStdin: false, patchSettings: true });
+    if (!(error instanceof Error) || !error.message.startsWith("Missing collector credential")) throw error;
+    if (hasProvidedKey(options)) {
+      const apiKey = await promptSecret();
+      return installAgent({ ...options, apiKey, apiKeyStdin: false, patchSettings: true });
+    }
+    await loginForSetup(options, report, dependencies);
+    return installAgent({ ...options, patchSettings: true });
   }
+}
+
+async function loginForSetup(
+  options: CollectorSetupOptions,
+  report: (message: string) => void,
+  dependencies: SetupDependencies,
+) {
+  return (dependencies.login ?? loginAndStoreCollectorAuthorization)(
+    {
+      configPath: options.configPath,
+      serverUrl: options.serverUrl,
+      credentialStore: options.credentialStore,
+      noBrowser: options.noBrowser,
+      workspaceHint: options.workspaceHint,
+    },
+    {
+      fetchImpl: dependencies.fetchImpl,
+      openBrowser: dependencies.openBrowser,
+      report,
+    },
+  );
 }
 
 function hasProvidedKey(options: CollectorSetupOptions): boolean {

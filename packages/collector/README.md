@@ -12,8 +12,9 @@ npx @traice/collector@latest setup claude-code \
   --team-name Engineering
 ```
 
-`setup` prompts for the API key only when a valid saved credential is unavailable, patches the agent settings, and
-installs a background user service. It is safe to rerun.
+`setup` opens a browser authorization page when a valid saved credential is unavailable, patches the agent settings,
+and installs a background user service. Confirm the short code and workspace in trAIce. You do not need to copy an API
+key. It is safe to rerun.
 
 On the first interactive run, setup compares the requested employee email with the local Git email and asks which
 identity to use. It also confirms a standard team name so reporting does not split across spelling variants. Use
@@ -53,9 +54,8 @@ npx --yes @traice/collector@latest setup codex `
 ```
 
 Setup uses a hidden per-user Startup launcher, so Administrator access is not required. If `npx` is unavailable,
-install Node.js LTS with `winget install --id OpenJS.NodeJS.LTS --exact`, reopen the terminal, and retry. The API-key
-prompt displays `****` after paste. A rejected saved key must be replaced with a complete, active key for the intended
-workspace; elevation does not affect server authentication.
+install Node.js LTS with `winget install --id OpenJS.NodeJS.LTS --exact`, reopen the terminal, and retry. Setup opens
+the browser for approval and stores the resulting session in Windows Credential Manager.
 
 ## Status and help
 
@@ -97,9 +97,25 @@ retries are idempotent and checks existing live usage in
 the bounded window to skip cross-mode duplicates. If the live overlap is too large to audit completely, it refuses
 the replay and asks for an earlier cutoff.
 
-## API key storage
+## Browser authorization and credential storage
 
-`setup` and `install` store the API key in the operating system credential manager by default:
+Interactive `setup` uses OAuth 2.0 device authorization. It prints a short code and a URL, attempts to open the URL,
+and waits for approval. The URL can be opened on another device, so the same flow works over SSH:
+
+```sh
+npx @traice/collector@latest setup codex --no-browser --employee-email you@company.com --team-name Engineering
+```
+
+Manage the saved session explicitly:
+
+```sh
+npx @traice/collector@latest auth login
+npx @traice/collector@latest auth status
+npx @traice/collector@latest auth logout
+```
+
+Access tokens are short-lived. The collector rotates its refresh credential automatically and stores the credential
+bundle in the operating system credential manager:
 
 - macOS Keychain
 - Windows Credential Manager
@@ -113,21 +129,25 @@ installer reports this fallback explicitly; it is protected from other OS users 
 Require native secure storage and fail instead of falling back:
 
 ```sh
-npx @traice/collector@latest install codex --api-key-stdin --credential-store keyring
+npx @traice/collector@latest auth login --credential-store keyring
 ```
 
 Force the protected-file backend for a headless or externally encrypted environment:
 
 ```sh
-npx @traice/collector@latest install codex --api-key-stdin --credential-store file
+npx @traice/collector@latest auth login --credential-store file --no-browser
 ```
 
-Existing configs containing a plaintext `apiKey` migrate automatically on the next `install` or `collect`. For CI,
-containers, MDM, or an external secret manager, set `TRAICE_API_KEY` only in the collector process; `collect` uses that
-value without writing it to disk.
+Workspace API keys remain supported for CI, containers, MDM, and other unattended automation. Read one from standard
+input with `install --api-key-stdin`, or set `TRAICE_API_KEY` only in the collector process. The environment override
+is not written to disk. Avoid `--api-key <value>` in a shared shell because it can be retained in shell history or
+process inspection.
 
-The API key remains a bearer credential: a process running as the same OS user can ask the unlocked credential manager
-for it. Use a dedicated, revocable collector key and avoid copying the fallback file into backups or profile sync.
+Existing configs containing a plaintext `apiKey` migrate automatically on the next `install` or `collect`.
+
+Any process running as the same OS user can potentially ask an unlocked credential manager for saved credentials.
+Keep the fallback file out of backups and profile sync. Revoke a browser-authorized device from `auth logout` or the
+connected collectors list in trAIce.
 
 ## JavaScript
 
