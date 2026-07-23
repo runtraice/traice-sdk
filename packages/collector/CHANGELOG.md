@@ -1,5 +1,25 @@
 # @traice/collector
 
+## 0.4.0
+
+### Minor Changes
+
+- a989571: Add named workspace profiles, explicit live mirrors with isolated durable delivery, profile-specific status and backfill,
+  and separate credential storage. Codex setup now merges an existing `[otel]` table and repairs collector-created
+  duplicates instead of appending an invalid second table.
+- 69bb5ea: Harden telemetry delivery with stable event identities, bounded retry and
+  timeout behavior, delivery health counters, privacy-safe content defaults, and
+  optional restart-safe SDK storage.
+
+  Accept collector telemetry into a bounded durable outbox before responding to
+  local agents, drain it asynchronously in strict batches, and expose queue
+  health. Add internal-event latency to the public protocol.
+
+### Patch Changes
+
+- Updated dependencies [69bb5ea]
+  - @traice/protocol@0.1.3
+
 ## 0.3.1
 
 ### Patch Changes
