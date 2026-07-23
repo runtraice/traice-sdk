@@ -46,6 +46,7 @@ jobs:
         shell: bash
         run: |
           package_links=()
+          release_sections=()
           for package_dir in packages/protocol packages/collector packages/sdk; do
             package_name="$(node -p "require('./${package_dir}/package.json').name")"
             local_version="$(node -p "require('./${package_dir}/package.json').version")"
@@ -53,6 +54,12 @@ jobs:
             if [[ "$local_version" != "$published_version" ]]; then
               package_url="https://www.npmjs.com/package/${package_name}/v/${local_version}"
               package_links+=("<${package_url}|${package_name}@${local_version}>")
+              release_sections+=(
+                "$(node scripts/release-notes.mjs \
+                  "${package_dir}/CHANGELOG.md" \
+                  "$local_version" \
+                  "$package_name")"
+              )
             fi
           done
 
@@ -69,7 +76,14 @@ jobs:
             printf -v package_list '%s, ' "${package_links[@]}"
             package_list="${package_list%, }"
             echo "pending=true" >> "$GITHUB_OUTPUT"
-            echo "message=Published ${package_list} to npm (latest) from <${source_url}|${source_label}>." >> "$GITHUB_OUTPUT"
+            {
+              echo "message<<TRAICE_RELEASE_MESSAGE"
+              echo "Published ${package_list} to npm (latest) from <${source_url}|${source_label}>."
+              echo
+              echo "*Changes*"
+              printf '%s\n\n' "${release_sections[@]}"
+              echo "TRAICE_RELEASE_MESSAGE"
+            } >> "$GITHUB_OUTPUT"
           else
             echo "pending=false" >> "$GITHUB_OUTPUT"
             echo "No unpublished package versions found."
