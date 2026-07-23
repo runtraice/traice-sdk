@@ -1,5 +1,12 @@
 # @traice/collector
 
+## 0.3.0
+
+### Minor Changes
+
+- d3dac93: Add OAuth 2.0 device authorization for interactive collector setup, including secure token storage, automatic refresh,
+  SSH-friendly login, status and logout commands, and API-key compatibility for unattended automation.
+
 ## 0.2.9
 
 ### Patch Changes
