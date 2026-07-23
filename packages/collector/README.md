@@ -27,7 +27,9 @@ npx --yes @traice/collector@latest setup codex
 ```
 
 Codex setup backfills the previous 7 days by default. Set `--backfill-days` from 1 to 30, use `--no-backfill` to skip
-history, or use `--no-service` when another process manager will run the collector.
+history, or use `--no-service` when another process manager will run the collector. Rerunning setup replaces the
+single managed block in `~/.codex/config.toml`, restarts the existing service, and safely retries the bounded backfill.
+It does not append duplicate Codex configuration or duplicate stored usage.
 
 ### Windows
 
@@ -71,11 +73,12 @@ The maintained collector forwards live OTLP telemetry only; it does not scan
 or replay an unbounded history of local session files. Stop any legacy Codex
 collector process before starting `@traice/collector`.
 
-Live telemetry is durably queued in
-`~/.traice/collector/state/outbox.ndjson` before the local listener returns
-HTTP 202. Backend delivery runs asynchronously in batches, honors server retry
-guidance, and survives collector restarts. The outbox is bounded at 10,000
-events and drops the oldest event if that limit is reached.
+Live telemetry is durably queued under `~/.traice/collector/state/` before the
+local listener returns HTTP 202. The default profile uses `outbox.ndjson`;
+named profiles have separate workspace outboxes. Backend delivery runs
+asynchronously in batches, honors server retry guidance, and survives
+collector restarts. Each outbox is bounded at 10,000 events and drops its
+oldest event if that limit is reached.
 
 Inspect a bounded window of local Codex session history without sending data:
 
@@ -144,6 +147,37 @@ process inspection.
 
 Existing configs containing a plaintext `apiKey` migrate automatically on the next `install` or `collect`.
 
+## Multiple workspace profiles
+
+One collector can send the same live Codex or Claude Code usage to multiple workspaces without starting another local
+listener. Keep one workspace active and add other destinations as explicit mirrors:
+
+```sh
+npx --yes @traice/collector@latest auth login --profile live-demo --workspace live-demo
+npx --yes @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
+npx @traice/collector@latest profile use live-demo
+npx @traice/collector@latest profile mirror add test-zoro
+npx @traice/collector@latest profile list
+```
+
+Profiles have separate workspace-scoped credentials. The operating-system credential manager uses a distinct entry for
+each profile. Protected-file fallback credentials also use separate files. The background collector reloads active and
+mirror selections from its config, so changing them does not create another service or require another OTLP port.
+
+The active profile is authoritative. The local listener returns HTTP 202 after the primary workspace outbox accepts the
+event. Each mirror uses an isolated durable outbox, so a backend or authorization failure for one workspace does not
+block the others. Failed delivery remains queued and is retried in the background. Stable event IDs remain deduplicated
+independently inside each workspace. Sending an event to two workspaces intentionally creates one row in each workspace.
+
+Select a profile for a one-time status check or backfill:
+
+```sh
+npx @traice/collector@latest status --profile test-zoro
+npx @traice/collector@latest backfill codex --profile test-zoro --since 1d
+```
+
+Remove a mirror with `profile mirror remove <name>`. Revoke a profile with `auth logout --profile <name>`.
+
 ## CLI configuration and parameters
 
 The short commands above use the production trAIce server, ask for missing identity choices, install a background
@@ -153,6 +187,8 @@ service, and backfill 7 days of Codex history. Override those defaults only when
 | ----------------------------- | --------------------- | ------------------------------------------------------------------------ |
 | `--server-url <url>`          | `auth login`, `setup` | Use another trAIce deployment, such as staging or a self-hosted instance |
 | `--workspace <slug-or-id>`    | `auth login`, `setup` | Preselect a workspace on the browser authorization page                  |
+| `--profile <name>`            | Most commands         | Save, select, inspect, or backfill a named workspace profile             |
+| `--mirror <name>`             | `collect`             | Add a one-run mirror override; repeat for multiple profiles              |
 | `--employee-email <email>`    | `setup`               | Set the employee identity without the interactive question               |
 | `--employee-name <name>`      | `setup`               | Set the optional employee display name                                   |
 | `--team-name <name>`          | `setup`               | Set the reporting team without the interactive question                  |

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { createCollectorAccessTokenProvider } from "./auth";
 import { configDir, defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
+import { configForProfile, DEFAULT_PROFILE, selectedProfileNames } from "./profiles";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
 import { CollectorOutbox } from "./outbox";
@@ -30,59 +31,127 @@ export type ForwardDependencies = {
   getAccessToken?: (forceRefresh?: boolean) => Promise<string>;
 };
 
+export type CollectorDestinationForwarder = {
+  name: string;
+  config: CollectorConfig;
+  forward: (config: CollectorConfig, events: InternalUsageEvent[]) => Promise<number>;
+};
+
+export type DestinationDelivery = {
+  name: string;
+  primary: boolean;
+  accepted: number;
+  error?: string;
+};
+
+type CollectorDestinationRuntime = {
+  name: string;
+  outbox: CollectorOutbox;
+  getAccessToken: (forceRefresh?: boolean) => Promise<string>;
+  drainPromise: Promise<void> | null;
+};
+
 export async function runCollector(options: CollectorRunOptions = {}): Promise<void> {
   const configPath = resolveConfigPath(options.configPath);
   const config = loadCollectorConfig(configPath);
   const listenHost = options.listenHost ?? config.listenHost;
   const listenPort = options.listenPort ?? config.listenPort;
-  const getAccessToken = createCollectorAccessTokenProvider(configPath);
-  await getAccessToken();
-  const outbox = new CollectorOutbox(join(configDir(configPath), "state", "outbox.ndjson"), OUTBOX_MAX_EVENTS);
-  await outbox.initialize();
-  let drainPromise: Promise<void> | null = null;
   let stopped = false;
-  const drainOutbox = (): Promise<void> => {
-    if (drainPromise) return drainPromise;
-    drainPromise = (async () => {
+  const runtimes = new Map<string, CollectorDestinationRuntime>();
+
+  const destinationRuntime = async (name: string): Promise<CollectorDestinationRuntime> => {
+    const existing = runtimes.get(name);
+    if (existing) return existing;
+    const outboxName = name === DEFAULT_PROFILE ? "outbox.ndjson" : `outbox-${name}.ndjson`;
+    const runtime: CollectorDestinationRuntime = {
+      name,
+      outbox: new CollectorOutbox(join(configDir(configPath), "state", outboxName), OUTBOX_MAX_EVENTS),
+      getAccessToken: createCollectorAccessTokenProvider(configPath, {}, name),
+      drainPromise: null,
+    };
+    await runtime.outbox.initialize();
+    runtimes.set(name, runtime);
+    return runtime;
+  };
+
+  const resolveDestinations = async (current: CollectorConfig) => {
+    const names = selectedProfileNames(current, {
+      profile: options.profile,
+      mirrorProfiles: options.mirrorProfiles,
+    });
+    return Promise.all(
+      names.map(async (name) => ({
+        name,
+        config: configForProfile(current, name),
+        runtime: await destinationRuntime(name),
+      })),
+    );
+  };
+
+  const drainDestination = (runtime: CollectorDestinationRuntime): Promise<void> => {
+    if (runtime.drainPromise) return runtime.drainPromise;
+    runtime.drainPromise = (async () => {
       while (!stopped) {
-        const events = await outbox.peek(MAX_BATCH_SIZE);
+        const events = await runtime.outbox.peek(MAX_BATCH_SIZE);
         if (events.length === 0) return;
         let retries = 0;
         try {
-          await forwardEvents(config, events, {
-            getAccessToken,
+          const current = loadCollectorConfig(configPath);
+          const destinationConfig = configForProfile(current, runtime.name);
+          await forwardEvents(destinationConfig, events, {
+            getAccessToken: runtime.getAccessToken,
             onRetry: () => {
               retries++;
             },
           });
-          await outbox.acknowledge(events.map((event) => event.sourceEventId));
+          await runtime.outbox.acknowledge(events.map((event) => event.sourceEventId));
         } catch (error) {
-          outbox.recordFailure(retries);
+          runtime.outbox.recordFailure(retries);
           console.error(
-            `[traice-collector] delivery delayed: ${error instanceof Error ? error.message : String(error)}`,
+            `[traice-collector] delivery to "${runtime.name}" delayed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           );
           return;
         }
       }
     })().finally(() => {
-      drainPromise = null;
+      runtime.drainPromise = null;
     });
-    return drainPromise;
+    return runtime.drainPromise;
   };
+
+  const initialDestinations = await resolveDestinations(config);
+  await initialDestinations[0]!.runtime.getAccessToken();
+  for (const destination of initialDestinations.slice(1)) {
+    destination.runtime.getAccessToken().catch((error) => {
+      console.error(
+        `[traice-collector] mirror "${destination.name}" authorization delayed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
   const retryTimer = setInterval(() => {
-    drainOutbox().catch(() => {});
+    for (const runtime of runtimes.values()) drainDestination(runtime).catch(() => {});
   }, OUTBOX_RETRY_INTERVAL_MS);
   if (retryTimer.unref) retryTimer.unref();
 
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
+      const current = loadCollectorConfig(configPath);
+      const profileNames = selectedProfileNames(current, {
+        profile: options.profile,
+        mirrorProfiles: options.mirrorProfiles,
+      });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
           ok: true,
           service: "traice-collector",
-          agents: config.enabledAgents,
-          delivery: outbox.stats(),
+          agents: current.enabledAgents,
+          profiles: profileNames,
+          delivery: Object.fromEntries(profileNames.map((name) => [name, runtimes.get(name)?.outbox.stats() ?? null])),
         }),
       );
       return;
@@ -105,14 +174,34 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
     }
 
     try {
-      const events = normalizePayloadForRequest(req.url ?? "", payload, config, options.agent, receivedAt);
-      const queued = await outbox.enqueue(events);
+      const current = loadCollectorConfig(configPath);
+      const destinations = await resolveDestinations(current);
+      const events = normalizePayloadForRequest(req.url ?? "", payload, current, options.agent, receivedAt);
+      const settled = await Promise.allSettled(
+        destinations.map((destination) => destination.runtime.outbox.enqueue(events)),
+      );
+      const deliveries = settled.map((result, index) => ({
+        name: destinations[index]!.name,
+        primary: index === 0,
+        ...(result.status === "fulfilled"
+          ? result.value
+          : { queued: 0, deduplicated: 0, dropped: 0, error: errorMessage(result.reason) }),
+      }));
+      const primary = deliveries[0]!;
+      if ("error" in primary) throw new Error(`Primary profile "${primary.name}" failed: ${primary.error}`);
+      for (const delivery of deliveries.slice(1)) {
+        if ("error" in delivery) {
+          console.error(`[traice-collector] mirror "${delivery.name}" queue failed: ${delivery.error}`);
+        }
+      }
       if (events.length > 0) {
-        console.log(JSON.stringify({ receivedAt, path: req.url, candidates: events.length, ...queued }));
+        console.log(JSON.stringify({ receivedAt, path: req.url, candidates: events.length, destinations: deliveries }));
       }
       res.writeHead(202, { "content-type": "application/json" });
-      res.end(JSON.stringify({ accepted: queued.queued, candidates: events.length, ...queued }));
-      drainOutbox().catch(() => {});
+      res.end(JSON.stringify({ accepted: primary.queued, candidates: events.length, destinations: deliveries }));
+      for (const [index, destination] of destinations.entries()) {
+        if (settled[index]?.status === "fulfilled") drainDestination(destination.runtime).catch(() => {});
+      }
     } catch (error) {
       console.error(`[traice-collector] ingest failed: ${error instanceof Error ? error.message : String(error)}`);
       res.writeHead(500, { "content-type": "application/json" });
@@ -127,18 +216,40 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   });
 
   console.log(`trAIce collector listening on http://${listenHost}:${listenPort}`);
-  console.log(`Forwarding internal usage to ${config.serverUrl}/api/v1/internal-usage`);
-  drainOutbox().catch(() => {});
+  console.log(
+    `Forwarding internal usage to ${initialDestinations
+      .map((destination) => `${destination.name} (${destination.config.serverUrl})`)
+      .join(", ")}`,
+  );
+  for (const destination of initialDestinations) drainDestination(destination.runtime).catch(() => {});
 
   const shutdown = () => {
     if (stopped) return;
     stopped = true;
     clearInterval(retryTimer);
     server.close();
-    drainPromise?.catch(() => {});
+    for (const runtime of runtimes.values()) runtime.drainPromise?.catch(() => {});
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+}
+
+export async function forwardEventsToDestinations(
+  events: InternalUsageEvent[],
+  destinations: CollectorDestinationForwarder[],
+): Promise<DestinationDelivery[]> {
+  if (destinations.length === 0) throw new Error("No collector destinations are configured.");
+  const settled = await Promise.allSettled(
+    destinations.map((destination) => destination.forward(destination.config, events)),
+  );
+  return settled.map((result, index) => ({
+    name: destinations[index]!.name,
+    primary: index === 0,
+    accepted: result.status === "fulfilled" ? result.value : 0,
+    ...(result.status === "rejected"
+      ? { error: result.reason instanceof Error ? result.reason.message : String(result.reason) }
+      : {}),
+  }));
 }
 
 export function normalizePayloadForRequest(
@@ -340,4 +451,8 @@ async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unk
   const text = Buffer.concat(chunks).toString("utf8");
   if (!text.trim()) return {};
   return JSON.parse(text);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

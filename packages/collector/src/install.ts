@@ -12,11 +12,19 @@ import {
 import { normalizeUrl, parseMoney, parsePort, readJsonFile, readStdinSecret, resolveHome } from "./fs";
 import { patchClaudeSettings, patchCodexConfig, type SettingsPatchResult } from "./settings";
 import { storeCollectorCredential } from "./credentials";
+import {
+  DEFAULT_PROFILE,
+  activeProfileName,
+  collectorProfile,
+  normalizeProfileName,
+  upsertCollectorProfile,
+} from "./profiles";
 import type { AgentName, CollectorConfig, CollectorCredential, CollectorInstallOptions } from "./types";
 
 export interface InstallResult {
   ok: true;
   agent: AgentName;
+  profile: string;
   configPath: string;
   credential: CollectorCredential;
   credentialWarning?: string;
@@ -27,13 +35,22 @@ export interface InstallResult {
 export async function installAgent(options: CollectorInstallOptions): Promise<InstallResult> {
   const configPath = resolveConfigPath(options.configPath);
   const current = existsSync(configPath) ? readJsonFile<CollectorConfig>(configPath) : null;
+  const profileName = normalizeProfileName(options.profile ?? (current ? activeProfileName(current) : DEFAULT_PROFILE));
+  let currentProfile: ReturnType<typeof collectorProfile> | null = null;
+  if (current) {
+    try {
+      currentProfile = collectorProfile(current, profileName);
+    } catch {
+      currentProfile = null;
+    }
+  }
   const providedApiKey = options.apiKeyStdin
     ? await readStdinSecret()
-    : (options.apiKey ?? current?.apiKey ?? process.env.TRAICE_API_KEY);
-  let credential = current?.credential;
+    : (options.apiKey ?? (profileName === DEFAULT_PROFILE ? current?.apiKey : undefined) ?? process.env.TRAICE_API_KEY);
+  let credential = currentProfile?.credential;
   let credentialWarning: string | undefined;
   if (providedApiKey) {
-    const stored = await storeCollectorCredential(configPath, providedApiKey, options.credentialStore);
+    const stored = await storeCollectorCredential(configPath, providedApiKey, options.credentialStore, {}, profileName);
     credential = stored.credential;
     credentialWarning = stored.warning;
   }
@@ -50,15 +67,23 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
       ? { claudeHome: resolveHome(options.claudeHome ?? base.claudeHome ?? "~/.claude") }
       : { codexHome: resolveHome(options.codexHome ?? base.codexHome ?? "~/.codex") };
 
-  const next = mergeConfigForAgent(current, options.agent, {
-    serverUrl: normalizeUrl(options.serverUrl ?? current?.serverUrl ?? DEFAULT_SERVER_URL),
-    credential,
-    ...(providedApiKey ? { authorization: undefined } : {}),
+  const serverUrl = normalizeUrl(
+    options.serverUrl ?? currentProfile?.serverUrl ?? current?.serverUrl ?? DEFAULT_SERVER_URL,
+  );
+  let next = mergeConfigForAgent(current, options.agent, {
+    ...(profileName === DEFAULT_PROFILE
+      ? {
+          serverUrl,
+          credential,
+          ...(providedApiKey ? { authorization: undefined } : {}),
+        }
+      : {}),
     listenHost,
     listenPort,
     includePrompts,
     identity: {
-      employeeEmail: options.employeeEmail ?? current?.identity.employeeEmail ?? current?.authorization?.userEmail,
+      employeeEmail:
+        options.employeeEmail ?? current?.identity.employeeEmail ?? currentProfile?.authorization?.userEmail,
       employeeName: options.employeeName ?? current?.identity.employeeName ?? userInfo().username,
       employeeExternalId: options.employeeExternalId ?? current?.identity.employeeExternalId,
       teamName: options.teamName ?? current?.identity.teamName,
@@ -71,7 +96,15 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
     },
     ...agentHomePatch,
   });
-  delete next.apiKey;
+  if (profileName !== DEFAULT_PROFILE) {
+    next = upsertCollectorProfile(next, profileName, {
+      serverUrl,
+      credential,
+      ...(providedApiKey ? {} : currentProfile?.authorization ? { authorization: currentProfile.authorization } : {}),
+    });
+  }
+  if (options.profile) next.activeProfile = profileName;
+  if (profileName === DEFAULT_PROFILE) delete next.apiKey;
 
   writeCollectorConfig(next, configPath);
 
@@ -95,6 +128,7 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
   return {
     ok: true,
     agent: options.agent,
+    profile: profileName,
     configPath,
     credential,
     ...(credentialWarning ? { credentialWarning } : {}),

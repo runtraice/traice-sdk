@@ -11,6 +11,15 @@ import {
   writeCollectorCredential,
 } from "./credentials";
 import { normalizeUrl } from "./fs";
+import {
+  DEFAULT_PROFILE,
+  activeProfileName,
+  collectorProfile,
+  configForProfile,
+  normalizeProfileName,
+  removeCollectorProfile,
+  upsertCollectorProfile,
+} from "./profiles";
 import type { CollectorConfig, CollectorCredential, CollectorOAuthAuthorization, CredentialStoreMode } from "./types";
 
 const CLIENT_ID = "traice-collector";
@@ -30,6 +39,7 @@ export interface CollectorOAuthTokenBundle {
 }
 
 export interface CollectorLoginResult {
+  profile: string;
   credential: CollectorCredential;
   credentialWarning?: string;
   authorization: CollectorOAuthAuthorization;
@@ -51,12 +61,20 @@ export async function loginAndStoreCollectorAuthorization(
     credentialStore?: CredentialStoreMode;
     noBrowser?: boolean;
     workspaceHint?: string;
+    profile?: string;
   },
   dependencies: AuthDependencies = {},
 ): Promise<CollectorLoginResult> {
   const configPath = resolveConfigPath(options.configPath);
   const current = existsSync(configPath) ? loadCollectorConfig(configPath) : buildDefaultConfig();
-  const serverUrl = normalizeUrl(options.serverUrl ?? current.serverUrl);
+  const profileName = normalizeProfileName(options.profile ?? activeProfileName(current));
+  let previousProfile: ReturnType<typeof collectorProfile> | null = null;
+  try {
+    previousProfile = collectorProfile(current, profileName);
+  } catch {
+    previousProfile = null;
+  }
+  const serverUrl = normalizeUrl(options.serverUrl ?? previousProfile?.serverUrl ?? current.serverUrl);
   const login = await loginCollectorOAuth(
     {
       serverUrl,
@@ -69,6 +87,8 @@ export async function loginAndStoreCollectorAuthorization(
     configPath,
     serializeOAuthCredential(login.bundle),
     options.credentialStore,
+    {},
+    profileName,
   );
   const authorization: CollectorOAuthAuthorization = {
     type: "oauth",
@@ -79,19 +99,26 @@ export async function loginAndStoreCollectorAuthorization(
     scopes: login.scope.split(/\s+/).filter(Boolean),
     authorizedAt: new Date((dependencies.now ?? Date.now)()).toISOString(),
   };
-  const next: CollectorConfig = {
-    ...current,
+  let next: CollectorConfig = upsertCollectorProfile(current, profileName, {
     serverUrl,
     credential: stored.credential,
     authorization,
+  });
+  next = {
+    ...next,
+    ...current,
+    ...next,
+    ...(profileName !== DEFAULT_PROFILE && !current.credential && !current.activeProfile
+      ? { activeProfile: profileName }
+      : {}),
     updatedAt: new Date((dependencies.now ?? Date.now)()).toISOString(),
   };
-  delete next.apiKey;
+  if (profileName === DEFAULT_PROFILE) delete next.apiKey;
   writeCollectorConfig(next, configPath);
   let credentialWarning = stored.warning;
-  if (current.credential && !sameCredential(current.credential, stored.credential)) {
+  if (previousProfile?.credential && !sameCredential(previousProfile.credential, stored.credential)) {
     try {
-      await deleteCollectorCredential(current.credential);
+      await deleteCollectorCredential(previousProfile.credential);
     } catch (error) {
       const cleanupWarning = `Could not remove the previous collector credential (${errorMessage(error)}).`;
       credentialWarning = credentialWarning ? `${credentialWarning} ${cleanupWarning}` : cleanupWarning;
@@ -99,6 +126,7 @@ export async function loginAndStoreCollectorAuthorization(
   }
 
   return {
+    profile: profileName,
     credential: stored.credential,
     ...(credentialWarning ? { credentialWarning } : {}),
     authorization,
@@ -186,20 +214,22 @@ export async function loginCollectorOAuth(
 
 export async function resolveCollectorAccessToken(
   configPath?: string,
-  options: { forceRefresh?: boolean; fetchImpl?: typeof fetch; now?: () => number } = {},
+  options: { forceRefresh?: boolean; fetchImpl?: typeof fetch; now?: () => number; profile?: string } = {},
 ): Promise<string> {
-  if (process.env.TRAICE_API_KEY) return process.env.TRAICE_API_KEY;
   const resolved = resolveConfigPath(configPath);
-  const config = loadCollectorConfig(resolved);
-  if (config.apiKey) {
-    const legacyApiKey = config.apiKey;
+  const rootConfig = loadCollectorConfig(resolved);
+  const profileName = normalizeProfileName(options.profile ?? activeProfileName(rootConfig));
+  if (profileName === DEFAULT_PROFILE && process.env.TRAICE_API_KEY) return process.env.TRAICE_API_KEY;
+  if (profileName === DEFAULT_PROFILE && rootConfig.apiKey) {
+    const legacyApiKey = rootConfig.apiKey;
     const stored = await storeCollectorCredential(resolved, legacyApiKey);
-    config.credential = stored.credential;
-    delete config.apiKey;
-    writeCollectorConfig(config, resolved);
+    rootConfig.credential = stored.credential;
+    delete rootConfig.apiKey;
+    writeCollectorConfig(rootConfig, resolved);
     if (stored.warning) console.warn(`[traice-collector] ${stored.warning}`);
     return legacyApiKey;
   }
+  const config = configForProfile(rootConfig, profileName);
   if (!config.credential) throw new Error("No collector credential is stored. Run setup or auth login.");
   const stored = await readCollectorCredential(config.credential);
   if (config.authorization?.type !== "oauth") return stored;
@@ -208,8 +238,9 @@ export async function resolveCollectorAccessToken(
   const current = parseOAuthCredential(stored);
   if (!options.forceRefresh && tokenIsFresh(current, now())) return current.accessToken;
 
-  return withRefreshLock(resolved, async () => {
-    const latestConfig = loadCollectorConfig(resolved);
+  return withRefreshLock(resolved, profileName, async () => {
+    const latestRootConfig = loadCollectorConfig(resolved);
+    const latestConfig = configForProfile(latestRootConfig, profileName);
     if (!latestConfig.credential || latestConfig.authorization?.type !== "oauth") {
       throw new Error("The collector OAuth credential is no longer configured.");
     }
@@ -224,28 +255,38 @@ export async function resolveCollectorAccessToken(
 export function createCollectorAccessTokenProvider(
   configPath?: string,
   dependencies: { fetchImpl?: typeof fetch; now?: () => number } = {},
+  profile?: string,
 ) {
   return (forceRefresh = false) =>
     resolveCollectorAccessToken(configPath, {
       forceRefresh,
       fetchImpl: dependencies.fetchImpl,
       now: dependencies.now,
+      profile,
     });
 }
 
 export async function logoutCollector(
   configPath?: string,
   fetchImpl: typeof fetch = fetch,
+  requestedProfile?: string,
 ): Promise<{ removed: boolean; remoteRevoked: boolean }> {
   const resolved = resolveConfigPath(configPath);
   if (!existsSync(resolved)) return { removed: false, remoteRevoked: false };
-  const config = loadCollectorConfig(resolved);
+  const rootConfig = loadCollectorConfig(resolved);
+  const profileName = normalizeProfileName(requestedProfile ?? activeProfileName(rootConfig));
+  let config: CollectorConfig;
+  try {
+    config = configForProfile(rootConfig, profileName);
+  } catch {
+    return { removed: false, remoteRevoked: false };
+  }
   if (config.authorization?.type !== "oauth" || !config.credential) {
     return { removed: false, remoteRevoked: false };
   }
   let remoteRevoked = false;
   try {
-    const accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl });
+    const accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl, profile: profileName });
     const response = await fetchImpl(`${config.serverUrl}/api/v1/collector/me`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${accessToken}` },
@@ -255,10 +296,9 @@ export async function logoutCollector(
     // Local logout still removes the credential. The dashboard can revoke the server grant.
   }
   await deleteCollectorCredential(config.credential);
-  delete config.credential;
-  delete config.authorization;
-  config.updatedAt = new Date().toISOString();
-  writeCollectorConfig(config, resolved);
+  const next = removeCollectorProfile(rootConfig, profileName);
+  next.updatedAt = new Date().toISOString();
+  writeCollectorConfig(next, resolved);
   return { removed: true, remoteRevoked };
 }
 
@@ -346,8 +386,9 @@ function tokenIsFresh(bundle: CollectorOAuthTokenBundle, now: number) {
   return new Date(bundle.expiresAt).getTime() - EXPIRY_SKEW_MS > now;
 }
 
-async function withRefreshLock<T>(configPath: string, operation: () => Promise<T>): Promise<T> {
-  const lockPath = resolve(dirname(configPath), ".oauth-refresh.lock");
+async function withRefreshLock<T>(configPath: string, profileName: string, operation: () => Promise<T>): Promise<T> {
+  const suffix = profileName === DEFAULT_PROFILE ? "" : `-${profileName}`;
+  const lockPath = resolve(dirname(configPath), `.oauth-refresh${suffix}.lock`);
   const startedAt = Date.now();
   let handle: number | null = null;
   while (handle === null) {

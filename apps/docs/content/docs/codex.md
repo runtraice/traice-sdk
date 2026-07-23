@@ -21,7 +21,26 @@ authorization when needed. It is safe to rerun. Use `--backfill-days N` for a 1 
 skip history, or `--no-service` if another process manager will run collection. Over SSH, add `--no-browser` to
 `auth login` and open the printed URL on any device.
 
+Rerunning setup replaces the existing marked trAIce block instead of appending another `[otel]` section. It also
+restarts the existing service and retries the bounded backfill. Stable event IDs keep repeated backfills idempotent.
+
 Codex project-local telemetry settings may not control routing. Prefer user-level configuration for device installs.
+
+## Multiple workspaces
+
+Codex still exports to one local collector endpoint. To send usage to a shared demo workspace and a testing workspace,
+authorize both as named profiles and configure the second as an explicit mirror:
+
+```sh
+npx --yes @traice/collector@latest auth login --profile live-demo --workspace live-demo
+npx --yes @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
+npx @traice/collector@latest profile use live-demo
+npx @traice/collector@latest profile mirror add test-zoro
+```
+
+The existing background service notices the updated selection without another setup run. Use `profile list` to inspect
+destinations and `profile mirror remove test-zoro` to stop the copy. Each workspace has its own secure credential and
+deduplication boundary.
 
 ## Windows setup
 

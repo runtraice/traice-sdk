@@ -4,17 +4,28 @@ import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loginAndStoreCollectorAuthorization } from "../src/auth";
-import { defaultSourceForAgent } from "../src/config";
+import { buildDefaultConfig, defaultSourceForAgent } from "../src/config";
 import { backfillCodex, dryRunCodexBackfill } from "../src/backfill";
 import { readCollectorCredential, storeCollectorCredential } from "../src/credentials";
 import { installAgent } from "../src/install";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "../src/adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "../src/adapters/codex";
 import { CollectorOutbox } from "../src/outbox";
-import { createSerializedEventForwarder, forwardEvents, normalizePayloadForRequest } from "../src/run";
+import {
+  createSerializedEventForwarder,
+  forwardEvents,
+  forwardEventsToDestinations,
+  normalizePayloadForRequest,
+} from "../src/run";
 import { installCollectorService } from "../src/service";
 import { setupAgent } from "../src/setup";
-import { codexTomlBlock } from "../src/settings";
+import { codexTomlBlock, patchCodexConfig } from "../src/settings";
+import {
+  collectorProfileSummaries,
+  selectedProfileNames,
+  setActiveCollectorProfile,
+  setCollectorProfileMirror,
+} from "../src/profiles";
 import { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "../src/status";
 import type { CollectorConfig } from "../src/types";
 
@@ -130,6 +141,188 @@ describe("@traice/collector", () => {
       'exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "json" } }',
     );
     expect(block).not.toContain("otlp =");
+  });
+
+  it("patches Codex settings idempotently without duplicating the managed block", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-settings-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.toml");
+    writeFileSync(configPath, 'model = "gpt-5.4"\n');
+
+    const options = {
+      codexHome: directory,
+      listenHost: "127.0.0.1",
+      listenPort: 4318,
+      includePrompts: false,
+      patch: true,
+    };
+    patchCodexConfig(options);
+    const first = readFileSync(configPath, "utf8");
+    patchCodexConfig(options);
+    const second = readFileSync(configPath, "utf8");
+
+    expect(second).toBe(first);
+    expect(second).toContain('model = "gpt-5.4"');
+    expect(second.match(/^# BEGIN trAIce Collector Codex OTel$/gm)).toHaveLength(1);
+    expect(second.match(/^# END trAIce Collector Codex OTel$/gm)).toHaveLength(1);
+  });
+
+  it("merges into an existing Codex otel table and preserves unrelated settings", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-existing-otel-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.toml");
+    writeFileSync(
+      configPath,
+      [
+        'model = "gpt-5.4"',
+        "",
+        "[otel]",
+        'environment = "existing"',
+        'exporter = "none"',
+        "log_user_prompt = true",
+        'metrics_exporter = "none"',
+        "",
+        "[otel.exporter.otlp-http]",
+        'endpoint = "https://old.example/v1/logs"',
+        "",
+        "[history]",
+        'persistence = "save-all"',
+        "",
+      ].join("\n"),
+    );
+
+    const options = {
+      codexHome: directory,
+      listenHost: "127.0.0.1",
+      listenPort: 4318,
+      includePrompts: false,
+      patch: true,
+    };
+    patchCodexConfig(options);
+    const first = readFileSync(configPath, "utf8");
+    patchCodexConfig(options);
+    const second = readFileSync(configPath, "utf8");
+
+    expect(second).toBe(first);
+    expect(second.match(/^\[otel\]$/gm)).toHaveLength(1);
+    expect(second).toContain('metrics_exporter = "none"');
+    expect(second).toContain("[history]");
+    expect(second).toContain('persistence = "save-all"');
+    expect(second).not.toContain("[otel.exporter.otlp-http]");
+    expect(second).not.toContain("https://old.example");
+    expect(second).toContain('environment = "traice-device"');
+    expect(second).toContain("log_user_prompt = false");
+  });
+
+  it("repairs duplicate Codex otel tables created by an older setup", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-duplicate-otel-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.toml");
+    writeFileSync(
+      configPath,
+      [
+        "[otel]",
+        'environment = "existing"',
+        'metrics_exporter = "none"',
+        "",
+        "[otel]",
+        'environment = "traice-device"',
+        'exporter = "none"',
+        "log_user_prompt = false",
+        "",
+      ].join("\n"),
+    );
+
+    patchCodexConfig({
+      codexHome: directory,
+      listenHost: "127.0.0.1",
+      listenPort: 4318,
+      includePrompts: false,
+      patch: true,
+    });
+
+    const patched = readFileSync(configPath, "utf8");
+    expect(patched.match(/^\[otel\]$/gm)).toHaveLength(1);
+    expect(patched).toContain('metrics_exporter = "none"');
+    expect(patched.match(/^environment\s*=/gm)).toHaveLength(1);
+    expect(patched.match(/^exporter\s*=/gm)).toHaveLength(1);
+    expect(patched.match(/^log_user_prompt\s*=/gm)).toHaveLength(1);
+  });
+
+  it("leaves ambiguous duplicate Codex otel tables unchanged", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-ambiguous-otel-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.toml");
+    const original = ["[otel]", 'metrics_exporter = "none"', "", "[otel]", 'trace_exporter = "none"', ""].join("\n");
+    writeFileSync(configPath, original);
+
+    expect(() =>
+      patchCodexConfig({
+        codexHome: directory,
+        listenHost: "127.0.0.1",
+        listenPort: 4318,
+        includePrompts: false,
+        patch: true,
+      }),
+    ).toThrow("Setup left config.toml unchanged");
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  it("selects one active profile plus explicit mirrors", () => {
+    const defaultCredential = { backend: "protected-file" as const, path: "/tmp/default.json" };
+    const testCredential = { backend: "protected-file" as const, path: "/tmp/test.json" };
+    let config: CollectorConfig = {
+      ...buildDefaultConfig(),
+      credential: defaultCredential,
+      profiles: {
+        "test-zoro": {
+          serverUrl: "https://staging.runtraice.com",
+          credential: testCredential,
+        },
+      },
+    };
+
+    config = setCollectorProfileMirror(config, "test-zoro", true);
+    expect(selectedProfileNames(config)).toEqual(["default", "test-zoro"]);
+    config = setActiveCollectorProfile(config, "test-zoro");
+    expect(selectedProfileNames(config)).toEqual(["test-zoro"]);
+    expect(collectorProfileSummaries(config)).toEqual([
+      expect.objectContaining({ name: "default", active: false, mirror: false }),
+      expect.objectContaining({ name: "test-zoro", active: true, mirror: false }),
+    ]);
+  });
+
+  it("isolates destination delivery failures while keeping the primary result authoritative", async () => {
+    const event = {
+      occurredAt: "2026-07-23T09:00:00.000Z",
+      sourceKey: "codex-local",
+      sourceName: "Codex local collector",
+      sourceKind: "codex_otel",
+      tool: "codex",
+      category: "coding_agent",
+      sourceEventId: "event-1",
+      totalTokens: 2,
+      costBasis: "usage_only",
+    } satisfies InternalUsageEvent;
+    const primary = vi.fn(async () => 1);
+    const mirror = vi.fn(async () => {
+      throw new Error("mirror unavailable");
+    });
+
+    const deliveries = await forwardEventsToDestinations(
+      [event],
+      [
+        { name: "live-demo", config: buildDefaultConfig(), forward: primary },
+        { name: "test-zoro", config: buildDefaultConfig(), forward: mirror },
+      ],
+    );
+
+    expect(deliveries).toEqual([
+      { name: "live-demo", primary: true, accepted: 1 },
+      { name: "test-zoro", primary: false, accepted: 0, error: "mirror unavailable" },
+    ]);
+    expect(primary).toHaveBeenCalledOnce();
+    expect(mirror).toHaveBeenCalledOnce();
   });
 
   it("dry-runs a bounded Codex backfill without reading transcript content into the result", () => {
