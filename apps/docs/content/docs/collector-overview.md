@@ -22,16 +22,19 @@ Product SDK events and collector events are separate. Use the collector for empl
 ## Recommended setup
 
 Authorize the device, then run setup. Setup confirms identity, verifies server access, patches user-level agent
-telemetry, installs a background user service, and runs the supported bounded backfill.
+telemetry, and installs a background user service. Historical import is a separate opt-in.
 
 ```bash
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup codex
 ```
 
 You can run `setup` directly; it starts browser authorization when needed. Use `setup claude-code` for Claude Code.
-Add `--no-service` when another process manager will own the collector. Add `--no-backfill` or `--backfill-days N`
-for Codex history behavior.
+Add `--no-service` when another process manager will own the collector. Add `--backfill-days N` to request a bounded,
+best-effort Codex history import. Setup skips history by default.
+
+Restart all running Codex or Claude Code sessions after setup. Sessions started before telemetry was configured do not
+reload those settings and will not emit live usage through the collector.
 
 The authorization URL can be opened on any device. For an SSH or headless session, add `--no-browser`, then open the printed URL and enter the code.
 
@@ -76,8 +79,8 @@ Authorize named workspace profiles, select one primary destination, and explicit
 mirroring:
 
 ```bash
-npx --yes @traice/collector@latest auth login --profile live-demo --workspace live-demo
-npx --yes @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
+npx @traice/collector@latest auth login --profile live-demo --workspace live-demo
+npx @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
 npx @traice/collector@latest profile use live-demo
 npx @traice/collector@latest profile mirror add test-zoro
 npx @traice/collector@latest profile list
@@ -99,13 +102,18 @@ Dry-run a bounded window before upload:
 npx @traice/collector@latest backfill codex --since 14d --dry-run
 ```
 
-Upload the previous week through the command start time:
+Upload the previous week:
 
 ```bash
 npx @traice/collector@latest backfill codex --since 7d
 ```
 
-Backfill uses stable source event IDs for retry-safe deduplication. It reports discovered files, sessions, usage events, invalid lines, duplicates, time boundaries, token totals, and accepted or dropped rows.
+Backfill uses the first successful telemetry configuration time as its safe
+default upper boundary. Older configs fall back to the command start time.
+Stable source event IDs and paginated live-only reconciliation make interrupted
+uploads retry-safe. The command reports discovered files, sessions, usage
+events, invalid lines, duplicates, time boundaries, token totals, and accepted
+or dropped rows.
 
 ## Configuration and credentials
 
@@ -150,7 +158,7 @@ unattended configuration:
 
 | Option                        | Purpose                                                       |
 | ----------------------------- | ------------------------------------------------------------- |
-| `--server-url <url>`          | Use staging or another trAIce deployment                      |
+| `--server-url <url>`          | Use another deployment with an explicit named `--profile`     |
 | `--workspace <slug-or-id>`    | Preselect a workspace during browser authorization            |
 | `--profile <name>`            | Save, select, inspect, or backfill a named workspace profile  |
 | `--mirror <name>`             | Add a one-run mirror override to `collect`                    |
@@ -158,8 +166,8 @@ unattended configuration:
 | `--employee-name <name>`      | Set the optional employee display name                        |
 | `--team-name <name>`          | Set the reporting team without an interactive question        |
 | `--seat-monthly-usd <amount>` | Record an optional per-seat subscription commitment           |
-| `--backfill-days <1-30>`      | Change the default 7-day Codex backfill                       |
-| `--no-backfill`               | Skip Codex history                                            |
+| `--backfill-days <1-30>`      | Opt in to a bounded best-effort Codex history import          |
+| `--no-backfill`               | Explicitly skip Codex history                                 |
 | `--no-service`                | Do not install the background service                         |
 | `--no-browser`                | Print the authorization link for SSH or another device        |
 | `--credential-store <mode>`   | Select `auto`, `keyring`, or `file`                           |

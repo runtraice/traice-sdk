@@ -89,9 +89,12 @@ export function dryRunCodexBackfill(options: CodexBackfillDryRunOptions): CodexB
 }
 
 export async function backfillCodex(options: CodexBackfillOptions): Promise<CodexBackfillSummary> {
-  const result = scanCodexHistory(options);
   const configPath = resolveConfigPath(options.configPath);
   const rootConfig = loadCollectorConfig(configPath);
+  const result = scanCodexHistory({
+    ...options,
+    until: options.until ?? rootConfig.telemetryEnabledAt?.codex,
+  });
   const profileName = normalizeProfileName(options.profile ?? activeProfileName(rootConfig));
   const config = configForProfile(rootConfig, profileName);
   const getAccessToken = createCollectorAccessTokenProvider(configPath, {}, profileName);
@@ -135,7 +138,7 @@ export async function backfillCodex(options: CodexBackfillOptions): Promise<Code
   }
 
   const accepted = await forwardEvents(config, events, {
-    batchSize: 50,
+    batchSize: 100,
     onBatch: options.onProgress,
     getAccessToken,
   });
@@ -281,31 +284,49 @@ async function fetchLiveEvents(options: {
 }): Promise<HistoricalUsageEvent[]> {
   const url = new URL("/api/v1/collector/usage", options.serverUrl);
   url.searchParams.set("limit", "500");
+  url.searchParams.set("kind", "live");
   url.searchParams.set("since", options.since);
   url.searchParams.set("sourceKey", options.sourceKey);
   url.searchParams.set("until", options.until);
-  let response = await fetch(url, {
-    headers: { authorization: `Bearer ${await options.getAccessToken(false)}` },
-  });
-  if (response.status === 401) {
-    response = await fetch(url, {
-      headers: { authorization: `Bearer ${await options.getAccessToken(true)}` },
+  const rows: Array<Record<string, unknown>> = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  while (true) {
+    if (cursor) url.searchParams.set("cursor", cursor);
+    let response = await fetch(url, {
+      headers: { authorization: `Bearer ${await options.getAccessToken(false)}` },
     });
+    if (response.status === 401) {
+      response = await fetch(url, {
+        headers: { authorization: `Bearer ${await options.getAccessToken(true)}` },
+      });
+    }
+    if (!response.ok) throw new Error(`GET /api/v1/collector/usage returned ${response.status}`);
+    const body = (await response.json()) as {
+      usage?: Array<Record<string, unknown>>;
+      nextCursor?: unknown;
+    };
+    const page = Array.isArray(body.usage) ? body.usage : [];
+    rows.push(...page);
+    const nextCursor = stringValue(body.nextCursor);
+    if (!nextCursor) {
+      if (page.length === 500) {
+        throw new Error(
+          "The trAIce server cannot paginate live usage for safe backfill reconciliation. Update the server or choose an earlier --until boundary.",
+        );
+      }
+      break;
+    }
+    if (seenCursors.has(nextCursor)) throw new Error("The trAIce server returned a repeated backfill cursor.");
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
   }
-  if (!response.ok) throw new Error(`GET /api/v1/collector/usage returned ${response.status}`);
-  const body = (await response.json()) as { usage?: Array<Record<string, unknown>> };
-  const rows = Array.isArray(body.usage) ? body.usage : [];
   const until = new Date(options.until);
   const liveRows = rows.filter((row) => {
     const occurredAt = dateValue(row.occurredAt);
     const metadata = isRecord(row.metadata) ? row.metadata : {};
     return occurredAt && occurredAt < until && metadata.historySource !== "codex-session-jsonl";
   });
-  if (rows.length === 500 && liveRows.length > 0) {
-    throw new Error(
-      "Cross-mode deduplication found 500 server rows and cannot prove the overlap is complete. Choose an earlier --until boundary before live collection began.",
-    );
-  }
   return liveRows.flatMap((row) => {
     const occurredAt = dateValue(row.occurredAt);
     const runId = stringValue(row.runId);

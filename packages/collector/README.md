@@ -5,46 +5,53 @@ Unified local collector for coding-agent usage.
 ## Claude Code
 
 ```sh
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup claude-code
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup claude-code
 ```
 
 Authorize the device in your browser, then run `setup` to patch the agent settings and install a background user
 service. You can also run `setup` directly; it starts browser authorization when a valid saved session is unavailable.
 You do not need to copy an API key. Both commands are safe to rerun.
 
-On the first interactive run, setup compares the requested employee email with the local Git email and asks which
-identity to use. It also confirms a standard team name so reporting does not split across spelling variants. Use
-`--yes` with explicit flags for unattended installation.
+Interactive setup compares the requested employee email with the local Git email and asks which identity to use. It
+also confirms a standard team name, the telemetry change, and background service installation. Use `--yes` with
+explicit flags only for reviewed unattended installation.
+
+Restart every running Claude Code session after setup. Sessions already running when telemetry is configured do not
+reload the new settings.
 
 Prompt logging stays disabled unless you explicitly pass `--include-prompts`.
 
 ## Codex
 
 ```sh
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup codex
 ```
 
-Codex setup backfills the previous 7 days by default. Set `--backfill-days` from 1 to 30, use `--no-backfill` to skip
-history, or use `--no-service` when another process manager will run the collector. Rerunning setup replaces the
-single managed block in `~/.codex/config.toml`, restarts the existing service, and safely retries the bounded backfill.
-It does not append duplicate Codex configuration or duplicate stored usage.
+Codex setup does not import local history by default. Pass `--backfill-days` from 1 to 30 to request a best-effort
+history import, then approve that step interactively. Local JSONL history can contain gaps, so live telemetry remains
+the source of truth. Use `--no-service` when another process manager will run the collector. Rerunning setup replaces
+the single managed block in `~/.codex/config.toml` and restarts the existing service. It does not append duplicate
+Codex configuration.
+
+Restart every running Codex session after setup. Sessions already running when telemetry is configured do not reload
+the new OTel settings.
 
 ### Windows
 
 Run these commands one at a time in Command Prompt:
 
 ```bat
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup codex
 ```
 
 Run the same two commands one at a time in PowerShell:
 
 ```powershell
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup codex
 ```
 
 Setup uses a hidden per-user Startup launcher, so Administrator access is not required. If `npx` is unavailable,
@@ -87,16 +94,18 @@ npx @traice/collector@latest backfill codex --since 14d --dry-run
 ```
 
 The dry run counts request-level `last_token_usage` records and never sends prompts, transcripts, credentials, or usage
-events. To upload the previous week through the time the command starts:
+events. To upload the previous week:
 
 ```sh
 npx @traice/collector@latest backfill codex --since 7d
 ```
 
-The collector snapshots an omitted `--until` boundary to the command start time. Replay uses stable event IDs so
-retries are idempotent and checks existing live usage in
-the bounded window to skip cross-mode duplicates. If the live overlap is too large to audit completely, it refuses
-the replay and asks for an earlier cutoff.
+When telemetry setup has recorded an activation time, an omitted `--until`
+stops there so historical import does not cross the normal live-collection
+boundary. Older configs fall back to the command start time. Replay uses stable
+event IDs and paginated live-only reconciliation, so interrupted and repeated
+uploads are idempotent even when the workspace already contains more than 500
+rows.
 
 ## Browser authorization and credential storage
 
@@ -104,8 +113,8 @@ Interactive `setup` uses OAuth 2.0 device authorization. It prints a short code 
 and waits for approval. The URL can be opened on another device, so the same flow works over SSH:
 
 ```sh
-npx --yes @traice/collector@latest auth login --no-browser
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login --no-browser
+npx @traice/collector@latest setup codex
 ```
 
 Manage the saved session explicitly:
@@ -153,8 +162,8 @@ One collector can send the same live Codex or Claude Code usage to multiple work
 listener. Keep one workspace active and add other destinations as explicit mirrors:
 
 ```sh
-npx --yes @traice/collector@latest auth login --profile live-demo --workspace live-demo
-npx --yes @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
+npx @traice/collector@latest auth login --profile live-demo --workspace live-demo
+npx @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
 npx @traice/collector@latest profile use live-demo
 npx @traice/collector@latest profile mirror add test-zoro
 npx @traice/collector@latest profile list
@@ -180,25 +189,25 @@ Remove a mirror with `profile mirror remove <name>`. Revoke a profile with `auth
 
 ## CLI configuration and parameters
 
-The short commands above use the production trAIce server, ask for missing identity choices, install a background
-service, and backfill 7 days of Codex history. Override those defaults only when needed:
+The short commands above use the production trAIce server, ask for identity and installation approval, install a
+background service, and skip local history. Override those defaults only when needed:
 
-| Option                        | Used by               | Purpose                                                                  |
-| ----------------------------- | --------------------- | ------------------------------------------------------------------------ |
-| `--server-url <url>`          | `auth login`, `setup` | Use another trAIce deployment, such as staging or a self-hosted instance |
-| `--workspace <slug-or-id>`    | `auth login`, `setup` | Preselect a workspace on the browser authorization page                  |
-| `--profile <name>`            | Most commands         | Save, select, inspect, or backfill a named workspace profile             |
-| `--mirror <name>`             | `collect`             | Add a one-run mirror override; repeat for multiple profiles              |
-| `--employee-email <email>`    | `setup`               | Set the employee identity without the interactive question               |
-| `--employee-name <name>`      | `setup`               | Set the optional employee display name                                   |
-| `--team-name <name>`          | `setup`               | Set the reporting team without the interactive question                  |
-| `--seat-monthly-usd <amount>` | `setup`               | Record an optional per-seat subscription commitment                      |
-| `--backfill-days <1-30>`      | `setup codex`         | Change the default 7-day history window                                  |
-| `--no-backfill`               | `setup codex`         | Skip Codex history                                                       |
-| `--no-service`                | `setup`               | Configure without installing the background user service                 |
-| `--no-browser`                | `auth login`, `setup` | Print the authorization link for SSH or another device                   |
-| `--credential-store <mode>`   | `auth login`, `setup` | Select `auto`, `keyring`, or `file` credential storage                   |
-| `--yes`                       | `setup`               | Accept defaults in an explicitly configured unattended setup             |
+| Option                        | Used by               | Purpose                                                            |
+| ----------------------------- | --------------------- | ------------------------------------------------------------------ |
+| `--server-url <url>`          | `auth login`, `setup` | Use another deployment together with an explicit named `--profile` |
+| `--workspace <slug-or-id>`    | `auth login`, `setup` | Preselect a workspace on the browser authorization page            |
+| `--profile <name>`            | Most commands         | Save, select, inspect, or backfill a named workspace profile       |
+| `--mirror <name>`             | `collect`             | Add a one-run mirror override; repeat for multiple profiles        |
+| `--employee-email <email>`    | `setup`               | Set the employee identity without the interactive question         |
+| `--employee-name <name>`      | `setup`               | Set the optional employee display name                             |
+| `--team-name <name>`          | `setup`               | Set the reporting team without the interactive question            |
+| `--seat-monthly-usd <amount>` | `setup`               | Record an optional per-seat subscription commitment                |
+| `--backfill-days <1-30>`      | `setup codex`         | Opt in to a bounded best-effort local history import               |
+| `--no-backfill`               | `setup codex`         | Explicitly skip Codex history                                      |
+| `--no-service`                | `setup`               | Configure without installing the background user service           |
+| `--no-browser`                | `auth login`, `setup` | Print the authorization link for SSH or another device             |
+| `--credential-store <mode>`   | `auth login`, `setup` | Select `auto`, `keyring`, or `file` credential storage             |
+| `--yes`                       | `setup`               | Accept defaults in an explicitly configured unattended setup       |
 
 Run `npx @traice/collector@latest help <command>` for the complete current option list.
 

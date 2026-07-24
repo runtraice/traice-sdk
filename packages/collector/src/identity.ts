@@ -1,7 +1,5 @@
-import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
-import { resolveConfigPath } from "./config";
 
 export const STANDARD_TEAMS = ["Engineering", "Product", "Design", "Data", "Sales", "Marketing", "Operations"] as const;
 
@@ -14,7 +12,6 @@ export interface SetupIdentityInput {
 
 interface IdentityDependencies {
   interactive?: boolean;
-  configExists?: (path: string) => boolean;
   gitEmail?: () => string | undefined;
   prompt?: (question: string) => Promise<string>;
 }
@@ -23,10 +20,6 @@ export async function resolveFirstRunSetupIdentity(
   input: SetupIdentityInput,
   dependencies: IdentityDependencies = {},
 ): Promise<{ employeeEmail?: string; teamName?: string }> {
-  const configPath = resolveConfigPath(input.configPath);
-  const configExists = dependencies.configExists ?? existsSync;
-  if (configExists(configPath)) return normalizedInput(input);
-
   const gitEmail = normalizeEmail((dependencies.gitEmail ?? readGitEmail)());
   if (input.acceptDefaults) {
     return {
@@ -43,6 +36,47 @@ export async function resolveFirstRunSetupIdentity(
   const employeeEmail = await chooseEmail(uniqueValues([providedEmail, gitEmail]), prompt);
   const teamName = await chooseTeam(normalizeTeam(input.teamName) ?? STANDARD_TEAMS[0], prompt);
   return { employeeEmail, teamName };
+}
+
+export async function confirmSetupPlan(
+  input: {
+    agent: "claude-code" | "codex";
+    service: boolean;
+    backfillDays?: number;
+    acceptDefaults?: boolean;
+  },
+  dependencies: Pick<IdentityDependencies, "interactive" | "prompt"> = {},
+): Promise<{ service: boolean; backfill: boolean }> {
+  if (input.acceptDefaults) {
+    return { service: input.service, backfill: input.backfillDays !== undefined };
+  }
+  const interactive = dependencies.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (!interactive) {
+    throw new Error(
+      "Interactive approval requires a terminal. Review the options, then rerun with --yes for automation.",
+    );
+  }
+  const prompt = dependencies.prompt ?? promptLine;
+  const agentName = input.agent === "codex" ? "Codex" : "Claude Code";
+  const configure = await confirm(
+    `Configure ${agentName} telemetry and verify the selected trAIce workspace?`,
+    false,
+    prompt,
+  );
+  if (!configure) throw new Error("Setup cancelled before changing agent telemetry.");
+
+  const service = input.service
+    ? await confirm("Install and start the collector as a background service?", true, prompt)
+    : false;
+  const backfill =
+    input.backfillDays === undefined
+      ? false
+      : await confirm(
+          `Import up to ${input.backfillDays} day${input.backfillDays === 1 ? "" : "s"} of best-effort local Codex history?`,
+          false,
+          prompt,
+        );
+  return { service, backfill };
 }
 
 function normalizedInput(input: SetupIdentityInput) {
@@ -113,6 +147,21 @@ async function promptLine(question: string): Promise<string> {
     return await readline.question(question);
   } finally {
     readline.close();
+  }
+}
+
+async function confirm(
+  question: string,
+  defaultValue: boolean,
+  prompt: (question: string) => Promise<string>,
+): Promise<boolean> {
+  const suffix = defaultValue ? "[Y/n]" : "[y/N]";
+  while (true) {
+    const answer = (await prompt(`${question} ${suffix} `)).trim().toLowerCase();
+    if (!answer) return defaultValue;
+    if (answer === "y" || answer === "yes") return true;
+    if (answer === "n" || answer === "no") return false;
+    process.stderr.write("Enter y or n.\n");
   }
 }
 

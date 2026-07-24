@@ -11,6 +11,7 @@ export interface CollectorOAuthAuthorization {
   clientId: "traice-collector";
   workspaceId: string;
   workspaceName: string;
+  workspaceSlug?: string;
   userEmail?: string;
   scopes: string[];
   authorizedAt: string;
@@ -44,6 +45,8 @@ export interface CollectorConfig {
   enabledAgents: AgentName[];
   identity: CollectorIdentity;
   sources: Partial<Record<AgentName, CollectorSource>>;
+  /** First successful user-level telemetry configuration per agent. Backfill uses this as its safe default cutoff. */
+  telemetryEnabledAt?: Partial<Record<AgentName, string>>;
   claudeHome?: string;
   codexHome?: string;
 }

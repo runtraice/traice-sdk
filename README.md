@@ -48,8 +48,8 @@ Python applications install `traice-sdk` from PyPI and import `traice`. The [Pyt
 ## Coding-Agent Collection
 
 ```sh
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup claude-code
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup claude-code
 ```
 
 Browser authorization stores a renewable session in the operating system credential store. Setup then confirms the
@@ -57,6 +57,8 @@ employee mapping, patches the agent settings, and installs a background user ser
 directly; it starts browser authorization when needed. API keys remain available for unattended automation.
 Collectors send internal usage rows to `/api/v1/internal-usage`. Product-runtime SDK events still go to
 `/api/v1/events`.
+
+Restart every running coding-agent session after setup so it loads the new telemetry settings.
 
 ## Ask trAIce
 

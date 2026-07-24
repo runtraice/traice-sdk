@@ -124,6 +124,16 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
           includePrompts,
           patch: Boolean(options.patchSettings),
         });
+  if (settings.status === "patched" && !next.telemetryEnabledAt?.[options.agent]) {
+    next = {
+      ...next,
+      telemetryEnabledAt: {
+        ...next.telemetryEnabledAt,
+        [options.agent]: now.toISOString(),
+      },
+    };
+    writeCollectorConfig(next, configPath);
+  }
 
   return {
     ok: true,

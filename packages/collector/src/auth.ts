@@ -3,7 +3,13 @@ import { closeSync, existsSync, openSync, statSync, unlinkSync } from "node:fs";
 import { hostname, platform, release } from "node:os";
 import { dirname, resolve } from "node:path";
 import packageMetadata from "../package.json";
-import { buildDefaultConfig, loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
+import {
+  DEFAULT_SERVER_URL,
+  buildDefaultConfig,
+  loadCollectorConfig,
+  resolveConfigPath,
+  writeCollectorConfig,
+} from "./config";
 import {
   deleteCollectorCredential,
   readCollectorCredential,
@@ -67,14 +73,25 @@ export async function loginAndStoreCollectorAuthorization(
 ): Promise<CollectorLoginResult> {
   const configPath = resolveConfigPath(options.configPath);
   const current = existsSync(configPath) ? loadCollectorConfig(configPath) : buildDefaultConfig();
-  const profileName = normalizeProfileName(options.profile ?? activeProfileName(current));
+  const profileName = normalizeProfileName(options.profile ?? DEFAULT_PROFILE);
   let previousProfile: ReturnType<typeof collectorProfile> | null = null;
   try {
     previousProfile = collectorProfile(current, profileName);
   } catch {
     previousProfile = null;
   }
-  const serverUrl = normalizeUrl(options.serverUrl ?? previousProfile?.serverUrl ?? current.serverUrl);
+  const serverUrl = normalizeUrl(
+    options.serverUrl ??
+      (profileName === DEFAULT_PROFILE ? DEFAULT_SERVER_URL : (previousProfile?.serverUrl ?? current.serverUrl)),
+  );
+  if (serverUrl !== DEFAULT_SERVER_URL && profileName === DEFAULT_PROFILE) {
+    throw new Error(
+      `Non-production authorization requires a named profile. Add --profile <name> with --server-url ${serverUrl}.`,
+    );
+  }
+  (dependencies.report ?? ((message: string) => console.error(message)))(
+    `Authorizing profile "${profileName}" on ${new URL(serverUrl).host}.`,
+  );
   const login = await loginCollectorOAuth(
     {
       serverUrl,
@@ -95,10 +112,22 @@ export async function loginAndStoreCollectorAuthorization(
     clientId: CLIENT_ID,
     workspaceId: login.workspace.id,
     workspaceName: login.workspace.name,
+    ...(login.workspace.slug ? { workspaceSlug: login.workspace.slug } : {}),
     ...(login.user.email ? { userEmail: login.user.email } : {}),
     scopes: login.scope.split(/\s+/).filter(Boolean),
     authorizedAt: new Date((dependencies.now ?? Date.now)()).toISOString(),
   };
+  if (
+    options.workspaceHint &&
+    options.workspaceHint !== login.workspace.id &&
+    options.workspaceHint !== login.workspace.slug
+  ) {
+    (dependencies.report ?? ((message: string) => console.error(message)))(
+      `Requested workspace "${options.workspaceHint}", but authorized ${login.workspace.name}${
+        login.workspace.slug ? ` (${login.workspace.slug})` : ""
+      } instead.`,
+    );
+  }
   let next: CollectorConfig = upsertCollectorProfile(current, profileName, {
     serverUrl,
     credential: stored.credential,
@@ -363,6 +392,7 @@ function tokenLoginResult(body: Record<string, unknown>, verificationUri: string
     workspace: {
       id: requiredString(workspace.id, "workspace.id"),
       name: requiredString(workspace.name, "workspace.name"),
+      slug: typeof workspace.slug === "string" && workspace.slug ? workspace.slug : null,
     },
     user: {
       email: typeof user.email === "string" && user.email ? user.email : null,

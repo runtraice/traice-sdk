@@ -66,7 +66,7 @@ describe("collector OAuth", () => {
       { fetchImpl, report, openBrowser, sleep, now: () => Date.parse("2026-07-23T09:00:00.000Z") },
     );
 
-    expect(result.workspace).toEqual({ id: "workspace-1", name: "Acme" });
+    expect(result.workspace).toEqual({ id: "workspace-1", name: "Acme", slug: null });
     expect(result.user.email).toBe("alex@acme.com");
     expect(result.bundle.accessToken).toBe("tr_oauth_at_secret");
     expect(openBrowser).toHaveBeenCalledWith("https://runtraice.com/device?user_code=ABCD-EFGH");
@@ -191,6 +191,51 @@ describe("collector OAuth", () => {
     expect(afterLogout.profiles?.["test-zoro"]).toBeUndefined();
     expect(afterLogout.authorization?.workspaceName).toBe("Acme");
     expect(await readCollectorCredential(afterLogout.credential!)).toContain("tr_oauth_at_secret");
+  });
+
+  it("targets production for no-argument login even when the saved default profile used staging", async () => {
+    const directory = temporaryDirectory("traice-oauth-production-default-");
+    const configPath = join(directory, "config.json");
+    writeCollectorConfig({ ...buildDefaultConfig(), serverUrl: "https://staging.runtraice.com" }, configPath);
+    const fetchImpl = successfulLoginFetch();
+
+    await loginAndStoreCollectorAuthorization(
+      { configPath, credentialStore: "file", noBrowser: true },
+      { fetchImpl, report: () => {}, sleep: async () => {} },
+    );
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://www.runtraice.com/api/oauth/device/code");
+    expect(loadCollectorConfig(configPath).serverUrl).toBe("https://www.runtraice.com");
+  });
+
+  it("requires a named profile for non-production authorization", async () => {
+    const directory = temporaryDirectory("traice-oauth-staging-profile-");
+
+    await expect(
+      loginAndStoreCollectorAuthorization({
+        configPath: join(directory, "config.json"),
+        serverUrl: "https://staging.runtraice.com",
+        credentialStore: "file",
+        noBrowser: true,
+      }),
+    ).rejects.toThrow("Non-production authorization requires a named profile");
+  });
+
+  it("warns when the authorized workspace differs from the requested hint", async () => {
+    const directory = temporaryDirectory("traice-oauth-workspace-hint-");
+    const report = vi.fn();
+
+    await loginAndStoreCollectorAuthorization(
+      {
+        configPath: join(directory, "config.json"),
+        workspaceHint: "missing-workspace",
+        credentialStore: "file",
+        noBrowser: true,
+      },
+      { fetchImpl: successfulLoginFetch(), report, sleep: async () => {} },
+    );
+
+    expect(report).toHaveBeenCalledWith('Requested workspace "missing-workspace", but authorized Acme (acme) instead.');
   });
 
   it("refreshes an expiring access token and persists the rotated bundle", async () => {
@@ -329,7 +374,7 @@ function successfulLoginFetch() {
         refresh_token: "tr_oauth_rt_secret",
         expires_in: 3600,
         scope: "collector:status internal_usage:dedupe internal_usage:write",
-        workspace: { id: "workspace-1", name: "Acme" },
+        workspace: { id: "workspace-1", name: "Acme", slug: "acme" },
         user: { email: "alex@acme.com" },
       }),
     );

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { resolveFirstRunSetupIdentity } from "../src/identity";
+import { confirmSetupPlan, resolveFirstRunSetupIdentity } from "../src/identity";
 
 describe("collector first-run identity", () => {
   it("asks which email to use when the requested and Git emails differ", async () => {
@@ -9,7 +9,6 @@ describe("collector first-run identity", () => {
       { employeeEmail: "workspace@example.com", teamName: "Engineering" },
       {
         interactive: true,
-        configExists: () => false,
         gitEmail: () => "developer@example.com",
         prompt,
       },
@@ -33,7 +32,7 @@ describe("collector first-run identity", () => {
 
     const result = await resolveFirstRunSetupIdentity(
       { employeeEmail: "workspace@example.com", teamName: "Engineering" },
-      { interactive: true, configExists: () => false, gitEmail: () => undefined, prompt },
+      { interactive: true, gitEmail: () => undefined, prompt },
     );
 
     expect(result).toEqual({ employeeEmail: "other@example.com", teamName: "AI Platform" });
@@ -44,22 +43,43 @@ describe("collector first-run identity", () => {
 
     const result = await resolveFirstRunSetupIdentity(
       { acceptDefaults: true, teamName: "engineering" },
-      { interactive: true, configExists: () => false, gitEmail: () => "developer@example.com", prompt },
+      { interactive: true, gitEmail: () => "developer@example.com", prompt },
     );
 
     expect(result).toEqual({ employeeEmail: "developer@example.com", teamName: "Engineering" });
     expect(prompt).not.toHaveBeenCalled();
   });
 
-  it("does not prompt after setup has created a config", async () => {
-    const prompt = vi.fn();
+  it("asks the user to confirm identity choices on repeated interactive setup", async () => {
+    const prompt = vi.fn().mockResolvedValueOnce("").mockResolvedValueOnce("");
 
     const result = await resolveFirstRunSetupIdentity(
       { employeeEmail: "Saved@Example.com", teamName: "Product" },
-      { interactive: true, configExists: () => true, gitEmail: () => "other@example.com", prompt },
+      { interactive: true, gitEmail: () => "other@example.com", prompt },
     );
 
     expect(result).toEqual({ employeeEmail: "saved@example.com", teamName: "Product" });
-    expect(prompt).not.toHaveBeenCalled();
+    expect(prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires explicit approval for telemetry, service installation, and an opted-in backfill", async () => {
+    const prompt = vi.fn().mockResolvedValueOnce("yes").mockResolvedValueOnce("").mockResolvedValueOnce("y");
+
+    const result = await confirmSetupPlan(
+      { agent: "codex", service: true, backfillDays: 7 },
+      { interactive: true, prompt },
+    );
+
+    expect(result).toEqual({ service: true, backfill: true });
+    expect(prompt.mock.calls[0]?.[0]).toContain("Configure Codex telemetry");
+    expect(prompt.mock.calls[1]?.[0]).toContain("background service");
+    expect(prompt.mock.calls[2]?.[0]).toContain("best-effort local Codex history");
+  });
+
+  it("does not run an implicit backfill when unattended defaults are accepted", async () => {
+    await expect(confirmSetupPlan({ agent: "codex", service: true, acceptDefaults: true })).resolves.toEqual({
+      service: true,
+      backfill: false,
+    });
   });
 });

@@ -437,7 +437,14 @@ describe("@traice/collector", () => {
       ].join("\n"),
     );
     const configPath = join(directory, "collector.json");
-    writeFileSync(configPath, JSON.stringify({ ...collectorConfig(), serverUrl: "https://example.test" }));
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        ...collectorConfig(),
+        serverUrl: "https://example.test",
+        telemetryEnabledAt: { codex: "2026-07-10T13:00:00.000Z" },
+      }),
+    );
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       Response.json({
         usage: [
@@ -469,8 +476,84 @@ describe("@traice/collector", () => {
       uploadCandidates: 0,
       accepted: 0,
       dropped: 0,
+      until: "2026-07-10T13:00:00.000Z",
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
+  it("paginates live usage so interrupted backfills with more than 500 rows remain retryable", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-backfill-pagination-"));
+    temporaryDirectories.push(directory);
+    const sessions = join(directory, "codex", "sessions", "2026", "07", "10");
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(
+      join(sessions, "rollout.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "session-1" } }),
+        JSON.stringify({
+          timestamp: "2026-07-10T12:00:00.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
+              last_token_usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    const configPath = join(directory, "collector.json");
+    writeFileSync(configPath, JSON.stringify({ ...collectorConfig(), serverUrl: "https://example.test" }));
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json({
+          usage: [
+            {
+              occurredAt: "2026-07-10T10:00:00.000Z",
+              runId: "another-session",
+              inputTokens: 1,
+              cacheReadTokens: 0,
+              outputTokens: 1,
+              totalTokens: 2,
+            },
+          ],
+          nextCursor: "usage-500",
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          usage: [
+            {
+              occurredAt: "2026-07-10T11:59:59.500Z",
+              runId: "session-1",
+              inputTokens: 10,
+              cacheReadTokens: 0,
+              outputTokens: 3,
+              totalTokens: 13,
+            },
+          ],
+          nextCursor: null,
+        }),
+      );
+
+    const result = await backfillCodex({
+      configPath,
+      codexHome: join(directory, "codex"),
+      since: "2026-07-10T00:00:00.000Z",
+      now: new Date("2026-07-11T00:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({
+      liveEventsInspected: 2,
+      crossModeDuplicatesSkipped: 1,
+      uploadCandidates: 0,
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("kind=live");
+    expect(String(fetchSpy.mock.calls[1]?.[0])).toContain("cursor=usage-500");
     fetchSpy.mockRestore();
   });
 
@@ -796,6 +879,41 @@ describe("@traice/collector", () => {
     expect(promptSecret).not.toHaveBeenCalled();
   });
 
+  it("does not backfill Codex history unless setup explicitly opts in", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-setup-no-backfill-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.json");
+    await installAgent({
+      agent: "codex",
+      configPath,
+      serverUrl: "https://runtraice.com",
+      apiKey: "persisted-key",
+      credentialStore: "file",
+      codexHome: join(directory, "codex"),
+    });
+    const runBackfill = vi.fn();
+
+    const result = await setupAgent(
+      { agent: "codex", configPath, service: false, codexHome: join(directory, "codex") },
+      { fetchImpl: async () => Response.json({ ok: true }), runBackfill },
+    );
+
+    expect(result.backfill).toBeUndefined();
+    expect(runBackfill).not.toHaveBeenCalled();
+    const configured = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
+    expect(configured.telemetryEnabledAt?.codex).toMatch(/^20\d\d-/);
+    configured.telemetryEnabledAt = { codex: "2026-07-24T00:00:00.000Z" };
+    writeFileSync(configPath, JSON.stringify(configured));
+
+    await setupAgent(
+      { agent: "codex", configPath, service: false, codexHome: join(directory, "codex") },
+      { fetchImpl: async () => Response.json({ ok: true }), runBackfill },
+    );
+    expect((JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig).telemetryEnabledAt?.codex).toBe(
+      "2026-07-24T00:00:00.000Z",
+    );
+  });
+
   it("replaces a persisted API key rejected by the server with browser authorization", async () => {
     const directory = mkdtempSync(join(tmpdir(), "traice-collector-setup-replace-"));
     temporaryDirectories.push(directory);
@@ -870,6 +988,7 @@ describe("@traice/collector", () => {
         agent: "codex",
         configPath,
         serverUrl: "https://staging.runtraice.com",
+        profile: "staging",
         workspaceHint: "friendly-workspace",
         service: false,
         backfill: false,
@@ -882,14 +1001,15 @@ describe("@traice/collector", () => {
     expect(login).toHaveBeenCalledWith(
       expect.objectContaining({
         serverUrl: "https://staging.runtraice.com",
+        profile: "staging",
         workspaceHint: "friendly-workspace",
       }),
       expect.any(Object),
     );
     expect(fetchImpl).toHaveBeenCalledOnce();
     const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
-    expect(config.serverUrl).toBe("https://staging.runtraice.com");
-    expect(config.authorization?.workspaceName).toBe("Staging Workspace");
+    expect(config.profiles?.staging?.serverUrl).toBe("https://staging.runtraice.com");
+    expect(config.profiles?.staging?.authorization?.workspaceName).toBe("Staging Workspace");
   });
 
   it("reports a healthy collector without exposing its credential", async () => {
