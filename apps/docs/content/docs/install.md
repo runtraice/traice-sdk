@@ -117,8 +117,8 @@ other employee or team usage through the authenticated internal-usage API until 
 Install the local collector for Claude Code:
 
 ```sh
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup claude-code
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup claude-code
 ```
 
 Browser authorization stores the renewable session in the operating system credential manager. Setup patches the
@@ -127,6 +127,8 @@ when needed. Rerunning either command is safe. Add `--no-browser` to `auth login
 another process manager will run the collector. API keys remain supported for CI, containers, and other unattended
 automation. See [Collector Overview](/docs/collector-overview#common-parameters) for optional identity, subscription,
 backfill, server, and credential-storage parameters.
+
+Restart every running coding-agent session after setup. Existing sessions do not reload the telemetry settings.
 
 Send an internal usage row directly:
 

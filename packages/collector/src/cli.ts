@@ -5,7 +5,7 @@ import { loginAndStoreCollectorAuthorization, logoutCollector } from "./auth";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
 import { installAgent } from "./install";
-import { resolveFirstRunSetupIdentity } from "./identity";
+import { confirmSetupPlan, resolveFirstRunSetupIdentity } from "./identity";
 import {
   collectorProfile,
   collectorProfileSummaries,
@@ -159,19 +159,29 @@ program
   .option("--include-prompts", "enable prompt logging where the agent supports it")
   .option("--claude-home <path>", "Claude Code home")
   .option("--codex-home <path>", "Codex home")
-  .option("--backfill-days <days>", "Codex history window from 1 to 30 days", "7")
+  .option("--backfill-days <days>", "opt in to a Codex history window from 1 to 30 days")
   .option("--no-backfill", "skip historical Codex usage")
   .option("--no-service", "skip background service installation")
   .option("--yes", "accept provided or inferred identity defaults without prompting")
+  .option("--json", "print machine-readable JSON")
   .action(async (agent: string, options: Record<string, unknown>) => {
+    const parsedAgent = parseAgent(agent);
+    const backfillDays = numberOption(options.backfillDays);
+    const savedIdentity = currentSetupIdentity(stringOption(options.config));
     const identity = await resolveFirstRunSetupIdentity({
       configPath: stringOption(options.config),
-      employeeEmail: stringOption(options.employeeEmail),
-      teamName: stringOption(options.teamName),
+      employeeEmail: stringOption(options.employeeEmail) ?? savedIdentity.employeeEmail,
+      teamName: stringOption(options.teamName) ?? savedIdentity.teamName,
+      acceptDefaults: Boolean(options.yes),
+    });
+    const approval = await confirmSetupPlan({
+      agent: parsedAgent,
+      service: options.service !== false,
+      ...(backfillDays === undefined || options.backfill === false ? {} : { backfillDays }),
       acceptDefaults: Boolean(options.yes),
     });
     const result = await setupAgent({
-      agent: parseAgent(agent),
+      agent: parsedAgent,
       configPath: stringOption(options.config),
       serverUrl: stringOption(options.serverUrl),
       apiKey: stringOption(options.apiKey),
@@ -192,11 +202,11 @@ program
       includePrompts: Boolean(options.includePrompts),
       claudeHome: stringOption(options.claudeHome),
       codexHome: stringOption(options.codexHome),
-      backfill: Boolean(options.backfill),
-      backfillDays: numberOption(options.backfillDays),
-      service: Boolean(options.service),
+      backfill: approval.backfill,
+      backfillDays,
+      service: approval.service,
     });
-    console.log(JSON.stringify(result, null, 2));
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatSetupResult(result));
   });
 
 program
@@ -407,4 +417,46 @@ function updateProfiles(
   )) {
     collectorProfile(config, name);
   }
+}
+
+function currentSetupIdentity(configPath: string | undefined) {
+  try {
+    return loadCollectorConfig(configPath).identity;
+  } catch {
+    return {};
+  }
+}
+
+function formatSetupResult(result: Awaited<ReturnType<typeof setupAgent>>): string {
+  const config = loadCollectorConfig(result.install.configPath);
+  const profile = collectorProfile(config, result.install.profile);
+  const agentName = result.install.agent === "codex" ? "Codex" : "Claude Code";
+  const lines = [
+    "trAIce collector is ready.",
+    "",
+    `Workspace: ${profile.authorization?.workspaceName ?? "API key workspace"}`,
+    `Profile: ${result.install.profile}`,
+    `Server: ${result.connection.serverUrl}`,
+    `${agentName} telemetry: configured`,
+    result.service
+      ? `Collector service: installed and started (${servicePlatformName(result.service.platform)})`
+      : "Collector service: not installed; run collect to receive telemetry",
+    result.backfill ? `Backfill: completed; ${result.backfill.accepted ?? 0} events accepted` : "Backfill: skipped",
+    "",
+    `Restart all running ${agentName} sessions. Only sessions started after telemetry was configured will emit live usage.`,
+    "",
+    "Useful commands:",
+    "  npx @traice/collector@latest status",
+    "  npx @traice/collector@latest profile list",
+    "  npx @traice/collector@latest backfill codex --since 7d --dry-run",
+  ];
+  if (!result.service) lines.push("  npx @traice/collector@latest collect");
+  return lines.join("\n");
+}
+
+function servicePlatformName(platform: NodeJS.Platform): string {
+  if (platform === "darwin") return "launchd";
+  if (platform === "linux") return "systemd user service";
+  if (platform === "win32") return "Windows Startup";
+  return platform;
 }

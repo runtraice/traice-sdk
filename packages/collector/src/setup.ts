@@ -79,14 +79,13 @@ export async function setupAgent(
           configPath: install.configPath,
           packageVersion: packageMetadata.version,
         });
-  const backfillDays = boundedBackfillDays(options.backfillDays);
   const backfill =
-    options.agent === "codex" && options.backfill !== false
+    options.agent === "codex" && options.backfill === true
       ? await (dependencies.runBackfill ?? backfillCodex)({
           configPath: install.configPath,
           profile: install.profile,
           codexHome: options.codexHome,
-          since: `${backfillDays}d`,
+          since: `${boundedBackfillDays(options.backfillDays)}d`,
           onProgress: ({ processed, total, accepted }) => {
             console.error(`[traice-collector] backfill ${processed}/${total}; accepted ${accepted}`);
           },
@@ -212,9 +211,9 @@ function hasProvidedKey(options: CollectorSetupOptions): boolean {
   return Boolean(options.apiKey || options.apiKeyStdin || process.env.TRAICE_API_KEY);
 }
 
-function boundedBackfillDays(value = 7): number {
-  if (!Number.isInteger(value) || value < 1 || value > 30) {
+function boundedBackfillDays(value: number | undefined): number {
+  if (value === undefined || !Number.isInteger(value) || value < 1 || value > 30) {
     throw new Error(`Invalid backfill days: ${value}. Expected an integer from 1 to 30.`);
   }
-  return value;
+  return value as number;
 }

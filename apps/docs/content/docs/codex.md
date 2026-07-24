@@ -8,18 +8,21 @@ order: 3
 
 # Codex
 
-Set up Codex, start collection in the background, and backfill the previous 7 days:
+Set up Codex and start live collection in the background:
 
 ```sh
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup codex
 ```
 
-Confirm the short code and workspace in your browser. Setup patches user-level `~/.codex/config.toml`, installs a
-background user service, and reports the backfill result. You can run `setup` directly; it starts browser
-authorization when needed. It is safe to rerun. Use `--backfill-days N` for a 1 to 30 day window, `--no-backfill` to
-skip history, or `--no-service` if another process manager will run collection. Over SSH, add `--no-browser` to
-`auth login` and open the printed URL on any device.
+Confirm the short code and workspace in your browser. Setup patches user-level `~/.codex/config.toml` and installs a
+background user service. You can run `setup` directly; it starts browser authorization when needed. It is safe to
+rerun. Use `--backfill-days N` to request a 1 to 30 day best-effort history import, or `--no-service` if another
+process manager will run collection. Over SSH, add `--no-browser` to `auth login` and open the printed URL on any
+device.
+
+Restart every running Codex session after setup. Codex reads its OTel configuration when a session starts, so sessions
+that were already running will not begin exporting live usage.
 
 Setup merges trAIce-managed keys into an existing `[otel]` table, preserves unrelated OTel settings, and repairs
 duplicate tables created by older collector setup. Rerunning setup updates the same table instead of appending another
@@ -34,8 +37,8 @@ Codex still exports to one local collector endpoint. To send usage to a shared d
 authorize both as named profiles and configure the second as an explicit mirror:
 
 ```sh
-npx --yes @traice/collector@latest auth login --profile live-demo --workspace live-demo
-npx --yes @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
+npx @traice/collector@latest auth login --profile live-demo --workspace live-demo
+npx @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
 npx @traice/collector@latest profile use live-demo
 npx @traice/collector@latest profile mirror add test-zoro
 ```
@@ -53,8 +56,8 @@ Use the command that matches the terminal. Command Prompt does not understand Po
 Run these commands one at a time:
 
 ```bat
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup codex
 ```
 
 ### PowerShell
@@ -62,8 +65,8 @@ npx --yes @traice/collector@latest setup codex
 Run the same commands one at a time:
 
 ```powershell
-npx --yes @traice/collector@latest auth login
-npx --yes @traice/collector@latest setup codex
+npx @traice/collector@latest auth login
+npx @traice/collector@latest setup codex
 ```
 
 Run setup as the Windows user whose Codex usage should be collected. Administrator access is not required. The
@@ -80,21 +83,25 @@ the saved workspace and `auth logout` to revoke the grant and remove it from thi
 
 ## Manual history backfill
 
-Live collection does not replay old sessions automatically. To inspect a bounded window first:
+Live collection does not replay old sessions automatically. Local JSONL can contain gaps, so treat backfill as a
+best-effort supplement rather than the source of truth. To inspect a bounded window first:
 
 ```sh
 npx @traice/collector@latest backfill codex --since 14d --dry-run
 ```
 
-To upload the previous week through the time the command starts:
+To upload the previous week:
 
 ```sh
 npx @traice/collector@latest backfill codex --since 7d
 ```
 
-The collector snapshots the omitted `--until` boundary to the command start time. Backfill sends usage totals only,
-uses stable IDs for retry-safe deduplication, and skips records already received by live collection. Duplicate rows are
-reported as dropped and do not increase stored usage, token totals, or spend.
+When setup has recorded a telemetry activation time, an omitted `--until`
+stops there so history does not cross the normal live-collection boundary.
+Older configs fall back to the command start time. Backfill sends usage totals
+only, uses stable IDs and paginated live-only reconciliation, and skips records
+already received by live collection. Duplicate rows are reported as dropped
+and do not increase stored usage, token totals, or spend.
 
 ## Background service
 
