@@ -5,26 +5,26 @@ import {
   DEFAULT_SERVER_URL,
   buildDefaultConfig,
   defaultSourceForAgent,
+  loadCollectorConfig,
   mergeConfigForAgent,
   resolveConfigPath,
   writeCollectorConfig,
 } from "./config";
-import { normalizeUrl, parseMoney, parsePort, readJsonFile, readStdinSecret, resolveHome } from "./fs";
+import { normalizeUrl, parseMoney, parsePort, readStdinSecret, resolveHome } from "./fs";
 import { patchClaudeSettings, patchCodexConfig, type SettingsPatchResult } from "./settings";
 import { storeCollectorCredential } from "./credentials";
 import {
-  DEFAULT_PROFILE,
-  activeProfileName,
-  collectorProfile,
-  normalizeProfileName,
-  upsertCollectorProfile,
-} from "./profiles";
+  collectorDestination,
+  defaultDestinationName,
+  normalizeDestinationName,
+  upsertCollectorDestination,
+} from "./destinations";
 import type { AgentName, CollectorConfig, CollectorCredential, CollectorInstallOptions } from "./types";
 
 export interface InstallResult {
   ok: true;
   agent: AgentName;
-  profile: string;
+  destination: string;
   configPath: string;
   credential: CollectorCredential;
   credentialWarning?: string;
@@ -34,23 +34,31 @@ export interface InstallResult {
 
 export async function installAgent(options: CollectorInstallOptions): Promise<InstallResult> {
   const configPath = resolveConfigPath(options.configPath);
-  const current = existsSync(configPath) ? readJsonFile<CollectorConfig>(configPath) : null;
-  const profileName = normalizeProfileName(options.profile ?? (current ? activeProfileName(current) : DEFAULT_PROFILE));
-  let currentProfile: ReturnType<typeof collectorProfile> | null = null;
+  const current = existsSync(configPath) ? loadCurrentConfig(configPath) : null;
+  const destinationName = normalizeDestinationName(
+    options.destination ?? (current ? defaultDestinationName(current, options.agent) : "api-key"),
+  );
+  let currentDestination: ReturnType<typeof collectorDestination> | null = null;
   if (current) {
     try {
-      currentProfile = collectorProfile(current, profileName);
+      currentDestination = collectorDestination(current, destinationName);
     } catch {
-      currentProfile = null;
+      currentDestination = null;
     }
   }
   const providedApiKey = options.apiKeyStdin
     ? await readStdinSecret()
-    : (options.apiKey ?? (profileName === DEFAULT_PROFILE ? current?.apiKey : undefined) ?? process.env.TRAICE_API_KEY);
-  let credential = currentProfile?.credential;
+    : (options.apiKey ?? currentDestination?.apiKey ?? process.env.TRAICE_API_KEY);
+  let credential = currentDestination?.credential;
   let credentialWarning: string | undefined;
   if (providedApiKey) {
-    const stored = await storeCollectorCredential(configPath, providedApiKey, options.credentialStore, {}, profileName);
+    const stored = await storeCollectorCredential(
+      configPath,
+      providedApiKey,
+      options.credentialStore,
+      {},
+      destinationName,
+    );
     credential = stored.credential;
     credentialWarning = stored.warning;
   }
@@ -67,23 +75,14 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
       ? { claudeHome: resolveHome(options.claudeHome ?? base.claudeHome ?? "~/.claude") }
       : { codexHome: resolveHome(options.codexHome ?? base.codexHome ?? "~/.codex") };
 
-  const serverUrl = normalizeUrl(
-    options.serverUrl ?? currentProfile?.serverUrl ?? current?.serverUrl ?? DEFAULT_SERVER_URL,
-  );
+  const serverUrl = normalizeUrl(options.serverUrl ?? currentDestination?.serverUrl ?? DEFAULT_SERVER_URL);
   let next = mergeConfigForAgent(current, options.agent, {
-    ...(profileName === DEFAULT_PROFILE
-      ? {
-          serverUrl,
-          credential,
-          ...(providedApiKey ? { authorization: undefined } : {}),
-        }
-      : {}),
     listenHost,
     listenPort,
     includePrompts,
     identity: {
       employeeEmail:
-        options.employeeEmail ?? current?.identity.employeeEmail ?? currentProfile?.authorization?.userEmail,
+        options.employeeEmail ?? current?.identity.employeeEmail ?? currentDestination?.authorization?.userEmail,
       employeeName: options.employeeName ?? current?.identity.employeeName ?? userInfo().username,
       employeeExternalId: options.employeeExternalId ?? current?.identity.employeeExternalId,
       teamName: options.teamName ?? current?.identity.teamName,
@@ -96,15 +95,18 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
     },
     ...agentHomePatch,
   });
-  if (profileName !== DEFAULT_PROFILE) {
-    next = upsertCollectorProfile(next, profileName, {
-      serverUrl,
-      credential,
-      ...(providedApiKey ? {} : currentProfile?.authorization ? { authorization: currentProfile.authorization } : {}),
-    });
+  next = upsertCollectorDestination(next, destinationName, {
+    serverUrl,
+    credential,
+    ...(providedApiKey
+      ? {}
+      : currentDestination?.authorization
+        ? { authorization: currentDestination.authorization }
+        : {}),
+  });
+  if (!next.routes?.[options.agent]?.length) {
+    next.routes = { ...next.routes, [options.agent]: [destinationName] };
   }
-  if (options.profile) next.activeProfile = profileName;
-  if (profileName === DEFAULT_PROFILE) delete next.apiKey;
 
   writeCollectorConfig(next, configPath);
 
@@ -138,11 +140,15 @@ export async function installAgent(options: CollectorInstallOptions): Promise<In
   return {
     ok: true,
     agent: options.agent,
-    profile: profileName,
+    destination: destinationName,
     configPath,
     credential,
     ...(credentialWarning ? { credentialWarning } : {}),
     settings,
     nextCommand: `npx @traice/collector@latest collect --config ${configPath}`,
   };
+}
+
+function loadCurrentConfig(path: string): CollectorConfig {
+  return loadCollectorConfig(path);
 }

@@ -17,29 +17,20 @@ export interface CollectorOAuthAuthorization {
   authorizedAt: string;
 }
 
-export interface CollectorWorkspaceProfile {
+export interface CollectorDestination {
   serverUrl: string;
-  /** Optional only while a legacy default profile still contains a plaintext apiKey. */
   credential?: CollectorCredential;
   authorization?: CollectorOAuthAuthorization;
+  /** Present only while a v1 plaintext credential is being migrated. */
+  apiKey?: string;
 }
 
 export interface CollectorConfig {
-  version: 1;
+  version: 2;
   createdAt: string;
   updatedAt: string;
-  serverUrl: string;
-  /** @deprecated Migrated to credential on the next install or collect. */
-  apiKey?: string;
-  credential?: CollectorCredential;
-  authorization?: CollectorOAuthAuthorization;
-  /** Additional workspace-scoped destinations. The legacy top-level destination is named "default". */
-  profiles?: Record<string, CollectorWorkspaceProfile>;
-  /** Primary destination for live collection. Defaults to the legacy "default" destination. */
-  activeProfile?: string;
-  /** Explicit best-effort copies after the primary destination succeeds. */
-  mirrorProfiles?: string[];
-  /** Per-agent destination routes. Missing routes retain active profile plus mirror behavior. */
+  destinations: Record<string, CollectorDestination>;
+  /** Per-agent destination routes. */
   routes?: Partial<Record<AgentName, string[]>>;
   listenHost: string;
   listenPort: number;
@@ -62,7 +53,7 @@ export interface CollectorInstallOptions {
   credentialStore?: CredentialStoreMode;
   noBrowser?: boolean;
   workspaceHint?: string;
-  profile?: string;
+  destination?: string;
   employeeEmail?: string;
   employeeName?: string;
   employeeExternalId?: string;
@@ -74,7 +65,6 @@ export interface CollectorInstallOptions {
   listenPort?: number;
   includePrompts?: boolean;
   patchSettings?: boolean;
-  launchAgent?: boolean;
   claudeHome?: string;
   codexHome?: string;
 }
@@ -85,8 +75,7 @@ export interface CollectorRunOptions {
   once?: boolean;
   listenHost?: string;
   listenPort?: number;
-  profile?: string;
-  mirrorProfiles?: string[];
+  destinations?: string[];
 }
 
 export interface OtlpNormalizeOptions {

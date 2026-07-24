@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packageMetadata from "../package.json";
 import { loginAndStoreCollectorAuthorization } from "../src/auth";
-import { buildDefaultConfig, defaultSourceForAgent } from "../src/config";
+import { buildDefaultConfig, defaultSourceForAgent, loadCollectorConfig } from "../src/config";
 import { backfillCodex, dryRunCodexBackfill } from "../src/backfill";
 import { readCollectorCredential, storeCollectorCredential } from "../src/credentials";
 import { installAgent } from "../src/install";
@@ -23,15 +23,14 @@ import { installCollectorService } from "../src/service";
 import { setupAgent } from "../src/setup";
 import { codexTomlBlock, patchCodexConfig } from "../src/settings";
 import {
-  collectorProfileSummaries,
-  routedProfileNames,
-  selectedProfileNames,
-  setActiveCollectorProfile,
+  collectorDestinationSummaries,
+  destinationNameFromWorkspace,
+  routedDestinationNames,
   setCollectorRoute,
-  setCollectorProfileMirror,
-} from "../src/profiles";
+} from "../src/destinations";
 import { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "../src/status";
 import type { CollectorConfig } from "../src/types";
+import type { ResolvedCollectorConfig } from "../src/destinations";
 import { checkCollectorUpdate, updateCollector } from "../src/updates";
 
 const identity = {
@@ -274,37 +273,12 @@ describe("@traice/collector", () => {
     expect(readFileSync(configPath, "utf8")).toBe(original);
   });
 
-  it("selects one active profile plus explicit mirrors", () => {
-    const defaultCredential = { backend: "protected-file" as const, path: "/tmp/default.json" };
-    const testCredential = { backend: "protected-file" as const, path: "/tmp/test.json" };
-    let config: CollectorConfig = {
-      ...buildDefaultConfig(),
-      credential: defaultCredential,
-      profiles: {
-        "test-zoro": {
-          serverUrl: "https://staging.runtraice.com",
-          credential: testCredential,
-        },
-      },
-    };
-
-    config = setCollectorProfileMirror(config, "test-zoro", true);
-    expect(selectedProfileNames(config)).toEqual(["default", "test-zoro"]);
-    config = setActiveCollectorProfile(config, "test-zoro");
-    expect(selectedProfileNames(config)).toEqual(["test-zoro"]);
-    expect(collectorProfileSummaries(config)).toEqual([
-      expect.objectContaining({ name: "default", active: false, mirror: false }),
-      expect.objectContaining({ name: "test-zoro", active: true, mirror: false }),
-    ]);
-  });
-
   it("routes each coding agent to independent workspace destinations", () => {
     const credential = { backend: "protected-file" as const, path: "/tmp/credential.json" };
     let config: CollectorConfig = {
       ...buildDefaultConfig(),
-      credential,
       enabledAgents: ["codex", "claude-code"],
-      profiles: {
+      destinations: {
         staging: { serverUrl: "https://staging.runtraice.com", credential },
         production: { serverUrl: "https://www.runtraice.com", credential },
       },
@@ -312,8 +286,80 @@ describe("@traice/collector", () => {
     config = setCollectorRoute(config, "codex", ["staging", "production"]);
     config = setCollectorRoute(config, "claude-code", ["production"]);
 
-    expect(routedProfileNames(config, "codex")).toEqual(["staging", "production"]);
-    expect(routedProfileNames(config, "claude-code")).toEqual(["production"]);
+    expect(routedDestinationNames(config, "codex")).toEqual(["staging", "production"]);
+    expect(routedDestinationNames(config, "claude-code")).toEqual(["production"]);
+    expect(collectorDestinationSummaries(config)).toHaveLength(2);
+  });
+
+  it("migrates a v1 config to destinations and keeps a backup", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-v1-config-"));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        version: 1,
+        createdAt: "2026-07-10T00:00:00.000Z",
+        updatedAt: "2026-07-10T00:00:00.000Z",
+        serverUrl: "https://www.runtraice.com",
+        credential: { backend: "protected-file", path: join(directory, "credential.json") },
+        authorization: {
+          type: "oauth",
+          clientId: "traice-collector",
+          workspaceId: "workspace-1",
+          workspaceName: "Live Demo",
+          workspaceSlug: "live-demo",
+          scopes: ["internal_usage:write"],
+          authorizedAt: "2026-07-10T00:00:00.000Z",
+        },
+        profiles: {
+          sandbox: {
+            serverUrl: "https://www.runtraice.com",
+            credential: { backend: "protected-file", path: join(directory, "sandbox.json") },
+          },
+        },
+        activeProfile: "default",
+        mirrorProfiles: ["sandbox"],
+        listenHost: "127.0.0.1",
+        listenPort: 4318,
+        includePrompts: false,
+        enabledAgents: ["codex"],
+        identity,
+        sources: { codex: defaultSourceForAgent("codex") },
+      }),
+    );
+
+    const config = loadCollectorConfig(configPath);
+
+    expect(config.version).toBe(2);
+    expect(Object.keys(config.destinations)).toEqual(["live-demo", "sandbox"]);
+    expect(config.routes?.codex).toEqual(["live-demo", "sandbox"]);
+    expect(readFileSync(configPath, "utf8")).toContain('"version": 2');
+    expect(readFileSync(join(directory, "backups", readdirSync(join(directory, "backups"))[0]!), "utf8")).toContain(
+      '"version": 1',
+    );
+  });
+
+  it("does not overwrite a same-slug destination from another server", () => {
+    expect(
+      destinationNameFromWorkspace(
+        { id: "workspace-1", name: "Acme", slug: "acme" },
+        {
+          acme: {
+            serverUrl: "https://example.test",
+            authorization: {
+              type: "oauth",
+              clientId: "traice-collector",
+              workspaceId: "workspace-1",
+              workspaceName: "Acme",
+              scopes: [],
+              authorizedAt: "2026-07-24T00:00:00.000Z",
+            },
+          },
+        },
+        "https://www.runtraice.com",
+      ),
+    ).toBe("acme-2");
   });
 
   it("isolates destination delivery failures while keeping the primary result authoritative", async () => {
@@ -329,24 +375,24 @@ describe("@traice/collector", () => {
       costBasis: "usage_only",
     } satisfies InternalUsageEvent;
     const primary = vi.fn(async () => 1);
-    const mirror = vi.fn(async () => {
-      throw new Error("mirror unavailable");
+    const secondary = vi.fn(async () => {
+      throw new Error("destination unavailable");
     });
 
     const deliveries = await forwardEventsToDestinations(
       [event],
       [
-        { name: "live-demo", config: buildDefaultConfig(), forward: primary },
-        { name: "test-zoro", config: buildDefaultConfig(), forward: mirror },
+        { name: "live-demo", config: collectorConfig(), forward: primary },
+        { name: "test-zoro", config: collectorConfig(), forward: secondary },
       ],
     );
 
     expect(deliveries).toEqual([
       { name: "live-demo", primary: true, accepted: 1 },
-      { name: "test-zoro", primary: false, accepted: 0, error: "mirror unavailable" },
+      { name: "test-zoro", primary: false, accepted: 0, error: "destination unavailable" },
     ]);
     expect(primary).toHaveBeenCalledOnce();
-    expect(mirror).toHaveBeenCalledOnce();
+    expect(secondary).toHaveBeenCalledOnce();
   });
 
   it("dry-runs a bounded Codex backfill without reading transcript content into the result", () => {
@@ -583,10 +629,10 @@ describe("@traice/collector", () => {
 
   it("does not duplicate ambiguous payloads when multiple agents are enabled", () => {
     const config: CollectorConfig = {
-      version: 1,
+      version: 2,
       createdAt: "2026-07-10T00:00:00.000Z",
       updatedAt: "2026-07-10T00:00:00.000Z",
-      serverUrl: "https://runtraice.com",
+      destinations: {},
       listenHost: "127.0.0.1",
       listenPort: 4318,
       includePrompts: false,
@@ -792,9 +838,9 @@ describe("@traice/collector", () => {
     const configText = readFileSync(configPath, "utf8");
     const config = JSON.parse(configText) as CollectorConfig;
     expect(configText).not.toContain("lm_live_test_secret");
-    expect(config.credential?.backend).toBe("protected-file");
+    expect(config.destinations["api-key"]?.credential?.backend).toBe("protected-file");
     expect(statSync(configPath).mode & 0o777).toBe(0o600);
-    expect(await readCollectorCredential(config.credential!)).toBe("lm_live_test_secret");
+    expect(await readCollectorCredential(config.destinations["api-key"]!.credential!)).toBe("lm_live_test_secret");
   });
 
   it("writes a macOS LaunchAgent with absolute runtime paths", () => {
@@ -1015,12 +1061,12 @@ describe("@traice/collector", () => {
     expect(promptSecret).not.toHaveBeenCalled();
     expect(login).toHaveBeenCalledOnce();
     const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
-    expect(config.authorization).toMatchObject({
+    expect(config.destinations["api-key"]?.authorization).toMatchObject({
       type: "oauth",
       workspaceId: "workspace-1",
       workspaceName: "Staging Workspace",
     });
-    expect(await readCollectorCredential(config.credential!)).toContain("tr_oauth_at_secret");
+    expect(await readCollectorCredential(config.destinations["api-key"]!.credential!)).toContain("tr_oauth_at_secret");
   });
 
   it("authorizes a different server before presenting the saved credential", async () => {
@@ -1047,7 +1093,7 @@ describe("@traice/collector", () => {
         agent: "codex",
         configPath,
         serverUrl: "https://staging.runtraice.com",
-        profile: "staging",
+        destination: "staging",
         workspaceHint: "friendly-workspace",
         service: false,
         backfill: false,
@@ -1060,15 +1106,15 @@ describe("@traice/collector", () => {
     expect(login).toHaveBeenCalledWith(
       expect.objectContaining({
         serverUrl: "https://staging.runtraice.com",
-        profile: "staging",
+        destination: "staging",
         workspaceHint: "friendly-workspace",
       }),
       expect.any(Object),
     );
     expect(fetchImpl).toHaveBeenCalledOnce();
     const config = JSON.parse(readFileSync(configPath, "utf8")) as CollectorConfig;
-    expect(config.profiles?.staging?.serverUrl).toBe("https://staging.runtraice.com");
-    expect(config.profiles?.staging?.authorization?.workspaceName).toBe("Staging Workspace");
+    expect(config.destinations.staging?.serverUrl).toBe("https://staging.runtraice.com");
+    expect(config.destinations.staging?.authorization?.workspaceName).toBe("Staging Workspace");
   });
 
   it("reports a healthy collector without exposing its credential", async () => {
@@ -1187,11 +1233,18 @@ function successfulBrowserLogin() {
   );
 }
 
-function collectorConfig(): CollectorConfig {
+function collectorConfig(): ResolvedCollectorConfig {
   return {
-    version: 1,
+    version: 2,
     createdAt: "2026-07-10T00:00:00.000Z",
     updatedAt: "2026-07-10T00:00:00.000Z",
+    destinations: {
+      "api-key": {
+        serverUrl: "https://runtraice.com",
+        apiKey: "lm_test",
+      },
+    },
+    routes: { codex: ["api-key"] },
     serverUrl: "https://runtraice.com",
     apiKey: "lm_test",
     listenHost: "127.0.0.1",

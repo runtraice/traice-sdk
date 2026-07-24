@@ -4,7 +4,12 @@ import type { InternalUsageEvent } from "@traice/protocol";
 import packageMetadata from "../package.json";
 import { createCollectorAccessTokenProvider } from "./auth";
 import { configDir, defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
-import { allRoutedProfileNames, configForProfile, DEFAULT_PROFILE, routedProfileNames } from "./profiles";
+import {
+  allRoutedDestinationNames,
+  configForDestination,
+  routedDestinationNames,
+  type ResolvedCollectorConfig,
+} from "./destinations";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
 import { extractLogRecords, extractMetricPoints, pickString } from "./otel";
@@ -37,8 +42,8 @@ export type ForwardDependencies = {
 
 export type CollectorDestinationForwarder = {
   name: string;
-  config: CollectorConfig;
-  forward: (config: CollectorConfig, events: InternalUsageEvent[]) => Promise<number>;
+  config: ResolvedCollectorConfig;
+  forward: (config: ResolvedCollectorConfig, events: InternalUsageEvent[]) => Promise<number>;
 };
 
 export type DestinationDelivery = {
@@ -70,7 +75,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
     const pending = runtimePromises.get(name);
     if (pending) return pending;
     const creation = (async () => {
-      const outboxName = name === DEFAULT_PROFILE ? "outbox.ndjson" : `outbox-${name}.ndjson`;
+      const outboxName = `outbox-${name}.ndjson`;
       const runtime: CollectorDestinationRuntime = {
         name,
         outbox: new CollectorOutbox(join(configDir(configPath), "state", outboxName), OUTBOX_MAX_EVENTS),
@@ -90,16 +95,11 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   };
 
   const resolveDestinations = async (current: CollectorConfig, names?: string[]) => {
-    const selectedNames =
-      names ??
-      allRoutedProfileNames(current, {
-        profile: options.profile,
-        mirrorProfiles: options.mirrorProfiles,
-      });
+    const selectedNames = names ?? allRoutedDestinationNames(current, options.destinations);
     return Promise.all(
       selectedNames.map(async (name) => ({
         name,
-        config: configForProfile(current, name),
+        config: configForDestination(current, name),
         runtime: await destinationRuntime(name),
       })),
     );
@@ -114,7 +114,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
         let retries = 0;
         try {
           const current = loadCollectorConfig(configPath);
-          const destinationConfig = configForProfile(current, runtime.name);
+          const destinationConfig = configForDestination(current, runtime.name);
           await forwardEvents(destinationConfig, events, {
             getAccessToken: runtime.getAccessToken,
             onRetry: () => {
@@ -143,7 +143,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   for (const destination of initialDestinations.slice(1)) {
     destination.runtime.getAccessToken().catch((error) => {
       console.error(
-        `[traice-collector] mirror "${destination.name}" authorization delayed: ${
+        `[traice-collector] destination "${destination.name}" authorization delayed: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -157,18 +157,17 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
       const current = loadCollectorConfig(configPath);
-      const profileNames = allRoutedProfileNames(current, {
-        profile: options.profile,
-        mirrorProfiles: options.mirrorProfiles,
-      });
+      const destinationNames = allRoutedDestinationNames(current, options.destinations);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
           ok: true,
           service: "traice-collector",
           agents: current.enabledAgents,
-          profiles: profileNames,
-          delivery: Object.fromEntries(profileNames.map((name) => [name, runtimes.get(name)?.outbox.stats() ?? null])),
+          destinations: destinationNames,
+          delivery: Object.fromEntries(
+            destinationNames.map((name) => [name, runtimes.get(name)?.outbox.stats() ?? null]),
+          ),
         }),
       );
       return;
@@ -193,17 +192,9 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
     try {
       const current = loadCollectorConfig(configPath);
       const events = normalizePayloadForRequest(req.url ?? "", payload, current, options.agent, receivedAt);
-      const routedEvents = routeEvents(current, events, {
-        profile: options.profile,
-        mirrorProfiles: options.mirrorProfiles,
-      });
+      const routedEvents = routeEvents(current, events, options.destinations);
       const destinationNames =
-        routedEvents.size > 0
-          ? [...routedEvents.keys()]
-          : allRoutedProfileNames(current, {
-              profile: options.profile,
-              mirrorProfiles: options.mirrorProfiles,
-            });
+        routedEvents.size > 0 ? [...routedEvents.keys()] : allRoutedDestinationNames(current, options.destinations);
       const destinations = await resolveDestinations(current, destinationNames);
       const settled = await Promise.allSettled(
         destinations.map((destination) => destination.runtime.outbox.enqueue(routedEvents.get(destination.name) ?? [])),
@@ -216,10 +207,10 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
           : { queued: 0, deduplicated: 0, dropped: 0, error: errorMessage(result.reason) }),
       }));
       const primary = deliveries[0]!;
-      if ("error" in primary) throw new Error(`Primary profile "${primary.name}" failed: ${primary.error}`);
+      if ("error" in primary) throw new Error(`Destination "${primary.name}" failed: ${primary.error}`);
       for (const delivery of deliveries.slice(1)) {
         if ("error" in delivery) {
-          console.error(`[traice-collector] mirror "${delivery.name}" queue failed: ${delivery.error}`);
+          console.error(`[traice-collector] destination "${delivery.name}" queue failed: ${delivery.error}`);
         }
       }
       if (events.length > 0) {
@@ -279,13 +270,15 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
 function routeEvents(
   config: CollectorConfig,
   events: InternalUsageEvent[],
-  options: { profile?: string; mirrorProfiles?: string[] },
+  destinationsOverride?: string[],
 ): Map<string, InternalUsageEvent[]> {
   const routed = new Map<string, InternalUsageEvent[]>();
   for (const event of events) {
     const agent: AgentName | undefined =
       event.tool === "codex" ? "codex" : event.tool === "claude-code" ? "claude-code" : undefined;
-    const destinations = agent ? routedProfileNames(config, agent, options) : allRoutedProfileNames(config, options);
+    const destinations = agent
+      ? routedDestinationNames(config, agent, destinationsOverride)
+      : allRoutedDestinationNames(config, destinationsOverride);
     for (const destination of destinations) {
       routed.set(destination, [...(routed.get(destination) ?? []), event]);
     }
@@ -347,7 +340,7 @@ export function normalizePayloadForRequest(
 export function createSerializedEventForwarder(dependencies: ForwardDependencies = {}) {
   let tail: Promise<void> = Promise.resolve();
 
-  return (config: CollectorConfig, events: InternalUsageEvent[]): Promise<number> => {
+  return (config: ResolvedCollectorConfig, events: InternalUsageEvent[]): Promise<number> => {
     const operation = tail.then(() => forwardEvents(config, events, dependencies));
     tail = operation.then(
       () => undefined,
@@ -358,7 +351,7 @@ export function createSerializedEventForwarder(dependencies: ForwardDependencies
 }
 
 export async function forwardEvents(
-  config: CollectorConfig,
+  config: ResolvedCollectorConfig,
   events: InternalUsageEvent[],
   dependencies: ForwardDependencies = {},
 ): Promise<number> {
@@ -381,7 +374,7 @@ export async function forwardEvents(
 }
 
 async function postBatch(
-  config: CollectorConfig,
+  config: ResolvedCollectorConfig,
   batch: Record<string, unknown>[],
   dependencies: ForwardDependencies,
 ): Promise<{ accepted?: number }> {

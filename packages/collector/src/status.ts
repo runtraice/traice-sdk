@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
 import { readCollectorCredential } from "./credentials";
-import { activeProfileName, configForProfile, normalizeProfileName } from "./profiles";
+import { configForDestination, defaultDestinationName, normalizeDestinationName } from "./destinations";
 import { verifyCollectorConnection } from "./setup";
 import type { AgentName, CollectorCredential } from "./types";
 
@@ -18,7 +18,7 @@ export interface CollectorStatusResult {
     serverUrl?: string;
     listenUrl?: string;
     agents?: AgentName[];
-    profile?: string;
+    destination?: string;
     message?: string;
   };
   credential: { ok: boolean; backend?: CollectorCredential["backend"]; message?: string };
@@ -51,7 +51,7 @@ interface ServiceStatusDependencies {
 }
 
 export async function getCollectorStatus(
-  options: { configPath?: string; timeoutMs?: number; profile?: string } = {},
+  options: { configPath?: string; timeoutMs?: number; destination?: string } = {},
   dependencies: StatusDependencies = {},
 ): Promise<CollectorStatusResult> {
   const configPath = resolveConfigPath(options.configPath);
@@ -73,19 +73,38 @@ export async function getCollectorStatus(
     };
   }
 
-  const profileName = normalizeProfileName(options.profile ?? activeProfileName(rootConfig));
-  let config;
+  let destinationName: string;
   try {
-    config = configForProfile(rootConfig, profileName);
+    destinationName = normalizeDestinationName(
+      options.destination ??
+        defaultDestinationName(
+          rootConfig,
+          rootConfig.enabledAgents.length > 0 ? rootConfig.enabledAgents[0] : undefined,
+        ),
+    );
   } catch (error) {
     const message = errorMessage(error);
     return {
       ok: false,
-      config: { ok: false, path: configPath, profile: profileName, message },
+      config: { ok: false, path: configPath, message },
       credential: { ok: false, message },
       service,
-      listener: { ok: false, message: "Skipped because the selected profile is not configured." },
-      server: { ok: false, message: "Skipped because the selected profile is not configured." },
+      listener: { ok: false, message: "Skipped because no destination could be selected." },
+      server: { ok: false, message: "Skipped because no destination could be selected." },
+    };
+  }
+  let config;
+  try {
+    config = configForDestination(rootConfig, destinationName);
+  } catch (error) {
+    const message = errorMessage(error);
+    return {
+      ok: false,
+      config: { ok: false, path: configPath, destination: destinationName, message },
+      credential: { ok: false, message },
+      service,
+      listener: { ok: false, message: "Skipped because the selected destination is not configured." },
+      server: { ok: false, message: "Skipped because the selected destination is not configured." },
     };
   }
   const listenUrl = `http://${displayHost(rootConfig.listenHost)}:${rootConfig.listenPort}`;
@@ -93,7 +112,7 @@ export async function getCollectorStatus(
   const credential = await checkCredential(config.credential, config.apiKey);
   const [listener, server] = await Promise.all([
     checkListener(listenUrl, timeoutMs, dependencies.fetchImpl),
-    checkServer(configPath, serverUrl, timeoutMs, dependencies.fetchImpl, profileName),
+    checkServer(configPath, serverUrl, timeoutMs, dependencies.fetchImpl, destinationName),
   ]);
 
   return {
@@ -104,7 +123,7 @@ export async function getCollectorStatus(
       serverUrl,
       listenUrl,
       agents: config.enabledAgents,
-      profile: profileName,
+      destination: destinationName,
     },
     credential,
     service,
@@ -195,7 +214,7 @@ export function formatCollectorStatus(result: CollectorStatusResult): string {
     `Config: ${checkLabel(result.config.ok)} ${result.config.path}`,
   ];
   if (result.config.serverUrl) lines.push(`Server: ${checkLabel(result.server.ok)} ${result.config.serverUrl}`);
-  if (result.config.profile) lines.push(`Profile: ${result.config.profile}`);
+  if (result.config.destination) lines.push(`Destination: ${result.config.destination}`);
   if (result.config.listenUrl) lines.push(`Listener: ${checkLabel(result.listener.ok)} ${result.config.listenUrl}`);
   lines.push(
     `Credential: ${checkLabel(result.credential.ok)}${result.credential.backend ? ` ${result.credential.backend}` : ""}`,
@@ -257,12 +276,12 @@ async function checkServer(
   serverUrl: string,
   timeoutMs: number,
   fetchImpl: typeof fetch = fetch,
-  profile?: string,
+  destination?: string,
 ): Promise<CollectorStatusResult["server"]> {
   const timedFetch: typeof fetch = (input, init) =>
     fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   try {
-    await verifyCollectorConnection(configPath, timedFetch, profile);
+    await verifyCollectorConnection(configPath, timedFetch, destination);
     return { ok: true, url: serverUrl };
   } catch (error) {
     return { ok: false, url: serverUrl, message: errorMessage(error) };

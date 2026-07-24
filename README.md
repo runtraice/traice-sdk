@@ -48,13 +48,12 @@ Python applications install `traice-sdk` from PyPI and import `traice`. The [Pyt
 ## Coding-Agent Collection
 
 ```sh
-npx @traice/collector@latest auth login
-npx @traice/collector@latest setup claude-code
+npx @traice/collector@latest setup
 ```
 
-Browser authorization stores a renewable session in the operating system credential store. Setup then confirms the
-employee mapping, patches the agent settings, and installs a background user service. You can also run `setup`
-directly; it starts browser authorization when needed. API keys remain available for unattended automation.
+Setup detects installed agents, starts browser authorization when needed, stores renewable sessions in the operating
+system credential store, confirms employee mapping, patches selected agent settings, and installs a background user
+service. API keys remain available for unattended automation.
 Collectors send internal usage rows to `/api/v1/internal-usage`. Product-runtime SDK events still go to
 `/api/v1/events`.
 

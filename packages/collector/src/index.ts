@@ -1,9 +1,9 @@
 export type {
   AgentName,
   CollectorConfig,
+  CollectorDestination,
   CollectorInstallOptions,
   CollectorRunOptions,
-  CollectorWorkspaceProfile,
   OtlpNormalizeOptions,
 } from "./types";
 export { DEFAULT_CONFIG_PATH, loadCollectorConfig, writeCollectorConfig } from "./config";
@@ -17,23 +17,27 @@ export {
 export type { CollectorLoginResult, CollectorOAuthTokenBundle } from "./auth";
 export { readCollectorCredential, storeCollectorCredential } from "./credentials";
 export {
-  DEFAULT_PROFILE,
-  activeProfileName,
-  collectorProfile,
-  collectorProfileSummaries,
-  configuredProfileNames,
-  configForProfile,
-  normalizeProfileName,
-  allRoutedProfileNames,
-  routedProfileNames,
-  selectedProfileNames,
+  allRoutedDestinationNames,
+  collectorDestination,
+  collectorDestinationSummaries,
+  configuredDestinationNames,
+  configForDestination,
+  defaultDestinationName,
+  normalizeDestinationName,
+  removeCollectorDestination,
+  routedDestinationNames,
   setCollectorRoute,
-  setActiveCollectorProfile,
-  setCollectorProfileMirror,
-} from "./profiles";
-export type { CollectorProfileSummary } from "./profiles";
+  upsertCollectorDestination,
+} from "./destinations";
+export type { CollectorDestinationSummary, ResolvedCollectorConfig } from "./destinations";
 export { installCollectorService } from "./service";
-export { resolveFirstRunSetupIdentity, STANDARD_TEAMS } from "./identity";
+export {
+  chooseSetupAgents,
+  chooseSetupDestinations,
+  detectSupportedAgents,
+  resolveFirstRunSetupIdentity,
+  STANDARD_TEAMS,
+} from "./identity";
 export type { SetupIdentityInput } from "./identity";
 export { setupAgent, verifyCollectorConnection } from "./setup";
 export { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "./status";

@@ -18,15 +18,21 @@ import {
 } from "./credentials";
 import { normalizeUrl } from "./fs";
 import {
-  DEFAULT_PROFILE,
-  activeProfileName,
-  collectorProfile,
-  configForProfile,
-  normalizeProfileName,
-  removeCollectorProfile,
-  upsertCollectorProfile,
-} from "./profiles";
-import type { CollectorConfig, CollectorCredential, CollectorOAuthAuthorization, CredentialStoreMode } from "./types";
+  collectorDestination,
+  configForDestination,
+  defaultDestinationName,
+  destinationNameFromWorkspace,
+  normalizeDestinationName,
+  removeCollectorDestination,
+  upsertCollectorDestination,
+} from "./destinations";
+import type {
+  CollectorConfig,
+  CollectorCredential,
+  CollectorDestination,
+  CollectorOAuthAuthorization,
+  CredentialStoreMode,
+} from "./types";
 
 const CLIENT_ID = "traice-collector";
 const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
@@ -45,10 +51,12 @@ export interface CollectorOAuthTokenBundle {
 }
 
 export interface CollectorLoginResult {
-  profile: string;
-  credential: CollectorCredential;
-  credentialWarning?: string;
-  authorization: CollectorOAuthAuthorization;
+  destinations: Array<{
+    name: string;
+    credential: CollectorCredential;
+    credentialWarning?: string;
+    authorization: CollectorOAuthAuthorization;
+  }>;
   verificationUri: string;
 }
 
@@ -67,100 +75,82 @@ export async function loginAndStoreCollectorAuthorization(
     credentialStore?: CredentialStoreMode;
     noBrowser?: boolean;
     workspaceHint?: string;
-    profile?: string;
+    destination?: string;
   },
   dependencies: AuthDependencies = {},
 ): Promise<CollectorLoginResult> {
   const configPath = resolveConfigPath(options.configPath);
   const current = existsSync(configPath) ? loadCollectorConfig(configPath) : buildDefaultConfig();
-  const profileName = normalizeProfileName(options.profile ?? DEFAULT_PROFILE);
-  let previousProfile: ReturnType<typeof collectorProfile> | null = null;
-  try {
-    previousProfile = collectorProfile(current, profileName);
-  } catch {
-    previousProfile = null;
-  }
-  const serverUrl = normalizeUrl(
-    options.serverUrl ??
-      (profileName === DEFAULT_PROFILE ? DEFAULT_SERVER_URL : (previousProfile?.serverUrl ?? current.serverUrl)),
-  );
-  if (serverUrl !== DEFAULT_SERVER_URL && profileName === DEFAULT_PROFILE) {
-    throw new Error(
-      `Non-production authorization requires a named profile. Add --profile <name> with --server-url ${serverUrl}.`,
-    );
-  }
-  (dependencies.report ?? ((message: string) => console.error(message)))(
-    `Authorizing destination "${profileName}" on ${new URL(serverUrl).host}.`,
+  const requestedName = options.destination ? normalizeDestinationName(options.destination) : undefined;
+  const previous = requestedName ? current.destinations[requestedName] : undefined;
+  const serverUrl = normalizeUrl(options.serverUrl ?? previous?.serverUrl ?? DEFAULT_SERVER_URL);
+  const report = dependencies.report ?? ((message: string) => console.error(message));
+  report(
+    requestedName
+      ? `Authorizing destination "${requestedName}" on ${new URL(serverUrl).host}.`
+      : `Authorizing workspace destinations on ${new URL(serverUrl).host}.`,
   );
   const login = await loginCollectorOAuth(
     {
       serverUrl,
       noBrowser: options.noBrowser,
       workspaceHint: options.workspaceHint,
+      allowMultipleWorkspaces: !requestedName,
     },
     dependencies,
   );
-  const stored = await storeCollectorCredential(
-    configPath,
-    serializeOAuthCredential(login.bundle),
-    options.credentialStore,
-    {},
-    profileName,
-  );
-  const authorization: CollectorOAuthAuthorization = {
-    type: "oauth",
-    clientId: CLIENT_ID,
-    workspaceId: login.workspace.id,
-    workspaceName: login.workspace.name,
-    ...(login.workspace.slug ? { workspaceSlug: login.workspace.slug } : {}),
-    ...(login.user.email ? { userEmail: login.user.email } : {}),
-    scopes: login.scope.split(/\s+/).filter(Boolean),
-    authorizedAt: new Date((dependencies.now ?? Date.now)()).toISOString(),
-  };
-  if (
-    options.workspaceHint &&
-    options.workspaceHint !== login.workspace.id &&
-    options.workspaceHint !== login.workspace.slug
-  ) {
-    (dependencies.report ?? ((message: string) => console.error(message)))(
-      `Requested workspace "${options.workspaceHint}", but authorized ${login.workspace.name}${
-        login.workspace.slug ? ` (${login.workspace.slug})` : ""
-      } instead.`,
-    );
-  }
-  let next: CollectorConfig = upsertCollectorProfile(current, profileName, {
-    serverUrl,
-    credential: stored.credential,
-    authorization,
-  });
-  next = {
-    ...next,
-    ...current,
-    ...next,
-    ...(profileName !== DEFAULT_PROFILE && !current.credential && !current.activeProfile
-      ? { activeProfile: profileName }
-      : {}),
-    updatedAt: new Date((dependencies.now ?? Date.now)()).toISOString(),
-  };
-  if (profileName === DEFAULT_PROFILE) delete next.apiKey;
-  writeCollectorConfig(next, configPath);
-  let credentialWarning = stored.warning;
-  if (previousProfile?.credential && !sameCredential(previousProfile.credential, stored.credential)) {
-    try {
-      await deleteCollectorCredential(previousProfile.credential);
-    } catch (error) {
-      const cleanupWarning = `Could not remove the previous collector credential (${errorMessage(error)}).`;
-      credentialWarning = credentialWarning ? `${credentialWarning} ${cleanupWarning}` : cleanupWarning;
-    }
+  if (requestedName && login.authorizations.length !== 1) {
+    throw new Error("A named destination can authorize exactly one workspace. Run login without --destination.");
   }
 
-  return {
-    profile: profileName,
-    credential: stored.credential,
-    ...(credentialWarning ? { credentialWarning } : {}),
-    authorization,
-    verificationUri: login.verificationUri,
-  };
+  let next = current;
+  const results: CollectorLoginResult["destinations"] = [];
+  for (const [index, authorized] of login.authorizations.entries()) {
+    const name =
+      requestedName ??
+      destinationNameFromWorkspace(
+        { ...authorized.workspace, slug: authorized.workspace.slug ?? undefined },
+        next.destinations,
+        serverUrl,
+      );
+    const previousDestination = next.destinations[name];
+    const stored = await storeCollectorCredential(
+      configPath,
+      serializeOAuthCredential(authorized.bundle),
+      options.credentialStore,
+      {},
+      name,
+    );
+    const authorization: CollectorOAuthAuthorization = {
+      type: "oauth",
+      clientId: CLIENT_ID,
+      workspaceId: authorized.workspace.id,
+      workspaceName: authorized.workspace.name,
+      ...(authorized.workspace.slug ? { workspaceSlug: authorized.workspace.slug } : {}),
+      ...(authorized.user.email ? { userEmail: authorized.user.email } : {}),
+      scopes: authorized.scope.split(/\s+/).filter(Boolean),
+      authorizedAt: new Date((dependencies.now ?? Date.now)() + index).toISOString(),
+    };
+    next = upsertCollectorDestination(next, name, { serverUrl, credential: stored.credential, authorization });
+    let credentialWarning = stored.warning;
+    if (previousDestination?.credential && !sameCredential(previousDestination.credential, stored.credential)) {
+      try {
+        await deleteCollectorCredential(previousDestination.credential);
+      } catch (error) {
+        const cleanupWarning = `Could not remove the previous collector credential (${errorMessage(error)}).`;
+        credentialWarning = credentialWarning ? `${credentialWarning} ${cleanupWarning}` : cleanupWarning;
+      }
+    }
+    results.push({
+      name,
+      credential: stored.credential,
+      ...(credentialWarning ? { credentialWarning } : {}),
+      authorization,
+    });
+  }
+  next.updatedAt = new Date((dependencies.now ?? Date.now)()).toISOString();
+  writeCollectorConfig(next, configPath);
+  return { destinations: results, verificationUri: login.verificationUri };
 }
 
 export async function loginCollectorOAuth(
@@ -168,6 +158,7 @@ export async function loginCollectorOAuth(
     serverUrl: string;
     noBrowser?: boolean;
     workspaceHint?: string;
+    allowMultipleWorkspaces?: boolean;
   },
   dependencies: AuthDependencies = {},
 ) {
@@ -186,6 +177,7 @@ export async function loginCollectorOAuth(
       client_version: packageMetadata.version,
       platform: `${platform()} ${release()}`,
       ...(options.workspaceHint ? { workspace_hint: options.workspaceHint } : {}),
+      ...(options.allowMultipleWorkspaces ? { allow_multiple_workspaces: "true" } : {}),
     }),
   });
   const device = (await deviceResponse.json().catch(() => ({}))) as Record<string, unknown>;
@@ -243,22 +235,21 @@ export async function loginCollectorOAuth(
 
 export async function resolveCollectorAccessToken(
   configPath?: string,
-  options: { forceRefresh?: boolean; fetchImpl?: typeof fetch; now?: () => number; profile?: string } = {},
+  options: { forceRefresh?: boolean; fetchImpl?: typeof fetch; now?: () => number; destination?: string } = {},
 ): Promise<string> {
   const resolved = resolveConfigPath(configPath);
   const rootConfig = loadCollectorConfig(resolved);
-  const profileName = normalizeProfileName(options.profile ?? activeProfileName(rootConfig));
-  if (profileName === DEFAULT_PROFILE && process.env.TRAICE_API_KEY) return process.env.TRAICE_API_KEY;
-  if (profileName === DEFAULT_PROFILE && rootConfig.apiKey) {
-    const legacyApiKey = rootConfig.apiKey;
-    const stored = await storeCollectorCredential(resolved, legacyApiKey);
-    rootConfig.credential = stored.credential;
-    delete rootConfig.apiKey;
+  const destinationName = normalizeDestinationName(options.destination ?? defaultDestinationName(rootConfig));
+  const destination = collectorDestination(rootConfig, destinationName);
+  if (destination.apiKey) {
+    const legacyApiKey = destination.apiKey;
+    const stored = await storeCollectorCredential(resolved, legacyApiKey, "auto", {}, destinationName);
+    rootConfig.destinations[destinationName] = { ...destination, credential: stored.credential, apiKey: undefined };
     writeCollectorConfig(rootConfig, resolved);
     if (stored.warning) console.warn(`[traice-collector] ${stored.warning}`);
     return legacyApiKey;
   }
-  const config = configForProfile(rootConfig, profileName);
+  const config = configForDestination(rootConfig, destinationName);
   if (!config.credential) throw new Error("No collector credential is stored. Run setup or auth login.");
   const stored = await readCollectorCredential(config.credential);
   if (config.authorization?.type !== "oauth") return stored;
@@ -267,9 +258,9 @@ export async function resolveCollectorAccessToken(
   const current = parseOAuthCredential(stored);
   if (!options.forceRefresh && tokenIsFresh(current, now())) return current.accessToken;
 
-  return withRefreshLock(resolved, profileName, async () => {
+  return withRefreshLock(resolved, destinationName, async () => {
     const latestRootConfig = loadCollectorConfig(resolved);
-    const latestConfig = configForProfile(latestRootConfig, profileName);
+    const latestConfig = configForDestination(latestRootConfig, destinationName);
     if (!latestConfig.credential || latestConfig.authorization?.type !== "oauth") {
       throw new Error("The collector OAuth credential is no longer configured.");
     }
@@ -284,29 +275,29 @@ export async function resolveCollectorAccessToken(
 export function createCollectorAccessTokenProvider(
   configPath?: string,
   dependencies: { fetchImpl?: typeof fetch; now?: () => number } = {},
-  profile?: string,
+  destination?: string,
 ) {
   return (forceRefresh = false) =>
     resolveCollectorAccessToken(configPath, {
       forceRefresh,
       fetchImpl: dependencies.fetchImpl,
       now: dependencies.now,
-      profile,
+      destination,
     });
 }
 
 export async function logoutCollector(
   configPath?: string,
   fetchImpl: typeof fetch = fetch,
-  requestedProfile?: string,
+  requestedDestination?: string,
 ): Promise<{ removed: boolean; remoteRevoked: boolean }> {
   const resolved = resolveConfigPath(configPath);
   if (!existsSync(resolved)) return { removed: false, remoteRevoked: false };
   const rootConfig = loadCollectorConfig(resolved);
-  const profileName = normalizeProfileName(requestedProfile ?? activeProfileName(rootConfig));
-  let config: CollectorConfig;
+  const destinationName = normalizeDestinationName(requestedDestination ?? defaultDestinationName(rootConfig));
+  let config: CollectorConfig & CollectorDestination;
   try {
-    config = configForProfile(rootConfig, profileName);
+    config = configForDestination(rootConfig, destinationName);
   } catch {
     return { removed: false, remoteRevoked: false };
   }
@@ -315,7 +306,7 @@ export async function logoutCollector(
   }
   let remoteRevoked = false;
   try {
-    const accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl, profile: profileName });
+    const accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl, destination: destinationName });
     const response = await fetchImpl(`${config.serverUrl}/api/v1/collector/me`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${accessToken}` },
@@ -325,7 +316,7 @@ export async function logoutCollector(
     // Local logout still removes the credential. The dashboard can revoke the server grant.
   }
   await deleteCollectorCredential(config.credential);
-  const next = removeCollectorProfile(rootConfig, profileName);
+  const next = removeCollectorDestination(rootConfig, destinationName);
   next.updatedAt = new Date().toISOString();
   writeCollectorConfig(next, resolved);
   return { removed: true, remoteRevoked };
@@ -356,7 +347,7 @@ export function serializeOAuthCredential(bundle: CollectorOAuthTokenBundle): str
 }
 
 async function refreshOAuthCredential(
-  config: CollectorConfig,
+  config: CollectorConfig & CollectorDestination,
   current: CollectorOAuthTokenBundle,
   fetchImpl: typeof fetch,
   now: number,
@@ -382,21 +373,27 @@ async function refreshOAuthCredential(
 }
 
 function tokenLoginResult(body: Record<string, unknown>, verificationUri: string, now: number) {
-  const bundle = tokenBundle(body, now);
-  const workspace = isRecord(body.workspace) ? body.workspace : {};
-  const user = isRecord(body.user) ? body.user : {};
+  const rawAuthorizations = Array.isArray(body.destinations) ? body.destinations : [body];
+  const authorizations = rawAuthorizations.map((raw) => {
+    if (!isRecord(raw)) throw new Error("The collector authorization response is invalid.");
+    const bundle = tokenBundle(raw, now);
+    const workspace = isRecord(raw.workspace) ? raw.workspace : {};
+    const user = isRecord(raw.user) ? raw.user : {};
+    return {
+      bundle,
+      scope: bundle.scope,
+      workspace: {
+        id: requiredString(workspace.id, "workspace.id"),
+        name: requiredString(workspace.name, "workspace.name"),
+        slug: typeof workspace.slug === "string" && workspace.slug ? workspace.slug : null,
+      },
+      user: { email: typeof user.email === "string" && user.email ? user.email : null },
+    };
+  });
+  if (authorizations.length === 0) throw new Error("The collector authorization returned no workspaces.");
   return {
-    bundle,
     verificationUri,
-    scope: bundle.scope,
-    workspace: {
-      id: requiredString(workspace.id, "workspace.id"),
-      name: requiredString(workspace.name, "workspace.name"),
-      slug: typeof workspace.slug === "string" && workspace.slug ? workspace.slug : null,
-    },
-    user: {
-      email: typeof user.email === "string" && user.email ? user.email : null,
-    },
+    authorizations,
   };
 }
 
@@ -416,9 +413,12 @@ function tokenIsFresh(bundle: CollectorOAuthTokenBundle, now: number) {
   return new Date(bundle.expiresAt).getTime() - EXPIRY_SKEW_MS > now;
 }
 
-async function withRefreshLock<T>(configPath: string, profileName: string, operation: () => Promise<T>): Promise<T> {
-  const suffix = profileName === DEFAULT_PROFILE ? "" : `-${profileName}`;
-  const lockPath = resolve(dirname(configPath), `.oauth-refresh${suffix}.lock`);
+async function withRefreshLock<T>(
+  configPath: string,
+  destinationName: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockPath = resolve(dirname(configPath), `.oauth-refresh-${destinationName}.lock`);
   const startedAt = Date.now();
   let handle: number | null = null;
   while (handle === null) {

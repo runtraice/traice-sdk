@@ -38,12 +38,12 @@ describe("collector first-run identity", () => {
     expect(result).toEqual({ employeeEmail: "other@example.com", teamName: "AI Platform" });
   });
 
-  it("accepts inferred defaults without prompts for automation", async () => {
+  it("normalizes explicit identity without prompts outside a terminal", async () => {
     const prompt = vi.fn();
 
     const result = await resolveFirstRunSetupIdentity(
-      { acceptDefaults: true, teamName: "engineering" },
-      { interactive: true, gitEmail: () => "developer@example.com", prompt },
+      { employeeEmail: "Developer@Example.com", teamName: "engineering" },
+      { interactive: false, gitEmail: () => "other@example.com", prompt },
     );
 
     expect(result).toEqual({ employeeEmail: "developer@example.com", teamName: "Engineering" });
@@ -66,20 +66,19 @@ describe("collector first-run identity", () => {
     const prompt = vi.fn().mockResolvedValueOnce("yes").mockResolvedValueOnce("").mockResolvedValueOnce("y");
 
     const result = await confirmSetupPlan(
-      { agent: "codex", service: true, backfillDays: 7 },
+      { agents: ["codex"], destinations: ["live-demo"], service: true, backfillDays: 7 },
       { interactive: true, prompt },
     );
 
     expect(result).toEqual({ service: true, backfill: true });
-    expect(prompt.mock.calls[0]?.[0]).toContain("Configure Codex telemetry");
+    expect(prompt.mock.calls[0]?.[0]).toContain("Configure Codex telemetry for live-demo");
     expect(prompt.mock.calls[1]?.[0]).toContain("background service");
     expect(prompt.mock.calls[2]?.[0]).toContain("best-effort local Codex history");
   });
 
-  it("does not run an implicit backfill when unattended defaults are accepted", async () => {
-    await expect(confirmSetupPlan({ agent: "codex", service: true, acceptDefaults: true })).resolves.toEqual({
-      service: true,
-      backfill: false,
-    });
+  it("requires an interactive terminal instead of silently accepting setup", async () => {
+    await expect(
+      confirmSetupPlan({ agents: ["codex"], destinations: ["live-demo"], service: true }, { interactive: false }),
+    ).rejects.toThrow("interactive terminal");
   });
 });

@@ -8,204 +8,191 @@ order: 1
 
 # Collector Overview
 
-`@traice/collector` is the maintained local collector for employee and team AI-tool spend. It receives local OpenTelemetry HTTP JSON from supported coding agents, normalizes usage into `InternalUsageEvent`, and forwards batches to `/api/v1/internal-usage`.
+`@traice/collector` is the maintained local collector for employee and team AI-tool spend. It receives local
+OpenTelemetry HTTP JSON from supported coding agents, normalizes usage into `InternalUsageEvent`, and forwards batches
+to `/api/v1/internal-usage`.
 
-Product SDK events and collector events are separate. Use the collector for employee tools, not customer-facing product requests.
+Product SDK events and collector events are separate. Use the collector for employee tools, not customer-facing
+product requests.
 
 ## Supported agents
 
-| Agent       | Input                           | Setup guide                      | Historical backfill                                       |
-| ----------- | ------------------------------- | -------------------------------- | --------------------------------------------------------- |
-| Claude Code | OTLP HTTP JSON logs and metrics | [Claude Code](/docs/claude-code) | Not currently provided                                    |
-| Codex       | OTLP HTTP JSON logs             | [Codex](/docs/codex)             | Bounded local usage history, 1 to 30 days through `setup` |
+| Agent       | Live input                      | Historical backfill           |
+| ----------- | ------------------------------- | ----------------------------- |
+| Claude Code | OTLP HTTP JSON logs and metrics | Not currently provided        |
+| Codex       | OTLP HTTP JSON logs             | Optional local history, 1-30d |
 
 ## Recommended setup
 
-Authorize the device, then run setup. Setup confirms identity, verifies server access, patches user-level agent
-telemetry, and installs a background user service. Historical import is a separate opt-in.
+Run one interactive command:
 
 ```bash
-npx @traice/collector@latest auth login
-npx @traice/collector@latest setup codex
+npx @traice/collector@latest setup
 ```
 
-You can run `setup` directly; it starts browser authorization when needed. Use `setup claude-code` for Claude Code.
-Add `--no-service` when another process manager will own the collector. Add `--backfill-days N` to request a bounded,
-best-effort Codex history import. Setup skips history by default.
+Setup detects supported agents, lets you choose which agents and workspace destinations to use, confirms employee and
+team attribution, patches user-level telemetry settings, verifies access, and installs a background user service.
+Browser authorization is started automatically when needed.
 
-Restart all running Codex or Claude Code sessions after setup. Sessions started before telemetry was configured do not
-reload those settings and will not emit live usage through the collector.
+Local history is not imported by default. Add `--backfill-days N` to offer an optional, best-effort Codex history
+import during setup. Add `--no-service` only when another process manager owns the collector.
 
-The authorization URL can be opened on any device. For an SSH or headless session, add `--no-browser`, then open the printed URL and enter the code.
+Restart every running Codex or Claude Code session after setup. Existing sessions do not reload telemetry settings.
 
-## Check collector health
+For SSH or another headless terminal:
+
+```bash
+npx @traice/collector@latest setup --no-browser
+```
+
+Open the printed URL on any device, enter the short code, then return to the terminal.
+
+## Destinations and routes
+
+A destination is one authorized trAIce workspace. A route maps one coding agent to one or more destinations. One
+browser authorization can select multiple workspaces; each selected workspace receives its own scoped credential.
+
+```bash
+npx @traice/collector@latest destination list
+npx @traice/collector@latest route list
+npx @traice/collector@latest route set codex live-demo sandbox
+npx @traice/collector@latest route set claude-code live-demo
+```
+
+The collector uses one local listener and one background service for all enabled agents. Credentials, durable queues,
+delivery retries, and server-side deduplication stay isolated per destination. Sending one event to two destinations
+intentionally creates one row in each workspace.
+
+Add or remove one destination explicitly:
+
+```bash
+npx @traice/collector@latest auth login --destination sandbox --workspace sandbox
+npx @traice/collector@latest auth logout --destination sandbox
+```
+
+A new authorization always uses the production trAIce service unless its login command explicitly selects another
+deployment.
+
+## Health and updates
 
 ```bash
 npx @traice/collector@latest status
+npx @traice/collector@latest update --check
+npx @traice/collector@latest update
 ```
 
-The status command checks:
+`status` checks the config, credential backend, background service, local OTLP listener, and authenticated server
+access. Use `--json` for machine-readable checks. The command exits non-zero when a required check fails.
 
-- Configuration and enabled agents.
-- Credential availability and storage backend.
-- Background service installation and runtime state.
-- Local OTLP listener reachability.
-- trAIce server access.
+The service uses an exact installed package version. It checks for a newer stable release once per day and logs an
+update notice. `update` installs the latest stable runtime and restarts the single service.
 
-The listener also exposes delivery health on its local health endpoint,
-including queued event count, oldest queued event time, delivered and
-deduplicated counts, overflow drops, retries, failures, and the latest delivery
-timestamps.
+## Durable delivery
 
-Use `--json` for machine-readable health checks. The command exits non-zero when the aggregate status is not healthy.
+The local listener binds to `127.0.0.1:4318`. Accepted telemetry is durably appended under
+`~/.traice/collector/state/` before the listener returns HTTP 202. Every destination has an isolated outbox. Queued
+events survive restarts, and a failing destination does not block the others.
 
-## Run in the foreground
+Each outbox retains up to 10,000 events and drops its oldest event on overflow. The local health endpoint reports queue
+depth, deduplication, drops, retries, failures, and recent delivery timestamps.
+
+Run the listener in the foreground only when another service manager owns its lifecycle:
 
 ```bash
 npx @traice/collector@latest collect
 ```
 
-The default listener binds to `127.0.0.1:4318`. Use `--agent`, `--listen-host`, or `--listen-port` to override the saved configuration for one run.
+## Codex backfill
 
-The listener durably appends accepted local telemetry under `~/.traice/collector/state/` before returning HTTP 202.
-The default profile uses `outbox.ndjson`; named profiles use one isolated outbox per workspace. The collector then
-delivers strict batches in the background. A backend outage therefore does not hold agent export requests open, and
-queued events survive collector restarts. Each outbox retains at most 10,000 events and drops its oldest event on
-overflow.
+Backfill is optional because local Codex JSONL history can contain gaps. Live telemetry is the source of truth.
 
-## Connect accounts and route workspaces
-
-A connection is a signed-in trAIce account on one server. An authorized workspace is a destination. A route maps one
-coding agent to one or more destinations. The config retains the older `profile` name for destination credentials.
-
-```bash
-npx @traice/collector@latest auth login --profile staging-a \
-  --server-url https://staging.runtraice.com --workspace workspace-a
-npx @traice/collector@latest auth login --profile production-z \
-  --server-url https://www.runtraice.com --workspace workspace-z
-npx @traice/collector@latest route set codex staging-a production-z
-npx @traice/collector@latest route set claude-code production-z
-npx @traice/collector@latest destination list
-npx @traice/collector@latest route list
-```
-
-The collector keeps one local OTLP listener and one background service for all enabled agents. It identifies the
-source from structured OTLP attributes and applies the matching route. Credentials, retries, delivery results, and
-deduplication remain isolated per workspace. An intentional multi-destination route creates one row in each workspace.
-
-Use `status --profile <name>` to verify one profile, `backfill codex --profile <name> --since <window>` for an explicit
-historical destination, and `auth logout --profile <name>` to revoke one workspace grant.
-
-## Inspect Codex history
-
-Dry-run a bounded window before upload:
+Inspect a bounded window:
 
 ```bash
 npx @traice/collector@latest backfill codex --since 14d --dry-run
 ```
 
-Upload the previous week:
+Upload the previous week to a specific destination:
 
 ```bash
-npx @traice/collector@latest backfill codex --since 7d
+npx @traice/collector@latest backfill codex --destination live-demo --since 7d
 ```
 
-Backfill uses the first successful telemetry configuration time as its safe
-default upper boundary. Older configs fall back to the command start time.
-Stable source event IDs and paginated live-only reconciliation make interrupted
-uploads retry-safe. The command reports discovered files, sessions, usage
-events, invalid lines, duplicates, time boundaries, token totals, and accepted
-or dropped rows.
+When setup has recorded the first telemetry activation time, an omitted `--until` stops there so history does not
+cross the normal live-collection boundary. Stable event IDs and paginated live-only reconciliation make interrupted
+or repeated uploads retry-safe. Duplicate rows do not increase stored usage, token totals, or spend.
 
-## Configuration and credentials
+## Configuration and credential storage
 
-Private device configuration is stored at:
+Non-secret device configuration is stored at:
 
 ```text
 ~/.traice/collector/config.json
 ```
 
-The file contains the trAIce server URL, non-secret authorization metadata and a credential reference, employee and team mapping, enabled adapters, sources, and local listener settings. Short-lived access and rotating refresh credentials are stored separately:
+The config contains destination metadata and credential references, agent routes, employee and team mapping, adapter
+settings, and the local listener address. Before replacing it, the CLI retains bounded backups under
+`~/.traice/collector/backups/`.
 
-- macOS Keychain.
-- Windows Credential Manager.
-- Linux Secret Service.
-- A user-only protected file when an operating-system credential store is unavailable.
+Renewable OAuth credentials are stored separately:
 
-Use `--credential-store keyring` to require the native store or `--credential-store file` to explicitly select the protected-file backend. Do not place credentials in a launchd plist, systemd unit, Windows Startup launcher, shell history, or committed configuration.
+- macOS Keychain
+- Windows Credential Manager
+- Linux Secret Service
+- A user-only protected file when an operating-system credential store is unavailable
 
-On Windows, setup runs for the current user and does not require Administrator access. It creates a hidden Startup
-launcher and keeps its credential in Windows Credential Manager. See the [Codex Windows setup](/docs/codex#windows-setup)
-for separate Command Prompt and PowerShell commands, Node.js installation, and rejected-key troubleshooting.
+Use `--credential-store keyring` to require the native store or `--credential-store file` for a headless,
+externally encrypted environment. Do not place credentials in service definitions, shell history, or committed files.
 
-## CLI commands
+Workspace API keys remain available for CI, containers, MDM, and unattended automation:
 
-| Command                           | Purpose                                                                        |
-| --------------------------------- | ------------------------------------------------------------------------------ |
-| `auth login/status/logout`        | Authorize, inspect, or revoke the saved collector session                      |
-| `setup <agent>`                   | Configure, validate, backfill when supported, and install a background service |
-| `install <agent>`                 | Configure one agent without service installation or history backfill           |
-| `status`                          | Check configuration, credentials, service, listener, and server access         |
-| `collect`                         | Run the OTLP listener and forward normalized events                            |
-| `backfill codex --since <window>` | Inspect or upload bounded Codex history                                        |
-| `destination list`                | List workspace destinations grouped by server and signed-in user               |
-| `route list/set`                  | Inspect or replace per-agent destination routes                                |
-| `profile list/use/mirror`         | Compatibility commands for older active-profile and mirror configuration       |
-| `update [--check]`                | Check for or install the latest stable background collector                    |
-| `help [command]`                  | Show current command and option help                                           |
+```bash
+printf '%s\n' "$TRAICE_API_KEY" |
+  npx @traice/collector@latest install codex \
+    --destination ci \
+    --api-key-stdin \
+    --patch-settings
+```
 
-The CLI implementation is public in [`packages/collector/src/cli.ts`](https://github.com/runtraice/traice-sdk/blob/main/packages/collector/src/cli.ts).
+The environment value is not written into the collector config. Avoid `--api-key <value>` in shared shells.
 
-### Common parameters
+## CLI reference
 
-The recommended commands omit defaults and ask for missing identity choices. Use these parameters for advanced or
-unattended configuration:
+| Command                           | Purpose                                                             |
+| --------------------------------- | ------------------------------------------------------------------- |
+| `setup`                           | Detect agents, authorize destinations, configure routes and service |
+| `auth login/status/logout`        | Add, inspect, or revoke browser authorization                       |
+| `destination list`                | List authorized workspace destinations                              |
+| `route list/set`                  | Inspect or replace per-agent routes                                 |
+| `status`                          | Check configuration, credentials, service, listener, and access     |
+| `collect`                         | Run the local listener in the foreground                            |
+| `backfill codex --since <window>` | Inspect or upload bounded Codex history                             |
+| `install <agent>`                 | Advanced unattended agent configuration                             |
+| `update [--check]`                | Check for or install the latest stable collector                    |
 
-| Option                        | Purpose                                                       |
-| ----------------------------- | ------------------------------------------------------------- |
-| `--server-url <url>`          | Use another deployment with an explicit named `--profile`     |
-| `--workspace <slug-or-id>`    | Preselect a workspace during browser authorization            |
-| `--profile <name>`            | Save, select, inspect, or backfill a named workspace profile  |
-| `--mirror <name>`             | Add a one-run mirror override to `collect`                    |
-| `--employee-email <email>`    | Set the employee identity without an interactive question     |
-| `--employee-name <name>`      | Set the optional employee display name                        |
-| `--team-name <name>`          | Set the reporting team without an interactive question        |
-| `--seat-monthly-usd <amount>` | Record an optional per-seat subscription commitment           |
-| `--backfill-days <1-30>`      | Opt in to a bounded best-effort Codex history import          |
-| `--no-backfill`               | Explicitly skip Codex history                                 |
-| `--no-service`                | Do not install the background service                         |
-| `--no-browser`                | Print the authorization link for SSH or another device        |
-| `--credential-store <mode>`   | Select `auto`, `keyring`, or `file`                           |
-| `--yes`                       | Accept defaults for an explicitly configured unattended setup |
+Common options:
 
-Run `npx @traice/collector@latest help <command>` for every supported option.
+| Option                        | Purpose                                                        |
+| ----------------------------- | -------------------------------------------------------------- |
+| `--agent <agent>`             | Preselect an agent during setup; repeat for more than one      |
+| `--destination <name>`        | Select a destination; repeat where multiple values are allowed |
+| `--workspace <slug-or-id>`    | Preselect a workspace during setup or explicit login           |
+| `--server-url <url>`          | Use another trAIce deployment                                  |
+| `--employee-email <email>`    | Set employee attribution                                       |
+| `--team-name <name>`          | Set reporting team                                             |
+| `--seat-monthly-usd <amount>` | Record an optional subscription commitment                     |
+| `--backfill-days <1-30>`      | Offer an optional bounded Codex history import                 |
+| `--no-service`                | Skip background service installation                           |
+| `--no-browser`                | Print the authorization URL for SSH or another device          |
+| `--credential-store <mode>`   | Select `auto`, `keyring`, or `file`                            |
+| `--json`                      | Print machine-readable output                                  |
 
-## Collector updates
-
-The service runs an exact package version from a versioned local runtime. It checks for a new stable version once per
-day without changing the installation. Use `update --check` to inspect availability and `update` to install the latest
-version and restart the single background service.
-
-## Programmatic API
-
-The package root exports setup, installation, status, service, credential, configuration, backfill, run, and normalization functions. The supported entrypoint is [`packages/collector/src/index.ts`](https://github.com/runtraice/traice-sdk/blob/main/packages/collector/src/index.ts).
-
-Primary APIs include:
-
-- `setupAgent`, `installAgent`, and `verifyCollectorConnection`.
-- `loginAndStoreCollectorAuthorization`, `resolveCollectorAccessToken`, and `logoutCollector`.
-- `getCollectorStatus`, `getCollectorServiceStatus`, and `formatCollectorStatus`.
-- `runCollector`, `backfillCodex`, and `dryRunCodexBackfill`.
-- `normalizeClaudeCodeOtlpLogs`, `normalizeClaudeCodeOtlpMetrics`, and `normalizeCodexOtlpLogs`.
-- `loadCollectorConfig`, `writeCollectorConfig`, `readCollectorCredential`, and `storeCollectorCredential`.
-
-Use the CLI for normal device installation. The programmatic surface is intended for managed installers, tests, and custom operational tooling.
+Run `npx @traice/collector@latest help <command>` for the complete option list.
 
 ## Privacy
 
-The collector sends usage and allocation metadata from an explicit allowlist.
-Prompt and output capture is off by default. See [Privacy](/docs/privacy)
-before enabling `--include-prompts`.
+The collector sends usage and allocation metadata from an explicit allowlist. Prompt and output capture is off by
+default. See [Privacy](/docs/privacy) before enabling `--include-prompts`.
 
 ## Source and package
 

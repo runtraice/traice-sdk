@@ -66,9 +66,9 @@ describe("collector OAuth", () => {
       { fetchImpl, report, openBrowser, sleep, now: () => Date.parse("2026-07-23T09:00:00.000Z") },
     );
 
-    expect(result.workspace).toEqual({ id: "workspace-1", name: "Acme", slug: null });
-    expect(result.user.email).toBe("alex@acme.com");
-    expect(result.bundle.accessToken).toBe("tr_oauth_at_secret");
+    expect(result.authorizations[0]?.workspace).toEqual({ id: "workspace-1", name: "Acme", slug: null });
+    expect(result.authorizations[0]?.user.email).toBe("alex@acme.com");
+    expect(result.authorizations[0]?.bundle.accessToken).toBe("tr_oauth_at_secret");
     expect(openBrowser).toHaveBeenCalledWith("https://runtraice.com/device?user_code=ABCD-EFGH");
     expect(report).toHaveBeenCalledWith("Enter code: ABCD-EFGH");
     expect(sleep).toHaveBeenCalledTimes(3);
@@ -134,18 +134,18 @@ describe("collector OAuth", () => {
     const configText = readFileSync(configPath, "utf8");
     expect(configText).not.toContain("tr_oauth_at_secret");
     expect(configText).not.toContain("tr_oauth_rt_secret");
-    expect(result.authorization).toMatchObject({
+    expect(result.destinations[0]?.authorization).toMatchObject({
       workspaceId: "workspace-1",
       workspaceName: "Acme",
       userEmail: "alex@acme.com",
     });
-    const stored = parseOAuthCredential(await readCollectorCredential(result.credential));
+    const stored = parseOAuthCredential(await readCollectorCredential(result.destinations[0]!.credential));
     expect(stored.accessToken).toBe("tr_oauth_at_secret");
     expect(stored.refreshToken).toBe("tr_oauth_rt_secret");
   });
 
-  it("stores named workspace profiles in separate credential entries", async () => {
-    const directory = temporaryDirectory("traice-oauth-profiles-");
+  it("stores named workspace destinations in separate credential entries", async () => {
+    const directory = temporaryDirectory("traice-oauth-destinations-");
     const configPath = join(directory, "config.json");
     await loginAndStoreCollectorAuthorization(
       { configPath, serverUrl: "https://runtraice.com", credentialStore: "file", noBrowser: true },
@@ -162,7 +162,7 @@ describe("collector OAuth", () => {
         serverUrl: "https://runtraice.com",
         credentialStore: "file",
         noBrowser: true,
-        profile: "test-zoro",
+        destination: "test-zoro",
       },
       {
         fetchImpl: successfulLoginFetch(),
@@ -173,14 +173,16 @@ describe("collector OAuth", () => {
     );
 
     const config = loadCollectorConfig(configPath);
-    expect(config.authorization?.workspaceName).toBe("Acme");
-    expect(config.profiles?.["test-zoro"]?.authorization?.workspaceName).toBe("Acme");
-    expect(config.profiles?.["test-zoro"]?.credential).not.toEqual(config.credential);
-    expect(config.profiles?.["test-zoro"]?.credential).toMatchObject({
+    expect(config.destinations.acme?.authorization?.workspaceName).toBe("Acme");
+    expect(config.destinations["test-zoro"]?.authorization?.workspaceName).toBe("Acme");
+    expect(config.destinations["test-zoro"]?.credential).not.toEqual(config.destinations.acme?.credential);
+    expect(config.destinations["test-zoro"]?.credential).toMatchObject({
       backend: "protected-file",
     });
-    expect(await readCollectorCredential(config.credential!)).toContain("tr_oauth_at_secret");
-    expect(await readCollectorCredential(config.profiles!["test-zoro"]!.credential!)).toContain("tr_oauth_at_secret");
+    expect(await readCollectorCredential(config.destinations.acme!.credential!)).toContain("tr_oauth_at_secret");
+    expect(await readCollectorCredential(config.destinations["test-zoro"]!.credential!)).toContain(
+      "tr_oauth_at_secret",
+    );
 
     const revoke = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
     await expect(logoutCollector(configPath, revoke, "test-zoro")).resolves.toEqual({
@@ -188,40 +190,86 @@ describe("collector OAuth", () => {
       remoteRevoked: true,
     });
     const afterLogout = loadCollectorConfig(configPath);
-    expect(afterLogout.profiles?.["test-zoro"]).toBeUndefined();
-    expect(afterLogout.authorization?.workspaceName).toBe("Acme");
-    expect(await readCollectorCredential(afterLogout.credential!)).toContain("tr_oauth_at_secret");
+    expect(afterLogout.destinations["test-zoro"]).toBeUndefined();
+    expect(afterLogout.destinations.acme?.authorization?.workspaceName).toBe("Acme");
+    expect(await readCollectorCredential(afterLogout.destinations.acme!.credential!)).toContain("tr_oauth_at_secret");
   });
 
-  it("targets production for no-argument login even when the saved default profile used staging", async () => {
-    const directory = temporaryDirectory("traice-oauth-production-default-");
+  it("stores every workspace returned by one browser authorization as an isolated destination", async () => {
+    const directory = temporaryDirectory("traice-oauth-multi-workspace-");
     const configPath = join(directory, "config.json");
-    writeCollectorConfig({ ...buildDefaultConfig(), serverUrl: "https://staging.runtraice.com" }, configPath);
-    const fetchImpl = successfulLoginFetch();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          device_code: "device-secret",
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://runtraice.com/device",
+          expires_in: 600,
+          interval: 5,
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          destinations: [
+            {
+              access_token: "tr_oauth_at_acme",
+              refresh_token: "tr_oauth_rt_acme",
+              expires_in: 3600,
+              scope: "collector:status internal_usage:dedupe internal_usage:write",
+              workspace: { id: "workspace-1", name: "Acme", slug: "acme" },
+              user: { email: "alex@acme.com" },
+            },
+            {
+              access_token: "tr_oauth_at_sandbox",
+              refresh_token: "tr_oauth_rt_sandbox",
+              expires_in: 3600,
+              scope: "collector:status internal_usage:dedupe internal_usage:write",
+              workspace: { id: "workspace-2", name: "Sandbox", slug: "sandbox" },
+              user: { email: "alex@acme.com" },
+            },
+          ],
+        }),
+      );
 
-    await loginAndStoreCollectorAuthorization(
+    const result = await loginAndStoreCollectorAuthorization(
       { configPath, credentialStore: "file", noBrowser: true },
       { fetchImpl, report: () => {}, sleep: async () => {} },
     );
 
+    expect(result.destinations.map((destination) => destination.name)).toEqual(["acme", "sandbox"]);
+    const config = loadCollectorConfig(configPath);
+    expect(await readCollectorCredential(config.destinations.acme!.credential!)).toContain("tr_oauth_at_acme");
+    expect(await readCollectorCredential(config.destinations.sandbox!.credential!)).toContain("tr_oauth_at_sandbox");
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).toContain("allow_multiple_workspaces=true");
+  });
+
+  it("targets production for a new destination even when another destination uses staging", async () => {
+    const directory = temporaryDirectory("traice-oauth-production-default-");
+    const configPath = join(directory, "config.json");
+    writeCollectorConfig(
+      {
+        ...buildDefaultConfig(),
+        destinations: {
+          "staging-alex": { serverUrl: "https://staging.runtraice.com" },
+        },
+      },
+      configPath,
+    );
+    const fetchImpl = successfulLoginFetch();
+
+    await loginAndStoreCollectorAuthorization(
+      { configPath, credentialStore: "file", noBrowser: true, destination: "production-live-demo" },
+      { fetchImpl, report: () => {}, sleep: async () => {} },
+    );
+
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://www.runtraice.com/api/oauth/device/code");
-    expect(loadCollectorConfig(configPath).serverUrl).toBe("https://www.runtraice.com");
+    expect(loadCollectorConfig(configPath).destinations["production-live-demo"]?.serverUrl).toBe(
+      "https://www.runtraice.com",
+    );
   });
 
-  it("requires a named profile for non-production authorization", async () => {
-    const directory = temporaryDirectory("traice-oauth-staging-profile-");
-
-    await expect(
-      loginAndStoreCollectorAuthorization({
-        configPath: join(directory, "config.json"),
-        serverUrl: "https://staging.runtraice.com",
-        credentialStore: "file",
-        noBrowser: true,
-      }),
-    ).rejects.toThrow("Non-production authorization requires a named profile");
-  });
-
-  it("warns when the authorized workspace differs from the requested hint", async () => {
+  it("passes a workspace hint without failing when the browser chooses another workspace", async () => {
     const directory = temporaryDirectory("traice-oauth-workspace-hint-");
     const report = vi.fn();
 
@@ -235,7 +283,7 @@ describe("collector OAuth", () => {
       { fetchImpl: successfulLoginFetch(), report, sleep: async () => {} },
     );
 
-    expect(report).toHaveBeenCalledWith('Requested workspace "missing-workspace", but authorized Acme (acme) instead.');
+    expect(report).toHaveBeenCalledWith("Waiting for authorization...");
   });
 
   it("refreshes an expiring access token and persists the rotated bundle", async () => {
@@ -262,7 +310,7 @@ describe("collector OAuth", () => {
         now: () => Date.parse("2026-07-23T09:00:00.000Z"),
       }),
     ).resolves.toBe("tr_oauth_at_new");
-    const stored = parseOAuthCredential(await readCollectorCredential(config.credential!));
+    const stored = parseOAuthCredential(await readCollectorCredential(config.destinations.acme!.credential!));
     expect(stored).toMatchObject({
       accessToken: "tr_oauth_at_new",
       refreshToken: "tr_oauth_rt_new",
@@ -278,7 +326,7 @@ describe("collector OAuth", () => {
       refreshToken: "tr_oauth_rt_old",
       expiresAt: "2026-07-23T09:00:30.000Z",
     });
-    const lockPath = join(directory, ".oauth-refresh.lock");
+    const lockPath = join(directory, ".oauth-refresh-acme.lock");
     writeFileSync(lockPath, "");
     const staleTime = new Date(Date.now() - 5 * 60_000);
     utimesSync(lockPath, staleTime, staleTime);
@@ -311,7 +359,11 @@ describe("collector OAuth", () => {
 
     await expect(
       forwardEvents(
-        { ...buildDefaultConfig(), serverUrl: "https://runtraice.com" },
+        {
+          ...buildDefaultConfig(),
+          serverUrl: "https://runtraice.com",
+          apiKey: "test-key",
+        },
         [
           {
             occurredAt: "2026-07-23T09:00:00.000Z",
@@ -351,8 +403,8 @@ describe("collector OAuth", () => {
       removed: true,
       remoteRevoked: true,
     });
-    expect(loadCollectorConfig(configPath).authorization).toBeUndefined();
-    await expect(readCollectorCredential(config.credential!)).rejects.toThrow();
+    expect(loadCollectorConfig(configPath).destinations.acme).toBeUndefined();
+    await expect(readCollectorCredential(config.destinations.acme!.credential!)).rejects.toThrow();
   });
 });
 
@@ -393,20 +445,27 @@ async function oauthConfig(
       scope: "collector:status internal_usage:dedupe internal_usage:write",
     }),
     "file",
+    {},
+    "acme",
   );
   const config: CollectorConfig = {
     ...buildDefaultConfig(new Date("2026-07-23T09:00:00.000Z")),
-    serverUrl: "https://runtraice.com",
-    credential: stored.credential,
-    authorization: {
-      type: "oauth",
-      clientId: "traice-collector",
-      workspaceId: "workspace-1",
-      workspaceName: "Acme",
-      userEmail: "alex@acme.com",
-      scopes: ["collector:status", "internal_usage:dedupe", "internal_usage:write"],
-      authorizedAt: "2026-07-23T09:00:00.000Z",
+    destinations: {
+      acme: {
+        serverUrl: "https://runtraice.com",
+        credential: stored.credential,
+        authorization: {
+          type: "oauth",
+          clientId: "traice-collector",
+          workspaceId: "workspace-1",
+          workspaceName: "Acme",
+          userEmail: "alex@acme.com",
+          scopes: ["collector:status", "internal_usage:dedupe", "internal_usage:write"],
+          authorizedAt: "2026-07-23T09:00:00.000Z",
+        },
+      },
     },
+    routes: { codex: ["acme"] },
   };
   writeCollectorConfig(config, configPath);
   return config;

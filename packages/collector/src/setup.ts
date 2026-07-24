@@ -4,7 +4,7 @@ import { backfillCodex, type CodexBackfillSummary } from "./backfill";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
 import { normalizeUrl, readHiddenSecret } from "./fs";
 import { installAgent, type InstallResult } from "./install";
-import { activeProfileName, collectorProfile, normalizeProfileName } from "./profiles";
+import { collectorDestination, defaultDestinationName, normalizeDestinationName } from "./destinations";
 import { installCollectorService, type CollectorServiceResult } from "./service";
 import type { CollectorInstallOptions } from "./types";
 
@@ -53,22 +53,26 @@ export async function setupAgent(
   let install = await installWithAuthorization(options, promptSecret, report, dependencies);
 
   try {
-    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl, install.profile);
+    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl, install.destination);
   } catch (error) {
     if (!(error instanceof CollectorConnectionError) || error.status !== 401 || hasProvidedKey(options)) throw error;
     const config = loadCollectorConfig(install.configPath);
-    const profile = collectorProfile(config, install.profile);
-    if (profile.authorization?.type === "oauth") {
-      report(`The saved browser authorization for ${profile.authorization.workspaceName} is no longer valid.`);
+    const destination = collectorDestination(config, install.destination);
+    if (destination.authorization?.type === "oauth") {
+      report(`The saved browser authorization for ${destination.authorization.workspaceName} is no longer valid.`);
     } else {
       report(
-        `The saved API key was rejected by ${profile.serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
+        `The saved API key was rejected by ${destination.serverUrl}. It may be revoked, incomplete, or from another workspace. ` +
           "Opening browser authorization instead.",
       );
     }
-    await loginForSetup(options, report, dependencies);
-    install = await installAgent({ ...options, patchSettings: true });
-    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl, install.profile);
+    const login = await loginForSetup({ ...options, destination: install.destination }, report, dependencies);
+    install = await installAgent({
+      ...options,
+      destination: options.destination ?? login.destinations[0]?.name,
+      patchSettings: true,
+    });
+    await verifyCollectorConnection(install.configPath, dependencies.fetchImpl, install.destination);
   }
 
   const service =
@@ -82,7 +86,7 @@ export async function setupAgent(
     options.agent === "codex" && options.backfill === true
       ? await (dependencies.runBackfill ?? backfillCodex)({
           configPath: install.configPath,
-          profile: install.profile,
+          destination: install.destination,
           codexHome: options.codexHome,
           since: `${boundedBackfillDays(options.backfillDays)}d`,
           onProgress: ({ processed, total, accepted }) => {
@@ -91,12 +95,12 @@ export async function setupAgent(
         })
       : undefined;
   const config = loadCollectorConfig(install.configPath);
-  const profile = collectorProfile(config, install.profile);
+  const destination = collectorDestination(config, install.destination);
 
   return {
     ok: true,
     install,
-    connection: { ok: true, serverUrl: profile.serverUrl },
+    connection: { ok: true, serverUrl: destination.serverUrl },
     ...(service ? { service } : {}),
     ...(backfill ? { backfill } : {}),
   };
@@ -105,25 +109,25 @@ export async function setupAgent(
 export async function verifyCollectorConnection(
   configPath?: string,
   fetchImpl: typeof fetch = fetch,
-  requestedProfile?: string,
+  requestedDestination?: string,
 ): Promise<void> {
   const resolved = resolveConfigPath(configPath);
   const config = loadCollectorConfig(resolved);
-  const profileName = normalizeProfileName(requestedProfile ?? activeProfileName(config));
-  const profile = collectorProfile(config, profileName);
+  const destinationName = normalizeDestinationName(requestedDestination ?? defaultDestinationName(config));
+  const destination = collectorDestination(config, destinationName);
   let accessToken: string;
   try {
-    accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl, profile: profileName });
+    accessToken = await resolveCollectorAccessToken(resolved, { fetchImpl, destination: destinationName });
   } catch {
     throw new CollectorConnectionError("The stored trAIce credential is unavailable.", 401);
   }
-  const url = new URL("/api/v1/collector/me", profile.serverUrl);
+  const url = new URL("/api/v1/collector/me", destination.serverUrl);
   const response = await fetchImpl(url, { headers: { authorization: `Bearer ${accessToken}` } });
   if (response.ok) return;
   const detail = await response.text().catch(() => "");
   if (response.status === 401) {
     throw new CollectorConnectionError(
-      `The trAIce server at ${profile.serverUrl} rejected the collector credential. Reauthorize or check that the API key belongs to the intended workspace.`,
+      `The trAIce server at ${destination.serverUrl} rejected the collector credential. Reauthorize or check that the API key belongs to the intended workspace.`,
       401,
     );
   }
@@ -140,23 +144,25 @@ async function installWithAuthorization(
   dependencies: SetupDependencies,
 ): Promise<InstallResult> {
   const current = existingConfig(options.configPath);
-  const profileName = normalizeProfileName(options.profile ?? (current ? activeProfileName(current) : undefined));
-  let currentProfile: ReturnType<typeof collectorProfile> | null = null;
+  const destinationName = normalizeDestinationName(
+    options.destination ?? (current ? defaultDestinationName(current, options.agent) : "api-key"),
+  );
+  let currentDestination: ReturnType<typeof collectorDestination> | null = null;
   if (current) {
     try {
-      currentProfile = collectorProfile(current, profileName);
+      currentDestination = collectorDestination(current, destinationName);
     } catch {
-      currentProfile = null;
+      currentDestination = null;
     }
   }
   if (
     !hasProvidedKey(options) &&
     options.serverUrl &&
-    currentProfile &&
-    normalizeUrl(options.serverUrl) !== normalizeUrl(currentProfile.serverUrl)
+    currentDestination &&
+    normalizeUrl(options.serverUrl) !== normalizeUrl(currentDestination.serverUrl)
   ) {
     report(
-      `Authorizing ${normalizeUrl(options.serverUrl)} because the saved credential belongs to ${currentProfile.serverUrl}.`,
+      `Authorizing ${normalizeUrl(options.serverUrl)} because the saved credential belongs to ${currentDestination.serverUrl}.`,
     );
     await loginForSetup(options, report, dependencies);
   }
@@ -169,8 +175,12 @@ async function installWithAuthorization(
       const apiKey = await promptSecret();
       return installAgent({ ...options, apiKey, apiKeyStdin: false, patchSettings: true });
     }
-    await loginForSetup(options, report, dependencies);
-    return installAgent({ ...options, patchSettings: true });
+    const login = await loginForSetup(options, report, dependencies);
+    return installAgent({
+      ...options,
+      destination: options.destination ?? login.destinations[0]?.name,
+      patchSettings: true,
+    });
   }
 }
 
@@ -179,8 +189,7 @@ async function loginForSetup(
   report: (message: string) => void,
   dependencies: SetupDependencies,
 ) {
-  const current = existingConfig(options.configPath);
-  const profile = options.profile ?? (current ? activeProfileName(current) : undefined);
+  const destination = options.destination;
   return (dependencies.login ?? loginAndStoreCollectorAuthorization)(
     {
       configPath: options.configPath,
@@ -188,7 +197,7 @@ async function loginForSetup(
       credentialStore: options.credentialStore,
       noBrowser: options.noBrowser,
       workspaceHint: options.workspaceHint,
-      profile,
+      destination,
     },
     {
       fetchImpl: dependencies.fetchImpl,

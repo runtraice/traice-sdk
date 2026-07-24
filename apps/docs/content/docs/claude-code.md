@@ -11,14 +11,12 @@ order: 2
 Run the complete setup:
 
 ```sh
-npx @traice/collector@latest auth login
-npx @traice/collector@latest setup claude-code
+npx @traice/collector@latest setup
 ```
 
-Authorize the device in your browser, then setup patches user-level `~/.claude/settings.json`, installs a background
-user service, and reports the result. You can run `setup` directly; it starts browser authorization when needed. It is
-safe to rerun. Add `--no-browser` to `auth login` for SSH, or `--no-service` to setup if another process manager will
-run collection.
+Choose Claude Code when prompted. Setup starts browser authorization when needed, patches user-level
+`~/.claude/settings.json`, installs a background user service, and reports the result. It is safe to rerun. Add
+`--no-browser` for SSH, or `--no-service` if another process manager will run collection.
 
 Restart every running Claude Code session after setup. Sessions that were already running do not reload the telemetry
 environment written to `~/.claude/settings.json`.
