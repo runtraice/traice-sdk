@@ -1,4 +1,4 @@
-import type { CollectorConfig, CollectorCredential, CollectorWorkspaceProfile } from "./types";
+import type { AgentName, CollectorConfig, CollectorCredential, CollectorWorkspaceProfile } from "./types";
 
 export const DEFAULT_PROFILE = "default";
 const PROFILE_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
@@ -7,10 +7,46 @@ export interface CollectorProfileSummary {
   name: string;
   workspaceName?: string;
   workspaceId?: string;
+  userEmail?: string;
   serverUrl: string;
   active: boolean;
   mirror: boolean;
   credentialBackend?: CollectorCredential["backend"];
+}
+
+export function routedProfileNames(
+  config: CollectorConfig,
+  agent: AgentName,
+  options: { profile?: string; mirrorProfiles?: string[] } = {},
+): string[] {
+  if (options.profile || options.mirrorProfiles) return selectedProfileNames(config, options);
+  const route = config.routes?.[agent];
+  if (!route?.length) return selectedProfileNames(config);
+  const selected = route.map(normalizeProfileName).filter((name, index, names) => names.indexOf(name) === index);
+  for (const name of selected) collectorProfile(config, name);
+  return selected;
+}
+
+export function allRoutedProfileNames(
+  config: CollectorConfig,
+  options: { profile?: string; mirrorProfiles?: string[] } = {},
+): string[] {
+  if (options.profile || options.mirrorProfiles) return selectedProfileNames(config, options);
+  const selected = config.enabledAgents.flatMap((agent) => routedProfileNames(config, agent));
+  return selected.filter((name, index, names) => names.indexOf(name) === index);
+}
+
+export function setCollectorRoute(
+  config: CollectorConfig,
+  agent: AgentName,
+  requestedProfiles: string[],
+): CollectorConfig {
+  if (requestedProfiles.length === 0) throw new Error(`Route for "${agent}" needs at least one destination.`);
+  const profiles = requestedProfiles
+    .map(normalizeProfileName)
+    .filter((name, index, names) => names.indexOf(name) === index);
+  for (const name of profiles) collectorProfile(config, name);
+  return { ...config, routes: { ...config.routes, [agent]: profiles } };
 }
 
 export function normalizeProfileName(value = DEFAULT_PROFILE): string {
@@ -115,6 +151,12 @@ export function removeCollectorProfile(config: CollectorConfig, requestedProfile
     ...config,
     profiles,
     mirrorProfiles: (config.mirrorProfiles ?? []).filter((profile) => profile !== name),
+    routes: Object.fromEntries(
+      Object.entries(config.routes ?? {}).map(([agent, profiles]) => [
+        agent,
+        profiles?.filter((profile) => profile !== name),
+      ]),
+    ),
   };
   if (activeProfileName(config) === name) {
     next.activeProfile = config.credential || config.apiKey ? DEFAULT_PROFILE : configuredProfileNames(next)[0];
@@ -163,6 +205,7 @@ export function collectorProfileSummaries(config: CollectorConfig): CollectorPro
         ? {
             workspaceName: profile.authorization.workspaceName,
             workspaceId: profile.authorization.workspaceId,
+            userEmail: profile.authorization.userEmail,
           }
         : {}),
     };

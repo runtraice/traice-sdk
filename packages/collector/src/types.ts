@@ -39,6 +39,8 @@ export interface CollectorConfig {
   activeProfile?: string;
   /** Explicit best-effort copies after the primary destination succeeds. */
   mirrorProfiles?: string[];
+  /** Per-agent destination routes. Missing routes retain active profile plus mirror behavior. */
+  routes?: Partial<Record<AgentName, string[]>>;
   listenHost: string;
   listenPort: number;
   includePrompts: boolean;

@@ -156,27 +156,32 @@ process inspection.
 
 Existing configs containing a plaintext `apiKey` migrate automatically on the next `install` or `collect`.
 
-## Multiple workspace profiles
+## Connections, destinations, and routes
 
-One collector can send the same live Codex or Claude Code usage to multiple workspaces without starting another local
-listener. Keep one workspace active and add other destinations as explicit mirrors:
+The collector runs one local service for all enabled coding agents. A connection is one signed-in trAIce account on
+one server. Each authorized workspace is a destination. A route selects the destinations that receive one agent's
+live usage.
 
 ```sh
-npx @traice/collector@latest auth login --profile live-demo --workspace live-demo
-npx @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
-npx @traice/collector@latest profile use live-demo
-npx @traice/collector@latest profile mirror add test-zoro
-npx @traice/collector@latest profile list
+npx @traice/collector@latest auth login --profile staging-a \
+  --server-url https://staging.runtraice.com --workspace workspace-a
+npx @traice/collector@latest auth login --profile production-z \
+  --server-url https://www.runtraice.com --workspace workspace-z
+npx @traice/collector@latest route set codex staging-a production-z
+npx @traice/collector@latest destination list
+npx @traice/collector@latest route list
 ```
 
-Profiles have separate workspace-scoped credentials. The operating-system credential manager uses a distinct entry for
-each profile. Protected-file fallback credentials also use separate files. The background collector reloads active and
-mirror selections from its config, so changing them does not create another service or require another OTLP port.
+The current config format calls each destination a profile for compatibility. Destinations have separate
+workspace-scoped credentials, outboxes, retries, and deduplication boundaries. Routing changes are reloaded without
+starting another collector or allocating another OTLP port. Use `route set claude-code ...` to give Claude Code a
+different destination list.
 
-The active profile is authoritative. The local listener returns HTTP 202 after the primary workspace outbox accepts the
-event. Each mirror uses an isolated durable outbox, so a backend or authorization failure for one workspace does not
-block the others. Failed delivery remains queued and is retried in the background. Stable event IDs remain deduplicated
-independently inside each workspace. Sending an event to two workspaces intentionally creates one row in each workspace.
+The first destination in a route is authoritative for local admission. Every destination uses an isolated durable
+outbox, so a backend or authorization failure for one workspace does not block the others. Failed delivery remains
+queued and is retried in the background. Stable event IDs remain deduplicated independently inside each workspace.
+Sending an event to two workspaces intentionally creates one row in each workspace. Without an explicit route, older
+active-profile and mirror configuration remains the fallback.
 
 Select a profile for a one-time status check or backfill:
 
@@ -185,7 +190,20 @@ npx @traice/collector@latest status --profile test-zoro
 npx @traice/collector@latest backfill codex --profile test-zoro --since 1d
 ```
 
-Remove a mirror with `profile mirror remove <name>`. Revoke a profile with `auth logout --profile <name>`.
+Legacy `profile use` and `profile mirror` commands remain supported. Revoke a destination with
+`auth logout --profile <name>`.
+
+## Updates
+
+The background service uses an exact installed package version. It checks once per day and logs when a newer stable
+release is available. Check or update it explicitly:
+
+```sh
+npx @traice/collector@latest update --check
+npx @traice/collector@latest update
+```
+
+Updates install into a versioned runtime directory, rewrite the single service definition, and restart the service.
 
 ## CLI configuration and parameters
 
@@ -208,6 +226,7 @@ background service, and skip local history. Override those defaults only when ne
 | `--no-browser`                | `auth login`, `setup` | Print the authorization link for SSH or another device             |
 | `--credential-store <mode>`   | `auth login`, `setup` | Select `auto`, `keyring`, or `file` credential storage             |
 | `--yes`                       | `setup`               | Accept defaults in an explicitly configured unattended setup       |
+| `--json`                      | Output commands       | Print machine-readable output instead of the human summary         |
 
 Run `npx @traice/collector@latest help <command>` for the complete current option list.
 

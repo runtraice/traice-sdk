@@ -75,7 +75,6 @@ export async function setupAgent(
     options.service === false
       ? undefined
       : (dependencies.installService ?? installCollectorService)({
-          agent: options.agent,
           configPath: install.configPath,
           packageVersion: packageMetadata.version,
         });

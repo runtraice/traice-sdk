@@ -73,23 +73,25 @@ delivers strict batches in the background. A backend outage therefore does not h
 queued events survive collector restarts. Each outbox retains at most 10,000 events and drops its oldest event on
 overflow.
 
-## Send to multiple workspaces
+## Connect accounts and route workspaces
 
-Authorize named workspace profiles, select one primary destination, and explicitly opt other workspaces into
-mirroring:
+A connection is a signed-in trAIce account on one server. An authorized workspace is a destination. A route maps one
+coding agent to one or more destinations. The config retains the older `profile` name for destination credentials.
 
 ```bash
-npx @traice/collector@latest auth login --profile live-demo --workspace live-demo
-npx @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
-npx @traice/collector@latest profile use live-demo
-npx @traice/collector@latest profile mirror add test-zoro
-npx @traice/collector@latest profile list
+npx @traice/collector@latest auth login --profile staging-a \
+  --server-url https://staging.runtraice.com --workspace workspace-a
+npx @traice/collector@latest auth login --profile production-z \
+  --server-url https://www.runtraice.com --workspace workspace-z
+npx @traice/collector@latest route set codex staging-a production-z
+npx @traice/collector@latest route set claude-code production-z
+npx @traice/collector@latest destination list
+npx @traice/collector@latest route list
 ```
 
-The collector keeps one local OTLP listener and one background service. It reloads profile selection from the config
-and forwards each normalized event to the active workspace and every explicit mirror. Credentials, retries, and
-delivery results remain isolated per workspace. Deduplication is workspace-scoped, so a retry is stored once in each
-destination while an intentional mirror is represented once in every selected workspace.
+The collector keeps one local OTLP listener and one background service for all enabled agents. It identifies the
+source from structured OTLP attributes and applies the matching route. Credentials, retries, delivery results, and
+deduplication remain isolated per workspace. An intentional multi-destination route creates one row in each workspace.
 
 Use `status --profile <name>` to verify one profile, `backfill codex --profile <name> --since <window>` for an explicit
 historical destination, and `auth logout --profile <name>` to revoke one workspace grant.
@@ -146,7 +148,10 @@ for separate Command Prompt and PowerShell commands, Node.js installation, and r
 | `status`                          | Check configuration, credentials, service, listener, and server access         |
 | `collect`                         | Run the OTLP listener and forward normalized events                            |
 | `backfill codex --since <window>` | Inspect or upload bounded Codex history                                        |
-| `profile list/use/mirror`         | Select a primary workspace and explicit live mirrors                           |
+| `destination list`                | List workspace destinations grouped by server and signed-in user               |
+| `route list/set`                  | Inspect or replace per-agent destination routes                                |
+| `profile list/use/mirror`         | Compatibility commands for older active-profile and mirror configuration       |
+| `update [--check]`                | Check for or install the latest stable background collector                    |
 | `help [command]`                  | Show current command and option help                                           |
 
 The CLI implementation is public in [`packages/collector/src/cli.ts`](https://github.com/runtraice/traice-sdk/blob/main/packages/collector/src/cli.ts).
@@ -174,6 +179,12 @@ unattended configuration:
 | `--yes`                       | Accept defaults for an explicitly configured unattended setup |
 
 Run `npx @traice/collector@latest help <command>` for every supported option.
+
+## Collector updates
+
+The service runs an exact package version from a versioned local runtime. It checks for a new stable version once per
+day without changing the installation. Use `update --check` to inspect availability and `update` to install the latest
+version and restart the single background service.
 
 ## Programmatic API
 

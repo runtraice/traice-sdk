@@ -15,6 +15,7 @@ import {
   createSerializedEventForwarder,
   forwardEvents,
   forwardEventsToDestinations,
+  inferAgents,
   normalizePayloadForRequest,
 } from "../src/run";
 import { installCollectorService } from "../src/service";
@@ -22,12 +23,15 @@ import { setupAgent } from "../src/setup";
 import { codexTomlBlock, patchCodexConfig } from "../src/settings";
 import {
   collectorProfileSummaries,
+  routedProfileNames,
   selectedProfileNames,
   setActiveCollectorProfile,
+  setCollectorRoute,
   setCollectorProfileMirror,
 } from "../src/profiles";
 import { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "../src/status";
 import type { CollectorConfig } from "../src/types";
+import { checkCollectorUpdate, updateCollector } from "../src/updates";
 
 const identity = {
   employeeEmail: "alex@example.com",
@@ -108,6 +112,7 @@ describe("@traice/collector", () => {
     expect(events[0]).toMatchObject({
       sourceKey: "codex-local",
       tool: "codex",
+      provider: "openai",
       model: "gpt-5-codex",
       totalTokens: 9,
     });
@@ -290,6 +295,24 @@ describe("@traice/collector", () => {
       expect.objectContaining({ name: "default", active: false, mirror: false }),
       expect.objectContaining({ name: "test-zoro", active: true, mirror: false }),
     ]);
+  });
+
+  it("routes each coding agent to independent workspace destinations", () => {
+    const credential = { backend: "protected-file" as const, path: "/tmp/credential.json" };
+    let config: CollectorConfig = {
+      ...buildDefaultConfig(),
+      credential,
+      enabledAgents: ["codex", "claude-code"],
+      profiles: {
+        staging: { serverUrl: "https://staging.runtraice.com", credential },
+        production: { serverUrl: "https://www.runtraice.com", credential },
+      },
+    };
+    config = setCollectorRoute(config, "codex", ["staging", "production"]);
+    config = setCollectorRoute(config, "claude-code", ["production"]);
+
+    expect(routedProfileNames(config, "codex")).toEqual(["staging", "production"]);
+    expect(routedProfileNames(config, "claude-code")).toEqual(["production"]);
   });
 
   it("isolates destination delivery failures while keeping the primary result authoritative", async () => {
@@ -582,9 +605,18 @@ describe("@traice/collector", () => {
     ).toHaveLength(1);
   });
 
+  it("detects Codex and Claude Code from structured OTLP attributes", () => {
+    const enabled = ["claude-code", "codex"] as const;
+    expect(inferAgents(logPayload("codex", "gpt-5.6-sol", 1, 1), [...enabled])).toEqual(["codex"]);
+    expect(inferAgents(logPayload("claude-code", "claude-opus-4", 1, 1), [...enabled])).toEqual(["claude-code"]);
+    expect(inferAgents(currentCodexLogPayload(), [...enabled])).toEqual(["codex"]);
+    expect(inferAgents(logPayload("unknown", "unrecognized-model", 1, 1), [...enabled])).toEqual([]);
+  });
+
   it("forwards large payloads in bounded batches", async () => {
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { events: unknown[] };
+      expect(new Headers(init?.headers).get("x-traice-collector-version")).toBe("0.5.0");
       return Response.json({ accepted: body.events.length });
     });
 
@@ -784,6 +816,7 @@ describe("@traice/collector", () => {
     expect(plist).toContain("<string>/absolute/node</string>");
     expect(plist).toContain("<string>/absolute/collector-cli.cjs</string>");
     expect(plist).toContain(`<string>${join(directory, "config.json")}</string>`);
+    expect(plist).not.toContain("<string>--agent</string>");
     expect(commands).toEqual([
       {
         command: "launchctl",
@@ -797,6 +830,30 @@ describe("@traice/collector", () => {
         ignoreFailure: undefined,
       },
     ]);
+  });
+
+  it("checks and installs collector updates through the singleton service", async () => {
+    const installService = vi.fn(() => ({
+      platform: "darwin" as const,
+      status: "installed" as const,
+      definitionPath: "/tmp/collector.plist",
+      nodePath: "/tmp/node",
+      cliPath: "/tmp/collector",
+    }));
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ version: "0.6.0" }));
+
+    await expect(checkCollectorUpdate(fetchImpl, "0.5.0")).resolves.toMatchObject({
+      currentVersion: "0.5.0",
+      latestVersion: "0.6.0",
+      updateAvailable: true,
+    });
+    await expect(
+      updateCollector({ configPath: "/tmp/config.json", targetVersion: "0.6.0" }, { installService }),
+    ).resolves.toMatchObject({ latestVersion: "0.6.0", service: { status: "installed" } });
+    expect(installService).toHaveBeenCalledWith({
+      configPath: "/tmp/config.json",
+      packageVersion: "0.6.0",
+    });
   });
 
   it("installs a hidden per-user Windows startup launcher without requiring Task Scheduler", () => {
@@ -827,6 +884,7 @@ describe("@traice/collector", () => {
     expect(command).toContain(":restart");
     expect(command).toContain("timeout /t 5 /nobreak");
     expect(command).not.toContain("apiKey");
+    expect(command).not.toContain("--agent");
     expect(launcher).toContain("WScript.Shell");
     expect(launcher).toContain(commandPath);
     expect(commands).toEqual([

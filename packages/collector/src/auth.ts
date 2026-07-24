@@ -90,7 +90,7 @@ export async function loginAndStoreCollectorAuthorization(
     );
   }
   (dependencies.report ?? ((message: string) => console.error(message)))(
-    `Authorizing profile "${profileName}" on ${new URL(serverUrl).host}.`,
+    `Authorizing destination "${profileName}" on ${new URL(serverUrl).host}.`,
   );
   const login = await loginCollectorOAuth(
     {
