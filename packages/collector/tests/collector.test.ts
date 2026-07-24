@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import packageMetadata from "../package.json";
 import { loginAndStoreCollectorAuthorization } from "../src/auth";
 import { buildDefaultConfig, defaultSourceForAgent } from "../src/config";
 import { backfillCodex, dryRunCodexBackfill } from "../src/backfill";
@@ -616,7 +617,7 @@ describe("@traice/collector", () => {
   it("forwards large payloads in bounded batches", async () => {
     const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { events: unknown[] };
-      expect(new Headers(init?.headers).get("x-traice-collector-version")).toBe("0.5.0");
+      expect(new Headers(init?.headers).get("x-traice-collector-version")).toBe(packageMetadata.version);
       return Response.json({ accepted: body.events.length });
     });
 
