@@ -24,6 +24,7 @@ import { setupAgent } from "../src/setup";
 import { codexTomlBlock, patchCodexConfig } from "../src/settings";
 import {
   collectorDestinationSummaries,
+  formatCollectorRouteList,
   destinationNameFromWorkspace,
   routedDestinationNames,
   setCollectorRoute,
@@ -289,6 +290,23 @@ describe("@traice/collector", () => {
     expect(routedDestinationNames(config, "codex")).toEqual(["staging", "production"]);
     expect(routedDestinationNames(config, "claude-code")).toEqual(["production"]);
     expect(collectorDestinationSummaries(config)).toHaveLength(2);
+    expect(formatCollectorRouteList(config)).toBe(
+      [
+        "Collector routes",
+        "",
+        "Codex -> 2 destinations",
+        "  - staging",
+        "    API key workspace | staging.runtraice.com",
+        "  - production",
+        "    API key workspace | www.runtraice.com",
+        "",
+        "Claude Code -> 1 destination",
+        "  - production",
+        "    API key workspace | www.runtraice.com",
+        "",
+        "Each live event is sent to every destination listed for its agent.",
+      ].join("\n"),
+    );
   });
 
   it("migrates a v1 config to destinations and keeps a backup", () => {

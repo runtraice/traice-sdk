@@ -34,6 +34,8 @@ npx @traice/collector@latest route set codex live-demo sandbox
 npx @traice/collector@latest route set claude-code live-demo
 ```
 
+`route list` prints a readable agent-to-workspace map, including the account and server behind every destination.
+
 Add one explicitly named destination:
 
 ```sh

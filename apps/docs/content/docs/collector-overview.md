@@ -59,6 +59,24 @@ npx @traice/collector@latest route set codex live-demo sandbox
 npx @traice/collector@latest route set claude-code live-demo
 ```
 
+`route list` shows the workspace, signed-in account, and server behind every destination:
+
+```text
+Collector routes
+
+Codex -> 2 destinations
+  - live-demo
+    Live Demo | you@example.com | www.runtraice.com
+  - sandbox
+    Sandbox | you@example.com | www.runtraice.com
+
+Claude Code -> 1 destination
+  - live-demo
+    Live Demo | you@example.com | www.runtraice.com
+
+Each live event is sent to every destination listed for its agent.
+```
+
 The collector uses one local listener and one background service for all enabled agents. Credentials, durable queues,
 delivery retries, and server-side deduplication stay isolated per destination. Sending one event to two destinations
 intentionally creates one row in each workspace.
@@ -163,7 +181,7 @@ The environment value is not written into the collector config. Avoid `--api-key
 | `setup`                           | Detect agents, authorize destinations, configure routes and service |
 | `auth login/status/logout`        | Add, inspect, or revoke browser authorization                       |
 | `destination list`                | List authorized workspace destinations                              |
-| `route list/set`                  | Inspect or replace per-agent routes                                 |
+| `route list/set`                  | Visualize or replace per-agent workspace routes                     |
 | `status`                          | Check configuration, credentials, service, listener, and access     |
 | `collect`                         | Run the local listener in the foreground                            |
 | `backfill codex --since <window>` | Inspect or upload bounded Codex history                             |

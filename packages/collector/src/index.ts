@@ -20,16 +20,18 @@ export {
   allRoutedDestinationNames,
   collectorDestination,
   collectorDestinationSummaries,
+  collectorRouteSummaries,
   configuredDestinationNames,
   configForDestination,
   defaultDestinationName,
+  formatCollectorRouteList,
   normalizeDestinationName,
   removeCollectorDestination,
   routedDestinationNames,
   setCollectorRoute,
   upsertCollectorDestination,
 } from "./destinations";
-export type { CollectorDestinationSummary, ResolvedCollectorConfig } from "./destinations";
+export type { CollectorDestinationSummary, CollectorRouteSummary, ResolvedCollectorConfig } from "./destinations";
 export { installCollectorService } from "./service";
 export {
   chooseSetupAgents,

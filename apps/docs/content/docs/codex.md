@@ -40,8 +40,9 @@ npx @traice/collector@latest route set codex live-demo sandbox
 npx @traice/collector@latest route list
 ```
 
-The existing service reloads route changes. Each destination has an isolated credential, durable outbox, retry state,
-and server-side deduplication boundary.
+`route list` shows each destination's workspace, signed-in account, and server. The existing service reloads route
+changes. Each destination has an isolated credential, durable outbox, retry state, and server-side deduplication
+boundary.
 
 ## Windows setup
 

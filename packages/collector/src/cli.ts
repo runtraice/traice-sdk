@@ -8,8 +8,10 @@ import { loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./
 import {
   collectorDestination,
   collectorDestinationSummaries,
+  collectorRouteSummaries,
   configuredDestinationNames,
   defaultDestinationName,
+  formatCollectorRouteList,
   normalizeDestinationName,
   routedDestinationNames,
   setCollectorRoute,
@@ -398,24 +400,13 @@ const routeCommand = program.command("route").description("Route each agent to o
 
 routeCommand
   .command("list")
-  .description("Show source-to-destination routes")
+  .description("Show readable agent-to-workspace routes")
   .option("--config <path>", "collector config path")
   .option("--json", "print machine-readable JSON")
   .action((options: Record<string, unknown>) => {
     const config = loadCollectorConfig(stringOption(options.config));
-    const agents = Array.from(
-      new Set([
-        ...config.enabledAgents,
-        ...(Object.keys(config.routes ?? {}).filter(
-          (agent): agent is AgentName => agent === "codex" || agent === "claude-code",
-        ) as AgentName[]),
-      ]),
-    );
-    const routes = Object.fromEntries(agents.map((agent) => [agent, routedDestinationNames(config, agent)]));
-    if (options.json) console.log(JSON.stringify(routes, null, 2));
-    else if (agents.length === 0) console.log('No routes configured. Run "npx @traice/collector@latest setup".');
-    else
-      for (const [agent, destinations] of Object.entries(routes)) console.log(`${agent}: ${destinations.join(", ")}`);
+    if (options.json) console.log(JSON.stringify(collectorRouteSummaries(config), null, 2));
+    else console.log(formatCollectorRouteList(config));
   });
 
 routeCommand

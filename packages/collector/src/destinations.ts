@@ -11,6 +11,11 @@ export interface CollectorDestinationSummary {
   credentialBackend?: CollectorCredential["backend"];
 }
 
+export interface CollectorRouteSummary {
+  agent: AgentName;
+  destinations: CollectorDestinationSummary[];
+}
+
 export type ResolvedCollectorConfig = CollectorConfig & CollectorDestination;
 
 export function normalizeDestinationName(value: string): string {
@@ -149,6 +154,44 @@ export function collectorDestinationSummaries(config: CollectorConfig): Collecto
   });
 }
 
+export function collectorRouteSummaries(config: CollectorConfig): CollectorRouteSummary[] {
+  const agents = Array.from(
+    new Set([
+      ...config.enabledAgents,
+      ...Object.keys(config.routes ?? {}).filter(
+        (agent): agent is AgentName => agent === "codex" || agent === "claude-code",
+      ),
+    ]),
+  );
+  const destinationByName = new Map(
+    collectorDestinationSummaries(config).map((destination) => [destination.name, destination]),
+  );
+  return agents.map((agent) => ({
+    agent,
+    destinations: routedDestinationNames(config, agent).map((name) => destinationByName.get(name)!),
+  }));
+}
+
+export function formatCollectorRouteList(config: CollectorConfig): string {
+  const routes = collectorRouteSummaries(config);
+  if (routes.length === 0) return 'No routes configured. Run "npx @traice/collector@latest setup".';
+
+  const lines = ["Collector routes", ""];
+  for (const [routeIndex, route] of routes.entries()) {
+    const agent = route.agent === "codex" ? "Codex" : "Claude Code";
+    lines.push(`${agent} -> ${route.destinations.length} destination${route.destinations.length === 1 ? "" : "s"}`);
+    for (const destination of route.destinations) {
+      const workspace = destination.workspaceName ?? destination.workspaceId ?? "API key workspace";
+      const account = destination.userEmail ? ` | ${destination.userEmail}` : "";
+      lines.push(`  - ${destination.name}`);
+      lines.push(`    ${workspace}${account} | ${displayServer(destination.serverUrl)}`);
+    }
+    if (routeIndex < routes.length - 1) lines.push("");
+  }
+  lines.push("", "Each live event is sent to every destination listed for its agent.");
+  return lines.join("\n");
+}
+
 function slugifyDestination(value: string): string {
   const normalized = value
     .trim()
@@ -157,4 +200,12 @@ function slugifyDestination(value: string): string {
     .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "")
     .slice(0, 64);
   return normalized || "workspace";
+}
+
+function displayServer(serverUrl: string): string {
+  try {
+    return new URL(serverUrl).host;
+  } catch {
+    return serverUrl;
+  }
 }
