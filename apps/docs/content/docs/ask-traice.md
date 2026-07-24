@@ -24,7 +24,7 @@ Confirmed Team actions:
 - Snooze a non-system alert for a bounded period.
 - Create an evidence-gated guardrail from an eligible experiment in shadow mode.
 
-Preparing an action does not execute it. trAIce returns a summary, a short-lived token, and an exact confirmation phrase. The token expires after 10 minutes, is bound to the same workspace API key, and can be confirmed only with that exact phrase. Repeating a successful confirmation returns the stored result instead of executing the action again.
+Preparing an action does not execute it. trAIce returns a summary, a short-lived token, and an exact confirmation phrase. The token expires after 10 minutes, is bound to the same MCP authorization or workspace API key, and can be confirmed only with that exact phrase. Repeating a successful confirmation returns the stored result instead of executing the action again.
 
 ## CLI
 
@@ -101,7 +101,55 @@ Install through trAIce Settings rather than a copied Slack authorization URL. Th
 
 ## Cursor
 
-Set `TRAICE_API_KEY` in the environment that launches Cursor. Then create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for all projects:
+Create `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for all projects:
+
+```json
+{
+  "mcpServers": {
+    "traice": {
+      "url": "https://www.runtraice.com/api/mcp"
+    }
+  }
+}
+```
+
+Start or refresh the server in Cursor. trAIce opens in your browser, where you sign in, select the workspace by name,
+and authorize the client. Cursor stores and refreshes its OAuth session. No trAIce API key needs to be copied into the
+project.
+
+Confirm the seven read tools appear: `spend_by`, `margin_by_customer`, `margin_by_feature`, `top_waste`,
+`savings_recommendations`, `budget_status`, and `active_alerts`. Team workspaces also expose `prepare_write_action` and
+`confirm_write_action`. An MCP client must show the prepared summary and ask the user to repeat the exact confirmation
+phrase before calling `confirm_write_action`.
+
+Cursor may hot reload MCP changes. If the tools do not refresh, restart the MCP server or start a new Cursor agent
+session. OAuth token refresh itself does not require restarting Cursor. See the
+[Cursor MCP documentation](https://docs.cursor.com/context/model-context-protocol).
+
+## VS Code
+
+Add this to `.vscode/mcp.json`, or use **MCP: Add Server** and enter the same URL:
+
+```json
+{
+  "servers": {
+    "traice": {
+      "type": "http",
+      "url": "https://www.runtraice.com/api/mcp"
+    }
+  }
+}
+```
+
+Start the server and approve its trust prompt. VS Code follows MCP OAuth discovery, opens trAIce for workspace consent,
+and manages the resulting tokens. After changing `mcp.json`, restart the server from **MCP: List Servers** if the tools
+do not refresh automatically. See the
+[VS Code MCP server guide](https://code.visualstudio.com/docs/agent-customization/mcp-servers).
+
+## API-key fallback for unattended MCP clients
+
+Use a workspace API key only when the MCP client cannot complete browser OAuth, such as CI or a headless service.
+Store it in a secret manager and send it as a bearer token:
 
 ```json
 {
@@ -116,37 +164,7 @@ Set `TRAICE_API_KEY` in the environment that launches Cursor. Then create `.curs
 }
 ```
 
-Restart or reload Cursor, open MCP settings, and confirm the seven read tools appear: `spend_by`, `margin_by_customer`, `margin_by_feature`, `top_waste`, `savings_recommendations`, `budget_status`, and `active_alerts`. Team workspaces also expose `prepare_write_action` and `confirm_write_action`. An MCP client must show the prepared summary and ask the user to repeat the exact confirmation phrase before calling `confirm_write_action`.
-
-If Cursor was launched from a desktop icon on Linux or macOS, it might not inherit shell environment variables. Launch it once from a terminal where `TRAICE_API_KEY` is available, or configure the variable in the desktop session environment. See the [Cursor MCP documentation](https://docs.cursor.com/context/model-context-protocol).
-
-## VS Code
-
-VS Code supports password inputs so the key does not need to be committed. Add this to `.vscode/mcp.json`:
-
-```json
-{
-  "inputs": [
-    {
-      "type": "promptString",
-      "id": "traice-api-key",
-      "description": "trAIce workspace API key",
-      "password": true
-    }
-  ],
-  "servers": {
-    "traice": {
-      "type": "http",
-      "url": "https://www.runtraice.com/api/mcp",
-      "headers": {
-        "Authorization": "Bearer ${input:traice-api-key}"
-      }
-    }
-  }
-}
-```
-
-See the [VS Code MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) for profile-level configuration.
+Do not commit the key. Interactive desktop clients should use the URL-only OAuth configuration above.
 
 ## Direct API
 
@@ -189,4 +207,4 @@ curl -X POST "https://www.runtraice.com/api/v1/ask/actions/confirm" \
   }'
 ```
 
-Confirmation tokens expire after 10 minutes and must be used with the same API key that prepared the action. A confirmed request is replay-safe: retrying it returns the original result. Experiment guardrails are always created in shadow mode and still require the normal evidence and eligibility checks.
+Confirmation tokens expire after 10 minutes and must be used with the same OAuth grant or API key that prepared the action. A confirmed request is replay-safe: retrying it returns the original result. Experiment guardrails are always created in shadow mode and still require the normal evidence and eligibility checks.

@@ -176,6 +176,9 @@ traice ask "top spend by feature in the last 7 days"
 
 Workspace owners and admins can connect Slack from Settings -> Ask trAIce -> Add to Slack. See [Ask trAIce](/docs/ask-traice) for Slack, Cursor, VS Code, MCP, CLI, and direct API setup.
 
+For an OAuth-capable MCP client, add `https://www.runtraice.com/api/mcp` without an authorization header. The client
+opens trAIce for sign-in and explicit workspace consent. API keys are the fallback for unattended MCP clients.
+
 ## Next Steps
 
 - [Product SDKs](sdk-quickstart)
