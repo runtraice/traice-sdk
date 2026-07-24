@@ -74,6 +74,10 @@ traice ask "which customers are unprofitable this month?"
 
 Workspace owners and admins can also connect Slack from trAIce Settings and use `/traice` or mention the app. See the [Ask trAIce guide](apps/docs/content/docs/ask-traice.md) for Slack, Cursor, VS Code, MCP, CLI, and direct API setup.
 
+OAuth-capable remote MCP clients only need `https://www.runtraice.com/api/mcp`. The client opens trAIce for sign-in and
+explicit workspace consent, then stores and refreshes its OAuth session. API keys remain available for unattended MCP
+clients.
+
 Team workspaces can prepare budgets, alert snoozes, and evidence-gated shadow guardrails. Every write uses a separate short-lived token and exact confirmation phrase; preparation never makes a change:
 
 ```sh
