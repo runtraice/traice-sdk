@@ -1,5 +1,12 @@
 # @traice/collector
 
+## 0.6.0
+
+### Minor Changes
+
+- 6226a5e: Run Codex and Claude Code through one source-aware service, infer known providers, add per-agent destination routes,
+  use human-readable command output by default, and add stable collector update checks and installation.
+
 ## 0.5.0
 
 ### Minor Changes
