@@ -2,8 +2,6 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import type { AgentName } from "./types";
-
 const SERVICE_LABEL = "com.traice.collector";
 
 export interface CollectorServiceResult {
@@ -25,7 +23,12 @@ interface ServiceDependencies {
 }
 
 export function installCollectorService(
-  options: { agent: AgentName; configPath: string; packageVersion: string },
+  options: {
+    /** @deprecated The collector service now discovers each source per OTLP request. */
+    agent?: import("./types").AgentName;
+    configPath: string;
+    packageVersion: string;
+  },
   dependencies: ServiceDependencies = {},
 ): CollectorServiceResult {
   const platform = dependencies.platform ?? process.platform;
@@ -44,7 +47,6 @@ export function installCollectorService(
         nodePath: runtime.nodePath,
         cliPath: runtime.cliPath,
         configPath: options.configPath,
-        agent: options.agent,
         stdoutPath: resolve(logsDir, "collector.log"),
         stderrPath: resolve(logsDir, "collector.err"),
       }),
@@ -59,7 +61,7 @@ export function installCollectorService(
   if (platform === "linux") {
     const definitionPath = resolve(home, ".config/systemd/user/traice-collector.service");
     mkdirSync(dirname(definitionPath), { recursive: true });
-    writeFileSync(definitionPath, systemdUnit({ ...runtime, configPath: options.configPath, agent: options.agent }));
+    writeFileSync(definitionPath, systemdUnit({ ...runtime, configPath: options.configPath }));
     run("systemctl", ["--user", "daemon-reload"]);
     run("systemctl", ["--user", "enable", "--now", "traice-collector"]);
     return { platform, status: "installed", definitionPath, ...runtime };
@@ -82,7 +84,6 @@ export function installCollectorService(
       windowsRestartScript({
         ...runtime,
         configPath: options.configPath,
-        agent: options.agent,
         stdoutPath: resolve(logsDir, "collector.log"),
         stderrPath: resolve(logsDir, "collector.err"),
       }),
@@ -98,7 +99,10 @@ export function installCollectorService(
 }
 
 function prepareRuntime(home: string, packageVersion: string): { nodePath: string; cliPath: string } {
-  const runtimeRoot = resolve(home, ".traice/collector/runtime");
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageVersion)) {
+    throw new Error(`Invalid collector package version "${packageVersion}".`);
+  }
+  const runtimeRoot = resolve(home, ".traice/collector/runtime/versions", packageVersion);
   const npmCli = process.env.npm_execpath;
   if (!npmCli || !existsSync(npmCli)) {
     throw new Error("Could not locate npm. Run setup through npx or npm exec.");
@@ -131,11 +135,10 @@ function launchAgentPlist(options: {
   nodePath: string;
   cliPath: string;
   configPath: string;
-  agent: AgentName;
   stdoutPath: string;
   stderrPath: string;
 }): string {
-  const args = [options.nodePath, options.cliPath, "collect", "--agent", options.agent, "--config", options.configPath];
+  const args = [options.nodePath, options.cliPath, "collect", "--config", options.configPath];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -150,13 +153,13 @@ function launchAgentPlist(options: {
 `;
 }
 
-function systemdUnit(options: { nodePath: string; cliPath: string; configPath: string; agent: AgentName }): string {
+function systemdUnit(options: { nodePath: string; cliPath: string; configPath: string }): string {
   return `[Unit]
 Description=trAIce collector
 After=network-online.target
 
 [Service]
-ExecStart=${systemdQuote(options.nodePath)} ${systemdQuote(options.cliPath)} collect --agent ${options.agent} --config ${systemdQuote(options.configPath)}
+ExecStart=${systemdQuote(options.nodePath)} ${systemdQuote(options.cliPath)} collect --config ${systemdQuote(options.configPath)}
 Restart=on-failure
 RestartSec=5
 
@@ -169,19 +172,10 @@ function windowsRestartScript(options: {
   nodePath: string;
   cliPath: string;
   configPath: string;
-  agent: AgentName;
   stdoutPath: string;
   stderrPath: string;
 }): string {
-  const command = [
-    options.nodePath,
-    options.cliPath,
-    "collect",
-    "--agent",
-    options.agent,
-    "--config",
-    options.configPath,
-  ]
+  const command = [options.nodePath, options.cliPath, "collect", "--config", options.configPath]
     .map(windowsBatchQuote)
     .join(" ");
   return `@echo off\r\n:restart\r\n${command} 1>>${windowsBatchQuote(options.stdoutPath)} 2>>${windowsBatchQuote(options.stderrPath)}\r\ntimeout /t 5 /nobreak >nul\r\ngoto restart\r\n`;

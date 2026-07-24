@@ -24,7 +24,10 @@ export {
   configuredProfileNames,
   configForProfile,
   normalizeProfileName,
+  allRoutedProfileNames,
+  routedProfileNames,
   selectedProfileNames,
+  setCollectorRoute,
   setActiveCollectorProfile,
   setCollectorProfileMirror,
 } from "./profiles";
@@ -44,5 +47,7 @@ export type {
 } from "./backfill";
 export { installAgent } from "./install";
 export { runCollector } from "./run";
+export { checkCollectorUpdate, updateCollector } from "./updates";
+export type { CollectorUpdateStatus } from "./updates";
 export { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 export { normalizeCodexOtlpLogs } from "./adapters/codex";

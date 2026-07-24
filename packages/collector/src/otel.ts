@@ -148,7 +148,11 @@ export function otelRecordToUsageEvent(
   const runId = pickString(attrs, ["session.id", "session_id", "conversation.id", "thread.id", "run.id", "runId"]);
   const stepId = pickString(attrs, ["message.id", "request.id", "span.id", "step.id", "stepId"]);
   const model = pickString(attrs, ["model", "gen_ai.request.model", "gen_ai.response.model", "ai.model"]);
-  const provider = pickString(attrs, ["provider", "gen_ai.system", "ai.provider"]);
+  const provider = inferProvider(
+    pickString(attrs, ["provider", "gen_ai.provider.name", "gen_ai.system", "ai.provider"]),
+    model,
+    defaults.agent,
+  );
   const costUsd = pickNumber(attrs, ["cost_usd", "costUsd", "total_cost_usd", "gen_ai.usage.cost_usd"]);
   const latencyMs = pickNumber(attrs, [
     "latency_ms",
@@ -218,7 +222,11 @@ export function otelMetricPointToUsageEvent(
   const occurredAt = point.observedAt ?? point.occurredAt ?? defaults.receivedAt ?? new Date().toISOString();
   const runId = pickString(attrs, ["session.id", "session_id", "conversation.id", "thread.id", "run.id", "runId"]);
   const model = pickString(attrs, ["model", "gen_ai.request.model", "gen_ai.response.model", "ai.model"]);
-  const provider = pickString(attrs, ["provider", "gen_ai.system", "ai.provider"]);
+  const provider = inferProvider(
+    pickString(attrs, ["provider", "gen_ai.provider.name", "gen_ai.system", "ai.provider"]),
+    model,
+    defaults.agent,
+  );
   const sourceEventId = stableSourceEventId([
     defaults.agent,
     "metric",
@@ -257,6 +265,20 @@ export function pickNumber(attrs: Record<string, unknown>, keys: string[]): numb
     const value = numberFrom(attrs[key]);
     if (value !== undefined) return value;
   }
+  return undefined;
+}
+
+export function inferProvider(
+  reportedProvider: string | undefined,
+  model: string | undefined,
+  agent?: string,
+): string | undefined {
+  if (reportedProvider) return reportedProvider;
+  const normalizedModel = model?.trim().toLowerCase() ?? "";
+  if (normalizedModel.startsWith("claude")) return "anthropic";
+  if (/^(gpt(?:-|$)|o\d(?:-|$)|chatgpt(?:-|$))/.test(normalizedModel)) return "openai";
+  if (agent === "claude-code") return "anthropic";
+  if (agent === "codex") return "openai";
   return undefined;
 }
 

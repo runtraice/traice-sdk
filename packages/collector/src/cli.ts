@@ -11,6 +11,7 @@ import {
   collectorProfileSummaries,
   configForProfile,
   normalizeProfileName,
+  setCollectorRoute,
   setActiveCollectorProfile,
   setCollectorProfileMirror,
 } from "./profiles";
@@ -19,6 +20,7 @@ import { setupAgent } from "./setup";
 import { verifyCollectorConnection } from "./setup";
 import { formatCollectorStatus, getCollectorStatus } from "./status";
 import type { AgentName, CollectorOAuthAuthorization } from "./types";
+import { checkCollectorUpdate, updateCollector } from "./updates";
 
 const program = new Command();
 
@@ -47,7 +49,7 @@ authCommand
   .option("--server-url <url>", "trAIce app URL")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect in the browser")
-  .option("--profile <name>", "save the authorization as a named workspace profile")
+  .option("--profile <name>", "local destination name (stored as a profile for compatibility)")
   .option("--no-browser", "print the authorization link without opening a browser")
   .action(async (options: Record<string, unknown>) => {
     const result = await loginAndStoreCollectorAuthorization({
@@ -58,7 +60,7 @@ authCommand
       profile: stringOption(options.profile),
       noBrowser: Boolean(options.browser === false),
     });
-    console.log(`Authorized ${result.authorization.workspaceName} as profile "${result.profile}".`);
+    console.log(`Connected ${result.authorization.workspaceName} as destination "${result.profile}".`);
     if (result.authorization.userEmail) console.log(`Signed in as ${result.authorization.userEmail}.`);
     console.log(`Credential stored in ${result.credential.backend}.`);
     if (result.credentialWarning) console.error(`[traice-collector] ${result.credentialWarning}`);
@@ -68,7 +70,7 @@ authCommand
   .command("status")
   .description("Show the saved browser authorization and verify it with trAIce")
   .option("--config <path>", "collector config path")
-  .option("--profile <name>", "workspace profile to inspect")
+  .option("--profile <name>", "destination to inspect")
   .option("--json", "print machine-readable JSON")
   .action(async (options: Record<string, unknown>) => {
     const configPath = stringOption(options.config);
@@ -103,7 +105,7 @@ authCommand
   .command("logout")
   .description("Revoke the browser-authorized collector session and remove it locally")
   .option("--config <path>", "collector config path")
-  .option("--profile <name>", "workspace profile to revoke")
+  .option("--profile <name>", "destination to revoke")
   .action(async (options: Record<string, unknown>) => {
     const result = await logoutCollector(stringOption(options.config), fetch, stringOption(options.profile));
     if (!result.removed) {
@@ -122,7 +124,7 @@ program
   .command("status")
   .description("Check configuration, credentials, background service, listener, and server access")
   .option("--config <path>", "collector config path")
-  .option("--profile <name>", "workspace profile to check")
+  .option("--profile <name>", "destination to check")
   .option("--timeout <milliseconds>", "network check timeout from 250 to 30000 milliseconds", "3000")
   .option("--json", "print machine-readable JSON")
   .action(async (options: Record<string, unknown>) => {
@@ -136,6 +138,34 @@ program
   });
 
 program
+  .command("update")
+  .description("Check for or install the latest stable collector service")
+  .option("--config <path>", "collector config path")
+  .option("--check", "check without installing")
+  .option("--version <version>", "install an exact collector version")
+  .option("--json", "print machine-readable JSON")
+  .action(async (options: Record<string, unknown>) => {
+    const result = options.check
+      ? await checkCollectorUpdate()
+      : await updateCollector({
+          configPath: stringOption(options.config),
+          targetVersion: stringOption(options.version),
+        });
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    if ("service" in result && result.service) {
+      console.log(`Collector service installed at ${result.latestVersion}.`);
+      console.log("Background service restarted.");
+    } else if (!result.updateAvailable) {
+      console.log(`Collector ${result.currentVersion} is up to date.`);
+    } else {
+      console.log(`Collector ${result.latestVersion} is available. Run "npx @traice/collector@latest update".`);
+    }
+  });
+
+program
   .command("setup")
   .description("Securely configure an agent, validate access, run a bounded backfill, and start a background service")
   .argument("<agent>", "agent to set up: claude-code or codex")
@@ -145,7 +175,7 @@ program
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect during browser authorization")
-  .option("--profile <name>", "authorize and make a named workspace profile active")
+  .option("--profile <name>", "authorize a named workspace destination")
   .option("--no-browser", "print the authorization link without opening a browser")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
@@ -218,7 +248,7 @@ program
   .option("--api-key <key>", "trAIce API key")
   .option("--api-key-stdin", "read trAIce API key from stdin")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
-  .option("--profile <name>", "configure a named workspace profile")
+  .option("--profile <name>", "configure a named workspace destination")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
   .option("--employee-external-id <id>", "employee external ID")
@@ -232,6 +262,7 @@ program
   .option("--patch-settings", "patch local agent settings")
   .option("--claude-home <path>", "Claude Code home", "~/.claude")
   .option("--codex-home <path>", "Codex home", "~/.codex")
+  .option("--json", "print machine-readable JSON")
   .action(async (agent: string, options: Record<string, unknown>) => {
     const result = await installAgent({
       agent: parseAgent(agent),
@@ -255,7 +286,7 @@ program
       claudeHome: stringOption(options.claudeHome),
       codexHome: stringOption(options.codexHome),
     });
-    console.log(JSON.stringify(result, null, 2));
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatInstallResult(result));
   });
 
 program
@@ -265,8 +296,8 @@ program
   .option("--agent <agent>", "only normalize this agent")
   .option("--listen-host <host>", "override local OTLP host")
   .option("--listen-port <port>", "override local OTLP port")
-  .option("--profile <name>", "override the active workspace profile for this run")
-  .option("--mirror <profile>", "also send to a named profile; repeat for multiple mirrors", collectValues, [])
+  .option("--profile <name>", "override the primary destination for this run")
+  .option("--mirror <profile>", "also send to a destination; repeat for multiple destinations", collectValues, [])
   .action(async (options: Record<string, unknown>) => {
     await runCollector({
       configPath: stringOption(options.config),
@@ -285,9 +316,10 @@ program
   .requiredOption("--since <date-or-duration>", "earliest event, for example 14d or 2026-07-01")
   .option("--until <date-or-duration>", "exclusive upper boundary; defaults to now")
   .option("--config <path>", "collector config path")
-  .option("--profile <name>", "workspace profile that receives the backfill")
+  .option("--profile <name>", "destination that receives the backfill")
   .option("--codex-home <path>", "Codex home", "~/.codex")
   .option("--dry-run", "inspect local history without sending data")
+  .option("--json", "print machine-readable JSON")
   .action(async (agent: string, options: Record<string, unknown>) => {
     if (agent !== "codex") throw new Error(`Unsupported backfill agent "${agent}". Expected "codex".`);
     const since = stringOption(options.since);
@@ -305,10 +337,10 @@ program
             console.error(`[traice-collector] backfill ${processed}/${total}; accepted ${accepted}`);
           },
         });
-    console.log(JSON.stringify(result, null, 2));
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatBackfillResult(result));
   });
 
-const profileCommand = program.command("profile").description("Manage workspace destinations for one collector");
+const profileCommand = program.command("profile").description("Compatibility commands for workspace destinations");
 
 profileCommand
   .command("list")
@@ -349,6 +381,69 @@ mirrorCommand
   .action((profile: string, options: Record<string, unknown>) => {
     updateProfiles(stringOption(options.config), (config) => setCollectorProfileMirror(config, profile, true));
     console.log(`Collector profile "${normalizeProfileName(profile)}" is now a mirror.`);
+  });
+
+const destinationCommand = program
+  .command("destination")
+  .description("Manage the workspaces that receive collector usage");
+
+destinationCommand
+  .command("list")
+  .description("List destinations grouped by trAIce connection")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const summaries = collectorProfileSummaries(loadCollectorConfig(stringOption(options.config)));
+    if (options.json) {
+      console.log(JSON.stringify(summaries, null, 2));
+      return;
+    }
+    const groups = new Map<string, typeof summaries>();
+    for (const destination of summaries) {
+      const key = `${destination.serverUrl}\0${destination.userEmail ?? ""}`;
+      groups.set(key, [...(groups.get(key) ?? []), destination]);
+    }
+    for (const destinations of groups.values()) {
+      const first = destinations[0]!;
+      console.log(`\n${first.serverUrl}${first.userEmail ? ` (${first.userEmail})` : ""}`);
+      for (const destination of destinations) {
+        console.log(
+          `  ${destination.name}: ${destination.workspaceName ?? destination.workspaceId ?? "API key workspace"}`,
+        );
+      }
+    }
+  });
+
+const routeCommand = program.command("route").description("Route each coding agent to one or more destinations");
+
+routeCommand
+  .command("list")
+  .description("Show saved source-to-destination routes")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const config = loadCollectorConfig(stringOption(options.config));
+    const routes = Object.fromEntries(
+      config.enabledAgents.map((agent) => [
+        agent,
+        config.routes?.[agent] ?? [config.activeProfile ?? "default", ...(config.mirrorProfiles ?? [])],
+      ]),
+    );
+    if (options.json) console.log(JSON.stringify(routes, null, 2));
+    else
+      for (const [agent, destinations] of Object.entries(routes)) console.log(`${agent}: ${destinations.join(", ")}`);
+  });
+
+routeCommand
+  .command("set")
+  .description("Replace the destinations for one coding agent")
+  .argument("<agent>", "agent to route: claude-code or codex")
+  .argument("<destinations...>", "one or more destination names")
+  .option("--config <path>", "collector config path")
+  .action((agent: string, destinations: string[], options: Record<string, unknown>) => {
+    const parsedAgent = parseAgent(agent);
+    updateProfiles(stringOption(options.config), (config) => setCollectorRoute(config, parsedAgent, destinations));
+    console.log(`${parsedAgent} will send live usage to ${destinations.map(normalizeProfileName).join(", ")}.`);
   });
 
 mirrorCommand
@@ -435,7 +530,7 @@ function formatSetupResult(result: Awaited<ReturnType<typeof setupAgent>>): stri
     "trAIce collector is ready.",
     "",
     `Workspace: ${profile.authorization?.workspaceName ?? "API key workspace"}`,
-    `Profile: ${result.install.profile}`,
+    `Destination: ${result.install.profile}`,
     `Server: ${result.connection.serverUrl}`,
     `${agentName} telemetry: configured`,
     result.service
@@ -447,11 +542,45 @@ function formatSetupResult(result: Awaited<ReturnType<typeof setupAgent>>): stri
     "",
     "Useful commands:",
     "  npx @traice/collector@latest status",
-    "  npx @traice/collector@latest profile list",
+    "  npx @traice/collector@latest destination list",
+    "  npx @traice/collector@latest route list",
+    "  npx @traice/collector@latest update --check",
     "  npx @traice/collector@latest backfill codex --since 7d --dry-run",
   ];
   if (!result.service) lines.push("  npx @traice/collector@latest collect");
   return lines.join("\n");
+}
+
+function formatInstallResult(result: Awaited<ReturnType<typeof installAgent>>): string {
+  const agent = result.agent === "codex" ? "Codex" : "Claude Code";
+  return [
+    `${agent} telemetry is configured.`,
+    `Destination: ${result.profile}`,
+    `Credential: ${result.credential.backend}`,
+    `Settings: ${result.settings.status}`,
+    "Run setup to install or refresh the background collector service.",
+  ].join("\n");
+}
+
+function formatBackfillResult(
+  result: Awaited<ReturnType<typeof backfillCodex>> | ReturnType<typeof dryRunCodexBackfill>,
+): string {
+  if (result.dryRun) {
+    return [
+      "Codex backfill dry run complete.",
+      `Window: ${result.since} to ${result.until}`,
+      `Usage events found: ${result.usageEvents}`,
+      `Total tokens: ${result.tokens.total}`,
+      "No data was sent.",
+    ].join("\n");
+  }
+  return [
+    "Codex backfill complete.",
+    `Window: ${result.since} to ${result.until}`,
+    `Candidates: ${result.uploadCandidates}`,
+    `Duplicates skipped: ${result.crossModeDuplicatesSkipped}`,
+    `Accepted: ${result.accepted}`,
+  ].join("\n");
 }
 
 function servicePlatformName(platform: NodeJS.Platform): string {

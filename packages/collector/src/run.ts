@@ -1,13 +1,16 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { join } from "node:path";
 import type { InternalUsageEvent } from "@traice/protocol";
+import packageMetadata from "../package.json";
 import { createCollectorAccessTokenProvider } from "./auth";
 import { configDir, defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
-import { configForProfile, DEFAULT_PROFILE, selectedProfileNames } from "./profiles";
+import { allRoutedProfileNames, configForProfile, DEFAULT_PROFILE, routedProfileNames } from "./profiles";
 import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
+import { extractLogRecords, extractMetricPoints, pickString } from "./otel";
 import { CollectorOutbox } from "./outbox";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
+import { checkCollectorUpdate } from "./updates";
 
 const MAX_BATCH_SIZE = 10;
 const MAX_FORWARD_ATTEMPTS = 4;
@@ -17,6 +20,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_LOCAL_BODY_BYTES = 1024 * 1024;
 const OUTBOX_MAX_EVENTS = 10_000;
 const OUTBOX_RETRY_INTERVAL_MS = 5_000;
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 export type ForwardDependencies = {
   fetchImpl?: typeof fetch;
@@ -85,13 +89,15 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
     }
   };
 
-  const resolveDestinations = async (current: CollectorConfig) => {
-    const names = selectedProfileNames(current, {
-      profile: options.profile,
-      mirrorProfiles: options.mirrorProfiles,
-    });
+  const resolveDestinations = async (current: CollectorConfig, names?: string[]) => {
+    const selectedNames =
+      names ??
+      allRoutedProfileNames(current, {
+        profile: options.profile,
+        mirrorProfiles: options.mirrorProfiles,
+      });
     return Promise.all(
-      names.map(async (name) => ({
+      selectedNames.map(async (name) => ({
         name,
         config: configForProfile(current, name),
         runtime: await destinationRuntime(name),
@@ -151,7 +157,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   const server = createServer(async (req, res) => {
     if (req.method === "GET") {
       const current = loadCollectorConfig(configPath);
-      const profileNames = selectedProfileNames(current, {
+      const profileNames = allRoutedProfileNames(current, {
         profile: options.profile,
         mirrorProfiles: options.mirrorProfiles,
       });
@@ -186,10 +192,21 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
 
     try {
       const current = loadCollectorConfig(configPath);
-      const destinations = await resolveDestinations(current);
       const events = normalizePayloadForRequest(req.url ?? "", payload, current, options.agent, receivedAt);
+      const routedEvents = routeEvents(current, events, {
+        profile: options.profile,
+        mirrorProfiles: options.mirrorProfiles,
+      });
+      const destinationNames =
+        routedEvents.size > 0
+          ? [...routedEvents.keys()]
+          : allRoutedProfileNames(current, {
+              profile: options.profile,
+              mirrorProfiles: options.mirrorProfiles,
+            });
+      const destinations = await resolveDestinations(current, destinationNames);
       const settled = await Promise.allSettled(
-        destinations.map((destination) => destination.runtime.outbox.enqueue(events)),
+        destinations.map((destination) => destination.runtime.outbox.enqueue(routedEvents.get(destination.name) ?? [])),
       );
       const deliveries = settled.map((result, index) => ({
         name: destinations[index]!.name,
@@ -232,17 +249,48 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
       .map((destination) => `${destination.name} (${destination.config.serverUrl})`)
       .join(", ")}`,
   );
+  const reportUpdate = () =>
+    checkCollectorUpdate()
+      .then((update) => {
+        if (update.updateAvailable) {
+          console.error(
+            `[traice-collector] update available: ${update.currentVersion} -> ${update.latestVersion}. Run "npx @traice/collector@latest update".`,
+          );
+        }
+      })
+      .catch(() => {});
+  reportUpdate();
+  const updateTimer = setInterval(reportUpdate, UPDATE_CHECK_INTERVAL_MS);
+  if (updateTimer.unref) updateTimer.unref();
   for (const destination of initialDestinations) drainDestination(destination.runtime).catch(() => {});
 
   const shutdown = () => {
     if (stopped) return;
     stopped = true;
     clearInterval(retryTimer);
+    clearInterval(updateTimer);
     server.close();
     for (const runtime of runtimes.values()) runtime.drainPromise?.catch(() => {});
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+}
+
+function routeEvents(
+  config: CollectorConfig,
+  events: InternalUsageEvent[],
+  options: { profile?: string; mirrorProfiles?: string[] },
+): Map<string, InternalUsageEvent[]> {
+  const routed = new Map<string, InternalUsageEvent[]>();
+  for (const event of events) {
+    const agent: AgentName | undefined =
+      event.tool === "codex" ? "codex" : event.tool === "claude-code" ? "claude-code" : undefined;
+    const destinations = agent ? routedProfileNames(config, agent, options) : allRoutedProfileNames(config, options);
+    for (const destination of destinations) {
+      routed.set(destination, [...(routed.get(destination) ?? []), event]);
+    }
+  }
+  return routed;
 }
 
 export async function forwardEventsToDestinations(
@@ -358,6 +406,7 @@ async function postBatch(
         headers: {
           authorization: `Bearer ${accessToken}`,
           "content-type": "application/json",
+          "x-traice-collector-version": packageMetadata.version,
         },
         body: JSON.stringify({ events: batch }),
         signal: controller.signal,
@@ -427,12 +476,29 @@ function toIngestEvent(event: InternalUsageEvent): Record<string, unknown> {
   };
 }
 
-function inferAgents(payload: unknown, enabledAgents: AgentName[]): AgentName[] {
+export function inferAgents(payload: unknown, enabledAgents: AgentName[]): AgentName[] {
   if (enabledAgents.length <= 1) return enabledAgents;
 
-  const text = JSON.stringify(payload).toLowerCase();
-  if (text.includes("claude")) return enabledAgents.includes("claude-code") ? ["claude-code"] : [];
-  if (text.includes("codex")) return enabledAgents.includes("codex") ? ["codex"] : [];
+  const signals = [...extractLogRecords(payload), ...extractMetricPoints(payload)].flatMap((record) => {
+    const attributes = { ...record.resourceAttributes, ...record.attributes };
+    const recordName = "metricName" in record ? record.metricName : record.name;
+    return [
+      pickString(attributes, ["service.name", "telemetry.sdk.name", "instrumentation.scope.name"]),
+      recordName,
+      pickString(attributes, ["agent.name", "tool.name", "event.name"]),
+      pickString(attributes, ["model", "gen_ai.request.model", "gen_ai.response.model", "ai.model"]),
+    ].filter((value): value is string => Boolean(value));
+  });
+  const normalized = signals.map((value) => value.toLowerCase());
+  const codex = normalized.some(
+    (value) => value.includes("codex") || /^gpt(?:-|$)/.test(value) || /^o\d(?:-|$)/.test(value),
+  );
+  const claude = normalized.some((value) => value.includes("claude"));
+
+  if (codex !== claude) {
+    const agent = codex ? "codex" : "claude-code";
+    return enabledAgents.includes(agent) ? [agent] : [];
+  }
 
   return [];
 }

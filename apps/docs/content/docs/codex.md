@@ -34,18 +34,17 @@ Codex project-local telemetry settings may not control routing. Prefer user-leve
 ## Multiple workspaces
 
 Codex still exports to one local collector endpoint. To send usage to a shared demo workspace and a testing workspace,
-authorize both as named profiles and configure the second as an explicit mirror:
+authorize both destinations and set the Codex route:
 
 ```sh
 npx @traice/collector@latest auth login --profile live-demo --workspace live-demo
 npx @traice/collector@latest auth login --profile test-zoro --workspace test-zoro
-npx @traice/collector@latest profile use live-demo
-npx @traice/collector@latest profile mirror add test-zoro
+npx @traice/collector@latest route set codex live-demo test-zoro
+npx @traice/collector@latest destination list
 ```
 
-The existing background service notices the updated selection without another setup run. Use `profile list` to inspect
-destinations and `profile mirror remove test-zoro` to stop the copy. Each workspace has its own secure credential and
-deduplication boundary.
+The existing background service notices the updated route without another setup run. Each workspace has its own secure
+credential, durable outbox, and deduplication boundary.
 
 ## Windows setup
 
