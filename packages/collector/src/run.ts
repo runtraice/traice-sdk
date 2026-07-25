@@ -139,16 +139,12 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   };
 
   const initialDestinations = await resolveDestinations(config);
-  await initialDestinations[0]!.runtime.getAccessToken();
-  for (const destination of initialDestinations.slice(1)) {
-    destination.runtime.getAccessToken().catch((error) => {
-      console.error(
-        `[traice-collector] destination "${destination.name}" authorization delayed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    });
-  }
+  warmDestinationAuthorizations(
+    initialDestinations.map((destination) => ({
+      name: destination.name,
+      getAccessToken: destination.runtime.getAccessToken,
+    })),
+  );
   const retryTimer = setInterval(() => {
     for (const runtime of runtimes.values()) drainDestination(runtime).catch(() => {});
   }, OUTBOX_RETRY_INTERVAL_MS);
@@ -265,6 +261,21 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+}
+
+export function warmDestinationAuthorizations(
+  destinations: Array<{ name: string; getAccessToken: (forceRefresh?: boolean) => Promise<string> }>,
+  report: (message: string) => void = console.error,
+): void {
+  for (const destination of destinations) {
+    void destination.getAccessToken().catch((error) => {
+      report(
+        `[traice-collector] destination "${destination.name}" authorization delayed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
 }
 
 function routeEvents(
