@@ -5,7 +5,7 @@ import type { InternalUsageEvent } from "@traice/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packageMetadata from "../package.json";
 import { loginAndStoreCollectorAuthorization } from "../src/auth";
-import { buildDefaultConfig, defaultSourceForAgent, loadCollectorConfig } from "../src/config";
+import { buildDefaultConfig, defaultSourceForAgent, loadCollectorConfig, writeCollectorConfig } from "../src/config";
 import { backfillCodex, dryRunCodexBackfill } from "../src/backfill";
 import { readCollectorCredential, storeCollectorCredential } from "../src/credentials";
 import { installAgent } from "../src/install";
@@ -19,7 +19,11 @@ import {
   inferAgents,
   normalizePayloadForRequest,
 } from "../src/run";
-import { installCollectorService } from "../src/service";
+import {
+  installCollectorService,
+  installedCollectorServiceVersion,
+  refreshCollectorServiceIfOutdated,
+} from "../src/service";
 import { setupAgent } from "../src/setup";
 import { codexTomlBlock, patchCodexConfig } from "../src/settings";
 import {
@@ -309,7 +313,7 @@ describe("@traice/collector", () => {
     );
   });
 
-  it("migrates a v1 config to destinations and keeps a backup", () => {
+  it("reads a v1 config without disrupting an older service, then persists it on an explicit write", () => {
     const directory = mkdtempSync(join(tmpdir(), "traice-collector-v1-config-"));
     temporaryDirectories.push(directory);
     const configPath = join(directory, "config.json");
@@ -352,6 +356,11 @@ describe("@traice/collector", () => {
     expect(config.version).toBe(2);
     expect(Object.keys(config.destinations)).toEqual(["live-demo", "sandbox"]);
     expect(config.routes?.codex).toEqual(["live-demo", "sandbox"]);
+    expect(readFileSync(configPath, "utf8")).toContain('"version":1');
+    expect(readdirSync(directory)).not.toContain("backups");
+
+    writeCollectorConfig(config, configPath);
+
     expect(readFileSync(configPath, "utf8")).toContain('"version": 2');
     expect(readFileSync(join(directory, "backups", readdirSync(join(directory, "backups"))[0]!), "utf8")).toContain(
       '"version": 1',
@@ -897,6 +906,43 @@ describe("@traice/collector", () => {
     ]);
   });
 
+  it("detects and refreshes an outdated pinned collector service", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-service-version-"));
+    temporaryDirectories.push(directory);
+    const definitionDirectory = join(directory, "Library/LaunchAgents");
+    const definitionPath = join(definitionDirectory, "com.traice.collector.plist");
+    mkdirSync(definitionDirectory, { recursive: true });
+    writeFileSync(
+      definitionPath,
+      `<string>${join(directory, ".traice/collector/runtime/versions/0.6.0/node_modules/@traice/collector/dist/cli.cjs")}</string>`,
+    );
+    const installService = vi.fn(() => ({
+      platform: "darwin" as const,
+      status: "installed" as const,
+      definitionPath,
+      nodePath: "/tmp/node",
+      cliPath: "/tmp/collector",
+    }));
+
+    expect(installedCollectorServiceVersion({ platform: "darwin", home: directory })).toBe("0.6.0");
+    expect(
+      refreshCollectorServiceIfOutdated(
+        { configPath: join(directory, "config.json"), packageVersion: "0.7.1" },
+        { platform: "darwin", home: directory, installService },
+      ),
+    ).toMatchObject({ status: "installed" });
+    expect(installService).toHaveBeenCalledWith(
+      {
+        configPath: join(directory, "config.json"),
+        packageVersion: "0.7.1",
+      },
+      expect.objectContaining({
+        platform: "darwin",
+        home: directory,
+      }),
+    );
+  });
+
   it("checks and installs collector updates through the singleton service", async () => {
     const installService = vi.fn(() => ({
       platform: "darwin" as const,
@@ -1206,6 +1252,33 @@ describe("@traice/collector", () => {
     });
 
     expect(result).toMatchObject({ ok: false, state: "stopped", definitionPath });
+  });
+
+  it("reports a running macOS service pinned to an incompatible collector version", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-status-version-"));
+    temporaryDirectories.push(directory);
+    const definitionPath = join(directory, "Library/LaunchAgents/com.traice.collector.plist");
+    mkdirSync(join(directory, "Library/LaunchAgents"), { recursive: true });
+    writeFileSync(
+      definitionPath,
+      `<string>${join(directory, ".traice/collector/runtime/versions/0.6.0/node_modules/@traice/collector/dist/cli.cjs")}</string>`,
+    );
+
+    const result = getCollectorServiceStatus({
+      platform: "darwin",
+      home: directory,
+      uid: 501,
+      expectedVersion: "0.7.1",
+      run: () => ({ status: 0, stdout: "state = running", stderr: "" }),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "running",
+      version: "0.6.0",
+      expectedVersion: "0.7.1",
+    });
+    expect(result.message).toContain('Run "npx @traice/collector@latest update"');
   });
 });
 

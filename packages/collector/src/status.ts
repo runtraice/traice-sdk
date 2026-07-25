@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import packageMetadata from "../package.json";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
 import { readCollectorCredential } from "./credentials";
 import { configForDestination, defaultDestinationName, normalizeDestinationName } from "./destinations";
+import { collectorServiceDefinitionPath, installedCollectorServiceVersion } from "./service";
 import { verifyCollectorConnection } from "./setup";
 import type { AgentName, CollectorCredential } from "./types";
 
@@ -27,6 +28,8 @@ export interface CollectorStatusResult {
     platform: NodeJS.Platform;
     state: CollectorServiceState;
     definitionPath?: string;
+    version?: string;
+    expectedVersion?: string;
     message?: string;
   };
   listener: { ok: boolean; url?: string; message?: string };
@@ -47,6 +50,7 @@ interface ServiceStatusDependencies {
   home?: string;
   appData?: string;
   uid?: number;
+  expectedVersion?: string;
   run?: (command: string, args: string[]) => { status: number | null; stdout: string; stderr: string };
 }
 
@@ -138,9 +142,12 @@ export function getCollectorServiceStatus(
   const platform = dependencies.platform ?? process.platform;
   const home = dependencies.home ?? homedir();
   const run = dependencies.run ?? runStatusCommand;
+  const expectedVersion = dependencies.expectedVersion ?? packageMetadata.version;
+  const version = installedCollectorServiceVersion(dependencies);
+  const versionMismatch = Boolean(version && version !== expectedVersion);
 
   if (platform === "darwin") {
-    const definitionPath = resolve(home, "Library/LaunchAgents/com.traice.collector.plist");
+    const definitionPath = collectorServiceDefinitionPath({ platform, home })!;
     const domain = `gui/${dependencies.uid ?? process.getuid?.() ?? 0}`;
     const result = run("launchctl", ["print", `${domain}/com.traice.collector`]);
     const state =
@@ -150,16 +157,23 @@ export function getCollectorServiceStatus(
           ? "stopped"
           : "not-installed";
     return {
-      ok: state === "running",
+      ok: state === "running" && !versionMismatch,
       platform,
       state,
       definitionPath,
-      ...(state === "stopped" ? { message: "The LaunchAgent is installed but is not running." } : {}),
+      ...(version ? { version, expectedVersion } : {}),
+      ...(versionMismatch
+        ? {
+            message: `Background service ${version} does not match CLI ${expectedVersion}. Run "npx @traice/collector@latest update".`,
+          }
+        : state === "stopped"
+          ? { message: "The LaunchAgent is installed but is not running." }
+          : {}),
     };
   }
 
   if (platform === "linux") {
-    const definitionPath = resolve(home, ".config/systemd/user/traice-collector.service");
+    const definitionPath = collectorServiceDefinitionPath({ platform, home })!;
     const result = run("systemctl", ["--user", "is-active", "traice-collector"]);
     const state =
       result.status === 0 && result.stdout.trim() === "active"
@@ -168,25 +182,39 @@ export function getCollectorServiceStatus(
           ? "stopped"
           : "not-installed";
     return {
-      ok: state === "running",
+      ok: state === "running" && !versionMismatch,
       platform,
       state,
       definitionPath,
-      ...(state === "stopped" ? { message: "The systemd user service is installed but is not running." } : {}),
+      ...(version ? { version, expectedVersion } : {}),
+      ...(versionMismatch
+        ? {
+            message: `Background service ${version} does not match CLI ${expectedVersion}. Run "npx @traice/collector@latest update".`,
+          }
+        : state === "stopped"
+          ? { message: "The systemd user service is installed but is not running." }
+          : {}),
     };
   }
 
   if (platform === "win32") {
-    const definitionPath = resolve(
-      dependencies.appData ?? process.env.APPDATA ?? resolve(home, "AppData/Roaming"),
-      "Microsoft/Windows/Start Menu/Programs/Startup/trAIce Collector.vbs",
-    );
+    const definitionPath = collectorServiceDefinitionPath({
+      platform,
+      home,
+      appData: dependencies.appData,
+    })!;
     if (existsSync(definitionPath)) {
       return {
-        ok: true,
+        ok: !versionMismatch,
         platform,
         state: "installed",
         definitionPath,
+        ...(version ? { version, expectedVersion } : {}),
+        ...(versionMismatch
+          ? {
+              message: `Background service ${version} does not match CLI ${expectedVersion}. Run "npx @traice/collector@latest update".`,
+            }
+          : {}),
       };
     }
     const result = run("schtasks.exe", ["/Query", "/TN", "trAIce Collector", "/FO", "LIST"]);
@@ -220,7 +248,15 @@ export function formatCollectorStatus(result: CollectorStatusResult): string {
     `Credential: ${checkLabel(result.credential.ok)}${result.credential.backend ? ` ${result.credential.backend}` : ""}`,
   );
   lines.push(
-    `Background service: ${checkLabel(result.service.ok)} ${result.service.state} (${result.service.platform})`,
+    `Background service: ${checkLabel(result.service.ok)} ${result.service.state} (${result.service.platform})${
+      result.service.version
+        ? `, version ${result.service.version}${
+            result.service.expectedVersion && result.service.expectedVersion !== result.service.version
+              ? `; CLI ${result.service.expectedVersion}`
+              : ""
+          }`
+        : ""
+    }`,
   );
   if (result.config.agents)
     lines.push(`Agents: ${result.config.agents.length > 0 ? result.config.agents.join(", ") : "none"}`);

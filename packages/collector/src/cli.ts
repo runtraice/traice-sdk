@@ -25,6 +25,7 @@ import {
   resolveFirstRunSetupIdentity,
 } from "./identity";
 import { runCollector } from "./run";
+import { refreshCollectorServiceIfOutdated } from "./service";
 import { setupAgent } from "./setup";
 import { verifyCollectorConnection } from "./setup";
 import { formatCollectorStatus, getCollectorStatus } from "./status";
@@ -75,6 +76,7 @@ authCommand
       console.log(`Credential stored in ${destination.credential.backend}.`);
       if (destination.credentialWarning) console.error(`[traice-collector] ${destination.credentialWarning}`);
     }
+    refreshOutdatedService(stringOption(options.config));
     console.log('Review delivery with "npx @traice/collector@latest route list".');
   });
 
@@ -131,6 +133,7 @@ authCommand
     if (!result.remoteRevoked) {
       console.error("The server grant could not be revoked. You can revoke it from Connected collectors in trAIce.");
     }
+    refreshOutdatedService(stringOption(options.config));
   });
 
 program
@@ -273,6 +276,7 @@ program
       claudeHome: stringOption(options.claudeHome),
       codexHome: stringOption(options.codexHome),
     });
+    refreshOutdatedService(result.configPath, !options.json);
     console.log(options.json ? JSON.stringify(result, null, 2) : formatInstallResult(result));
   });
 
@@ -418,6 +422,7 @@ routeCommand
   .action((agent: string, destinations: string[], options: Record<string, unknown>) => {
     const parsedAgent = parseAgent(agent);
     updateConfig(stringOption(options.config), (config) => setCollectorRoute(config, parsedAgent, destinations));
+    refreshOutdatedService(stringOption(options.config));
     console.log(`${parsedAgent} will send live usage to ${destinations.map(normalizeDestinationName).join(", ")}.`);
   });
 
@@ -484,6 +489,17 @@ function updateConfig(
   config.updatedAt = new Date().toISOString();
   writeCollectorConfig(config, resolved);
   return config;
+}
+
+function refreshOutdatedService(configPath?: string, report = true) {
+  const service = refreshCollectorServiceIfOutdated({
+    configPath: resolveConfigPath(configPath),
+    packageVersion: packageMetadata.version,
+  });
+  if (service && report) {
+    console.log(`Background service updated to ${packageMetadata.version} and restarted.`);
+  }
+  return service;
 }
 
 function formatSetupResults(results: Array<Awaited<ReturnType<typeof setupAgent>>>): string {
