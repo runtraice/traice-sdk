@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 const SERVICE_LABEL = "com.traice.collector";
@@ -20,6 +20,16 @@ interface ServiceDependencies {
   uid?: number;
   prepareRuntime?: () => { nodePath: string; cliPath: string };
   run?: (command: string, args: string[], ignoreFailure?: boolean) => void;
+}
+
+interface ServiceLocationDependencies {
+  platform?: NodeJS.Platform;
+  home?: string;
+  appData?: string;
+}
+
+interface RefreshServiceDependencies extends ServiceDependencies {
+  installService?: typeof installCollectorService;
 }
 
 export function installCollectorService(
@@ -96,6 +106,46 @@ export function installCollectorService(
   }
 
   throw new Error(`Automatic background service setup is not supported on ${platform}.`);
+}
+
+export function collectorServiceDefinitionPath(dependencies: ServiceLocationDependencies = {}): string | undefined {
+  const platform = dependencies.platform ?? process.platform;
+  const home = dependencies.home ?? homedir();
+  if (platform === "darwin") return resolve(home, "Library/LaunchAgents", `${SERVICE_LABEL}.plist`);
+  if (platform === "linux") return resolve(home, ".config/systemd/user/traice-collector.service");
+  if (platform === "win32") {
+    const appData = dependencies.appData ?? process.env.APPDATA ?? resolve(home, "AppData/Roaming");
+    return resolve(appData, "Microsoft/Windows/Start Menu/Programs/Startup/trAIce Collector.vbs");
+  }
+  return undefined;
+}
+
+export function installedCollectorServiceVersion(dependencies: ServiceLocationDependencies = {}): string | undefined {
+  const platform = dependencies.platform ?? process.platform;
+  const home = dependencies.home ?? homedir();
+  const definitionPath = collectorServiceDefinitionPath(dependencies);
+  const paths = [
+    ...(platform === "win32" ? [resolve(home, ".traice/collector/service/traice-collector.cmd")] : []),
+    ...(definitionPath ? [definitionPath] : []),
+  ];
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    const match = readFileSync(path, "utf8").match(
+      /runtime[\\/]+versions[\\/]+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)[\\/]+/,
+    );
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
+}
+
+export function refreshCollectorServiceIfOutdated(
+  options: { configPath: string; packageVersion: string },
+  dependencies: RefreshServiceDependencies = {},
+): CollectorServiceResult | undefined {
+  const installedVersion = installedCollectorServiceVersion(dependencies);
+  if (!installedVersion || installedVersion === options.packageVersion) return undefined;
+  const { installService = installCollectorService, ...serviceDependencies } = dependencies;
+  return installService(options, serviceDependencies);
 }
 
 function prepareRuntime(home: string, packageVersion: string): { nodePath: string; cliPath: string } {

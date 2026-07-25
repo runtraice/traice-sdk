@@ -23,9 +23,10 @@ export function loadCollectorConfig(path = DEFAULT_CONFIG_PATH): CollectorConfig
   const raw = readJsonFile<CollectorConfig | LegacyCollectorConfig>(resolved);
   if (!raw) throw new Error(`Collector config not found at ${resolved}. Run "traice-collector setup" first.`);
   if (raw.version === 2) return raw;
-  const migrated = migrateLegacyConfig(raw);
-  writeCollectorConfig(migrated, resolved);
-  return migrated;
+  // Keep reads side-effect free. A newer CLI can inspect an older config while an
+  // older pinned background service is still running. Persisting the migration
+  // here would make that service read a schema it does not understand and crash.
+  return migrateLegacyConfig(raw);
 }
 
 export function writeCollectorConfig(config: CollectorConfig, path = DEFAULT_CONFIG_PATH): void {

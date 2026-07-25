@@ -95,4 +95,5 @@ Setup installs and starts one user service:
 - Windows: a hidden per-user Startup launcher
 
 The service uses a persistent package runtime rather than an `npx` cache. Credentials remain outside the service
-definition and are resolved through references in `~/.traice/collector/config.json`.
+definition and are resolved through references in `~/.traice/collector/config.json`. Run `status` to verify the pinned
+service version and listener. Destination and route changes refresh an outdated installed service automatically.

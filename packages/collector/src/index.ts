@@ -32,7 +32,12 @@ export {
   upsertCollectorDestination,
 } from "./destinations";
 export type { CollectorDestinationSummary, CollectorRouteSummary, ResolvedCollectorConfig } from "./destinations";
-export { installCollectorService } from "./service";
+export {
+  collectorServiceDefinitionPath,
+  installCollectorService,
+  installedCollectorServiceVersion,
+  refreshCollectorServiceIfOutdated,
+} from "./service";
 export {
   chooseSetupAgents,
   chooseSetupDestinations,

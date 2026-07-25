@@ -58,8 +58,10 @@ The service starts at user login and restarts on failure:
 - Linux: a `systemd --user` service
 - Windows: a hidden per-user Startup launcher
 
-Administrator access is not required. The service runs an exact installed package version. It reports when a stable
-update is available; `update` installs it and restarts the service.
+Administrator access is not required. The service runs an exact installed package version. `status` reports when the
+CLI and service versions differ. Config inspection does not persist a schema migration underneath an older service,
+and commands that change destinations or routes refresh an outdated installed service automatically. `update`
+installs the latest stable runtime and restarts the service explicitly.
 
 ## Durable delivery
 
