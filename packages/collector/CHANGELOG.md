@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.7.3
+
+### Patch Changes
+
+- 946fa11: Keep the local listener running and queue usage when any routed destination authorization is unavailable during startup.
+
 ## 0.7.2
 
 ### Patch Changes
