@@ -99,9 +99,10 @@ npx @traice/collector@latest update --check
 npx @traice/collector@latest update
 ```
 
-`status` checks the config, credential backend, pinned service version, background service, local OTLP listener, and
-authenticated server access. Use `--json` for machine-readable checks. The command exits non-zero when a required
-check fails and tells you when `update` is required.
+`status` checks the config, pinned service version, background service, local OTLP listener, and every unique
+destination used by the configured agent routes. Each destination reports its credential and authenticated server
+access separately. Use `status --destination <name>` for a focused check or `--json` for machine-readable results. The
+command exits non-zero when any required check fails and tells you when `update` is required.
 
 The service uses an exact installed package version. It checks for a newer stable release once per day and logs an
 update notice. Read-only commands never persist a config migration underneath an older service. Commands that change

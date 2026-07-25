@@ -1222,6 +1222,116 @@ describe("@traice/collector", () => {
     expect(formatCollectorStatus(result)).toContain("trAIce Collector: healthy");
   });
 
+  it("checks every unique routed destination by default and keeps an explicit destination focused", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-status-routes-"));
+    temporaryDirectories.push(directory);
+    const configPath = await writeMultiDestinationStatusConfig(directory);
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1:4318")) {
+        return Response.json({ ok: true, service: "traice-collector", agents: ["codex", "claude-code"] });
+      }
+      const expectedCredential = url.startsWith("https://staging.runtraice.com")
+        ? "Bearer staging-secret"
+        : "Bearer production-secret";
+      expect(new Headers(init?.headers).get("authorization")).toBe(expectedCredential);
+      return Response.json({ ok: true });
+    });
+    const dependencies = {
+      fetchImpl,
+      checkService: () => ({ ok: true, platform: "darwin" as const, state: "running" as const }),
+    };
+
+    const result = await getCollectorStatus({ configPath, timeoutMs: 500 }, dependencies);
+
+    expect(result).toMatchObject({
+      ok: true,
+      config: { ok: true, agents: ["codex", "claude-code"] },
+      destinations: [
+        {
+          name: "staging-alex",
+          ok: true,
+          serverUrl: "https://staging.runtraice.com",
+          credential: { ok: true, backend: "protected-file" },
+          server: { ok: true },
+        },
+        {
+          name: "production-live-demo",
+          ok: true,
+          serverUrl: "https://www.runtraice.com",
+          credential: { ok: true, backend: "protected-file" },
+          server: { ok: true },
+        },
+      ],
+      credential: { ok: true, backend: "protected-file" },
+      server: { ok: true },
+    });
+    expect(result.config).not.toHaveProperty("destination");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(formatCollectorStatus(result)).toContain("Destinations: 2 checked");
+    expect(formatCollectorStatus(result)).toContain("  production-live-demo: ok");
+
+    fetchImpl.mockClear();
+    const focused = await getCollectorStatus(
+      { configPath, destination: "production-live-demo", timeoutMs: 500 },
+      dependencies,
+    );
+
+    expect(focused).toMatchObject({
+      ok: true,
+      config: {
+        destination: "production-live-demo",
+        serverUrl: "https://www.runtraice.com",
+      },
+      destinations: [{ name: "production-live-demo", ok: true }],
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.some(([input]) => String(input).startsWith("https://staging.runtraice.com"))).toBe(
+      false,
+    );
+  });
+
+  it("fails aggregate status and scopes the issue when one routed destination is unavailable", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-collector-status-route-failure-"));
+    temporaryDirectories.push(directory);
+    const configPath = await writeMultiDestinationStatusConfig(directory);
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.startsWith("http://127.0.0.1:4318")) {
+        return Response.json({ ok: true, service: "traice-collector", agents: ["codex", "claude-code"] });
+      }
+      if (url.startsWith("https://www.runtraice.com")) {
+        return new Response("temporarily unavailable", { status: 503 });
+      }
+      return Response.json({ ok: true });
+    });
+
+    const result = await getCollectorStatus(
+      { configPath, timeoutMs: 500 },
+      {
+        fetchImpl,
+        checkService: () => ({ ok: true, platform: "darwin", state: "running" }),
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      destinations: [
+        { name: "staging-alex", ok: true },
+        {
+          name: "production-live-demo",
+          ok: false,
+          credential: { ok: true },
+          server: { ok: false },
+        },
+      ],
+      credential: { ok: true },
+      server: { ok: false },
+    });
+    expect(formatCollectorStatus(result)).toContain("  production-live-demo: failed");
+    expect(formatCollectorStatus(result)).toContain("Issue (production-live-demo server):");
+  });
+
   it("returns actionable status when the config is missing", async () => {
     const directory = mkdtempSync(join(tmpdir(), "traice-collector-status-missing-"));
     temporaryDirectories.push(directory);
@@ -1281,6 +1391,36 @@ describe("@traice/collector", () => {
     expect(result.message).toContain('Run "npx @traice/collector@latest update"');
   });
 });
+
+async function writeMultiDestinationStatusConfig(directory: string): Promise<string> {
+  const configPath = join(directory, "config.json");
+  const [staging, production] = await Promise.all([
+    storeCollectorCredential(configPath, "staging-secret", "file", {}, "staging-alex"),
+    storeCollectorCredential(configPath, "production-secret", "file", {}, "production-live-demo"),
+  ]);
+  writeCollectorConfig(
+    {
+      ...buildDefaultConfig(new Date("2026-07-25T00:00:00.000Z")),
+      enabledAgents: ["codex", "claude-code"],
+      destinations: {
+        "staging-alex": {
+          serverUrl: "https://staging.runtraice.com",
+          credential: staging.credential,
+        },
+        "production-live-demo": {
+          serverUrl: "https://www.runtraice.com",
+          credential: production.credential,
+        },
+      },
+      routes: {
+        codex: ["staging-alex", "production-live-demo"],
+        "claude-code": ["staging-alex"],
+      },
+    },
+    configPath,
+  );
+  return configPath;
+}
 
 function successfulBrowserLogin() {
   return vi.fn(

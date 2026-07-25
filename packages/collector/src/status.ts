@@ -4,12 +4,34 @@ import { spawnSync } from "node:child_process";
 import packageMetadata from "../package.json";
 import { loadCollectorConfig, resolveConfigPath } from "./config";
 import { readCollectorCredential } from "./credentials";
-import { configForDestination, defaultDestinationName, normalizeDestinationName } from "./destinations";
+import { allRoutedDestinationNames, configForDestination, normalizeDestinationName } from "./destinations";
 import { collectorServiceDefinitionPath, installedCollectorServiceVersion } from "./service";
 import { verifyCollectorConnection } from "./setup";
 import type { AgentName, CollectorCredential } from "./types";
 
 export type CollectorServiceState = "running" | "installed" | "stopped" | "not-installed" | "unknown";
+
+export interface CollectorCredentialStatus {
+  ok: boolean;
+  backend?: CollectorCredential["backend"];
+  message?: string;
+}
+
+export interface CollectorServerStatus {
+  ok: boolean;
+  url?: string;
+  message?: string;
+}
+
+export interface CollectorDestinationStatus {
+  name: string;
+  ok: boolean;
+  serverUrl: string;
+  workspaceName?: string;
+  userEmail?: string;
+  credential: CollectorCredentialStatus;
+  server: CollectorServerStatus;
+}
 
 export interface CollectorStatusResult {
   ok: boolean;
@@ -22,7 +44,8 @@ export interface CollectorStatusResult {
     destination?: string;
     message?: string;
   };
-  credential: { ok: boolean; backend?: CollectorCredential["backend"]; message?: string };
+  destinations: CollectorDestinationStatus[];
+  credential: CollectorCredentialStatus;
   service: {
     ok: boolean;
     platform: NodeJS.Platform;
@@ -33,7 +56,7 @@ export interface CollectorStatusResult {
     message?: string;
   };
   listener: { ok: boolean; url?: string; message?: string };
-  server: { ok: boolean; url?: string; message?: string };
+  server: CollectorServerStatus;
 }
 
 interface StatusDependencies {
@@ -70,6 +93,7 @@ export async function getCollectorStatus(
     return {
       ok: false,
       config: { ok: false, path: configPath, message },
+      destinations: [],
       credential: { ok: false, message: "Skipped because the collector config could not be loaded." },
       service,
       listener: { ok: false, message: "Skipped because the collector config could not be loaded." },
@@ -77,58 +101,64 @@ export async function getCollectorStatus(
     };
   }
 
-  let destinationName: string;
+  let destinationConfigs: Array<{ name: string; config: ReturnType<typeof configForDestination> }>;
   try {
-    destinationName = normalizeDestinationName(
-      options.destination ??
-        defaultDestinationName(
-          rootConfig,
-          rootConfig.enabledAgents.length > 0 ? rootConfig.enabledAgents[0] : undefined,
-        ),
-    );
+    const destinationNames = options.destination
+      ? [normalizeDestinationName(options.destination)]
+      : allRoutedDestinationNames(rootConfig);
+    destinationConfigs = destinationNames.map((name) => ({ name, config: configForDestination(rootConfig, name) }));
   } catch (error) {
     const message = errorMessage(error);
     return {
       ok: false,
       config: { ok: false, path: configPath, message },
+      destinations: [],
       credential: { ok: false, message },
       service,
       listener: { ok: false, message: "Skipped because no destination could be selected." },
       server: { ok: false, message: "Skipped because no destination could be selected." },
     };
   }
-  let config;
-  try {
-    config = configForDestination(rootConfig, destinationName);
-  } catch (error) {
-    const message = errorMessage(error);
-    return {
-      ok: false,
-      config: { ok: false, path: configPath, destination: destinationName, message },
-      credential: { ok: false, message },
-      service,
-      listener: { ok: false, message: "Skipped because the selected destination is not configured." },
-      server: { ok: false, message: "Skipped because the selected destination is not configured." },
-    };
-  }
   const listenUrl = `http://${displayHost(rootConfig.listenHost)}:${rootConfig.listenPort}`;
-  const serverUrl = config.serverUrl;
-  const credential = await checkCredential(config.credential, config.apiKey);
-  const [listener, server] = await Promise.all([
+  const [listener, destinations] = await Promise.all([
     checkListener(listenUrl, timeoutMs, dependencies.fetchImpl),
-    checkServer(configPath, serverUrl, timeoutMs, dependencies.fetchImpl, destinationName),
+    Promise.all(
+      destinationConfigs.map(async ({ name, config }) => {
+        const [credential, server] = await Promise.all([
+          checkCredential(config.credential, config.apiKey),
+          checkServer(configPath, config.serverUrl, timeoutMs, dependencies.fetchImpl, name),
+        ]);
+        return {
+          name,
+          ok: credential.ok && server.ok,
+          serverUrl: config.serverUrl,
+          ...(config.authorization?.workspaceName ? { workspaceName: config.authorization.workspaceName } : {}),
+          ...(config.authorization?.userEmail ? { userEmail: config.authorization.userEmail } : {}),
+          credential,
+          server,
+        };
+      }),
+    ),
   ]);
+  const credential = aggregateCredentialStatus(destinations);
+  const server = aggregateServerStatus(destinations);
+  const singleDestination = destinations.length === 1 ? destinations[0] : undefined;
 
   return {
-    ok: credential.ok && service.ok && listener.ok && server.ok,
+    ok: destinations.every((destination) => destination.ok) && service.ok && listener.ok,
     config: {
       ok: true,
       path: configPath,
-      serverUrl,
       listenUrl,
-      agents: config.enabledAgents,
-      destination: destinationName,
+      agents: rootConfig.enabledAgents,
+      ...(singleDestination
+        ? {
+            serverUrl: singleDestination.serverUrl,
+            destination: singleDestination.name,
+          }
+        : {}),
     },
+    destinations,
     credential,
     service,
     listener,
@@ -241,12 +271,29 @@ export function formatCollectorStatus(result: CollectorStatusResult): string {
     `trAIce Collector: ${result.ok ? "healthy" : "needs attention"}`,
     `Config: ${checkLabel(result.config.ok)} ${result.config.path}`,
   ];
-  if (result.config.serverUrl) lines.push(`Server: ${checkLabel(result.server.ok)} ${result.config.serverUrl}`);
-  if (result.config.destination) lines.push(`Destination: ${result.config.destination}`);
+  if (result.destinations.length > 1) {
+    lines.push(`Destinations: ${result.destinations.length} checked`);
+    for (const destination of result.destinations) {
+      lines.push(`  ${destination.name}: ${checkLabel(destination.ok)}`);
+      lines.push(`    Server: ${checkLabel(destination.server.ok)} ${destination.serverUrl}`);
+      lines.push(
+        `    Credential: ${checkLabel(destination.credential.ok)}${
+          destination.credential.backend ? ` ${destination.credential.backend}` : ""
+        }`,
+      );
+    }
+  } else {
+    if (result.config.serverUrl) lines.push(`Server: ${checkLabel(result.server.ok)} ${result.config.serverUrl}`);
+    if (result.config.destination) lines.push(`Destination: ${result.config.destination}`);
+  }
   if (result.config.listenUrl) lines.push(`Listener: ${checkLabel(result.listener.ok)} ${result.config.listenUrl}`);
-  lines.push(
-    `Credential: ${checkLabel(result.credential.ok)}${result.credential.backend ? ` ${result.credential.backend}` : ""}`,
-  );
+  if (result.destinations.length <= 1) {
+    lines.push(
+      `Credential: ${checkLabel(result.credential.ok)}${
+        result.credential.backend ? ` ${result.credential.backend}` : ""
+      }`,
+    );
+  }
   lines.push(
     `Background service: ${checkLabel(result.service.ok)} ${result.service.state} (${result.service.platform})${
       result.service.version
@@ -262,12 +309,25 @@ export function formatCollectorStatus(result: CollectorStatusResult): string {
     lines.push(`Agents: ${result.config.agents.length > 0 ? result.config.agents.join(", ") : "none"}`);
 
   const messages = new Set(
-    [result.config, result.credential, result.service, result.listener, result.server]
+    [
+      result.config,
+      result.service,
+      result.listener,
+      ...(result.destinations.length === 0 ? [result.credential, result.server] : []),
+    ]
       .map((check) => check.message)
       .filter((message): message is string => Boolean(message)),
   );
   for (const message of messages) {
     lines.push(`Issue: ${message}`);
+  }
+  for (const destination of result.destinations) {
+    if (destination.credential.message) {
+      lines.push(`Issue (${destination.name} credential): ${destination.credential.message}`);
+    }
+    if (destination.server.message) {
+      lines.push(`Issue (${destination.name} server): ${destination.server.message}`);
+    }
   }
   return lines.join("\n");
 }
@@ -322,6 +382,29 @@ async function checkServer(
   } catch (error) {
     return { ok: false, url: serverUrl, message: errorMessage(error) };
   }
+}
+
+function aggregateCredentialStatus(destinations: CollectorDestinationStatus[]): CollectorCredentialStatus {
+  if (destinations.length === 0) return { ok: false, message: "No routed destination was checked." };
+  const backends = Array.from(
+    new Set(
+      destinations
+        .map((destination) => destination.credential.backend)
+        .filter((backend): backend is CollectorCredential["backend"] => Boolean(backend)),
+    ),
+  );
+  return {
+    ok: destinations.every((destination) => destination.credential.ok),
+    ...(backends.length === 1 ? { backend: backends[0] } : {}),
+  };
+}
+
+function aggregateServerStatus(destinations: CollectorDestinationStatus[]): CollectorServerStatus {
+  if (destinations.length === 0) return { ok: false, message: "No routed destination was checked." };
+  return {
+    ok: destinations.every((destination) => destination.server.ok),
+    ...(destinations.length === 1 ? { url: destinations[0]!.serverUrl } : {}),
+  };
 }
 
 function boundedTimeout(value = 3000): number {

@@ -48,7 +48,13 @@ export {
 export type { SetupIdentityInput } from "./identity";
 export { setupAgent, verifyCollectorConnection } from "./setup";
 export { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "./status";
-export type { CollectorServiceState, CollectorStatusResult } from "./status";
+export type {
+  CollectorCredentialStatus,
+  CollectorDestinationStatus,
+  CollectorServerStatus,
+  CollectorServiceState,
+  CollectorStatusResult,
+} from "./status";
 export { backfillCodex, dryRunCodexBackfill } from "./backfill";
 export type {
   CodexBackfillDryRunOptions,

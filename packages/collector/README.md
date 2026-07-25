@@ -52,6 +52,9 @@ npx @traice/collector@latest update --check
 npx @traice/collector@latest update
 ```
 
+By default, `status` checks every unique destination used by the configured agent routes. Each destination reports
+its credential and authenticated server access separately. Use `status --destination <name>` for a focused check.
+
 The service starts at user login and restarts on failure:
 
 - macOS: a `launchd` LaunchAgent
