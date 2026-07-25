@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.7.1
+
+### Patch Changes
+
+- f837639: Keep legacy config reads side-effect free, detect a pinned service version mismatch in status, and refresh an outdated installed service after destination, authorization, route, or advanced install changes.
+
 ## 0.7.0
 
 ### Minor Changes
