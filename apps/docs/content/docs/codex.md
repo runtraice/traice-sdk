@@ -96,4 +96,5 @@ Setup installs and starts one user service:
 
 The service uses a persistent package runtime rather than an `npx` cache. Credentials remain outside the service
 definition and are resolved through references in `~/.traice/collector/config.json`. Run `status` to verify the pinned
-service version and listener. Destination and route changes refresh an outdated installed service automatically.
+service version, listener, and every routed destination. Destination and route changes refresh an outdated installed
+service automatically.

@@ -330,7 +330,7 @@ program
 
 program
   .command("status")
-  .description("Check configuration, credentials, service, listener, and server access")
+  .description("Check configuration, routed destinations, service, listener, and server access")
   .option("--config <path>", "collector config path")
   .option("--destination <name>", "destination to check")
   .option("--timeout <milliseconds>", "network check timeout from 250 to 30000 milliseconds", "3000")
