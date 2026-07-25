@@ -18,6 +18,7 @@ import {
   forwardEventsToDestinations,
   inferAgents,
   normalizePayloadForRequest,
+  warmDestinationAuthorizations,
 } from "../src/run";
 import {
   installCollectorService,
@@ -420,6 +421,29 @@ describe("@traice/collector", () => {
     ]);
     expect(primary).toHaveBeenCalledOnce();
     expect(secondary).toHaveBeenCalledOnce();
+  });
+
+  it("warms destination authorization without blocking startup on an expired primary", async () => {
+    const report = vi.fn();
+    const expired = vi.fn(async () => {
+      throw new Error("authorization expired");
+    });
+    const healthy = vi.fn(async () => "production-token");
+
+    warmDestinationAuthorizations(
+      [
+        { name: "staging-alex", getAccessToken: expired },
+        { name: "production-live-demo", getAccessToken: healthy },
+      ],
+      report,
+    );
+
+    expect(expired).toHaveBeenCalledOnce();
+    expect(healthy).toHaveBeenCalledOnce();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(report).toHaveBeenCalledWith(
+      '[traice-collector] destination "staging-alex" authorization delayed: authorization expired',
+    );
   });
 
   it("dry-runs a bounded Codex backfill without reading transcript content into the result", () => {
