@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.7.2
+
+### Patch Changes
+
+- 376aba8: Check every unique routed destination in collector status, report destination-specific credential and server health, and retain `--destination` for focused diagnostics.
+
 ## 0.7.1
 
 ### Patch Changes
