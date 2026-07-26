@@ -4,11 +4,13 @@ import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 
 const LANGUAGE_LABELS: Record<string, string> = {
+  bat: "Command Prompt",
   bash: "Shell",
   curl: "cURL",
   javascript: "JavaScript",
   json: "JSON",
   python: "Python",
+  powershell: "PowerShell",
   sh: "Shell",
   text: "Text",
   toml: "TOML",
