@@ -26,9 +26,32 @@ product requests.
 
 Run one interactive command:
 
+### macOS and Linux
+
 ```bash
 npx @traice/collector@latest setup
 ```
+
+### Windows terminals
+
+Use the snippet for the terminal you opened. Administrator access is not required.
+
+#### Command Prompt
+
+```bat
+npx @traice/collector@latest setup
+```
+
+#### PowerShell
+
+PowerShell uses `npx.cmd` so a restrictive execution policy does not block `npx.ps1`.
+
+```powershell
+npx.cmd @traice/collector@latest setup
+```
+
+Use the same `npx` or `npx.cmd` prefix for the other collector commands below. If the selected command is not
+recognized, install or repair Node.js LTS, reopen the terminal, and try again.
 
 Setup detects supported agents, lets you choose which agents and workspace destinations to use, confirms employee and
 team attribution, patches user-level telemetry settings, verifies access, and installs a background user service.
