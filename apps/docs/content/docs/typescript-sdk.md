@@ -203,6 +203,12 @@ import { flush } from "@traice/sdk";
 await flush();
 ```
 
+In a reused serverless environment, note that `CloudAdapter.flush()` is
+shutdown-oriented and stops its periodic event and policy timers. Lambda can
+also freeze unfinished asynchronous work after the handler returns. Read
+[SDK Runtime Architecture and Performance](/docs/runtime-performance) for the
+delivery-first `batchSize: 1` workaround, cache behavior, and measured latency.
+
 Use `getMeterStats()` to inspect tracked events, dropped events, adapter errors, and unknown models for the current process.
 
 For an explicitly constructed `CloudAdapter`, use `getDeliveryStats()` to
@@ -333,6 +339,7 @@ Prompts and outputs are not required for attribution. Only pass `prompt` or `out
 ## Reference and source
 
 - [TypeScript API reference](/docs/typescript-reference)
+- [SDK runtime architecture and performance](/docs/runtime-performance)
 - [Package on npm](https://www.npmjs.com/package/@traice/sdk)
 - [SDK source](https://github.com/runtraice/traice-sdk/tree/main/packages/sdk)
 - [SDK README](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/README.md)

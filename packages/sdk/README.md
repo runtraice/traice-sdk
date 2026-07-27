@@ -90,6 +90,24 @@ The portable bundle contains no credentials and is not a lossy conversion to ven
 - `webhook`: send events to an HTTP endpoint.
 - `otel`: emit OpenTelemetry metrics.
 
+## Serverless runtimes
+
+Create clients and adapters outside the handler so warm environments can reuse
+connections and process-local caches. Lambda may freeze unfinished timers,
+fetches, and worker threads after the handler returns, so fire-and-forget
+delivery remains best-effort. `CloudAdapter.flush()` is shutdown-oriented and
+stops its periodic timers.
+
+For delivery confirmation with the current SDK, configure `batchSize: 1` and
+set `awaitWrites: true` on the metered call. This adds the event-upload network
+round trip. `awaitWrites: true` alone does not confirm an event that remains
+below the batch threshold.
+
+See the
+[runtime architecture and performance guide](https://runtraice.github.io/traice-sdk/docs/runtime-performance)
+for client-side diagrams, delivery options, cache behavior, benchmark results,
+and reproduction commands.
+
 ## Advisory workspace budgets
 
 Before opting into active rules, applications can consume workspace budget

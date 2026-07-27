@@ -45,6 +45,20 @@ const { configure, meter } = require("@traice/sdk");
 
 Python applications install `traice-sdk` from PyPI and import `traice`. The [Python SDK guide](https://runtraice.github.io/traice-sdk/docs/python-sdk) covers decorators, context managers, batching, and LangChain callbacks.
 
+## Runtime performance
+
+Local SDK overhead per tracked LLM call stayed under 1 ms at p99 across the
+Node.js and Python GCP benchmark matrix with default buffered delivery. Network
+delivery and opt-in guardrails are measured separately. Read the [runtime
+architecture and performance
+guide](https://runtraice.github.io/traice-sdk/docs/runtime-performance) for the
+client-side flow, benchmark method and results, limits, and serverless
+workarounds.
+
+```sh
+pnpm run benchmark:sdk
+```
+
 ## Coding-Agent Collection
 
 ```sh

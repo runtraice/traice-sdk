@@ -118,6 +118,17 @@ enqueued, sent, dropped, failed-batch, queued, deduplicated, quota-dropped, and
 retry counts. Events include stable source IDs so backend retries are
 idempotent.
 
+In Lambda and similar runtimes, create the client outside the handler so warm
+environments can reuse it. The daemon delivery thread can be frozen after the
+handler returns, so call `flush(timeout=...)` when delivery is more important
+than the added tail latency. For lower-latency reliable delivery, use a
+lifecycle-aware external extension or collector.
+
+See the
+[runtime architecture and performance guide](https://runtraice.github.io/traice-sdk/docs/runtime-performance)
+for client-side diagrams, the full tradeoff, benchmark results, and
+reproduction commands.
+
 ## Errors
 
 Provider exceptions are re-raised unchanged. The SDK queues an error event with zero tokens, measured latency, and a truncated error message in metadata.

@@ -10,6 +10,9 @@
   ],
   "scripts": {
     "build": "pnpm --filter @traice/protocol run build && pnpm --filter @traice/sdk run build && pnpm --filter @traice/collector run build && pnpm run docs:build",
+    "benchmark:sdk": "pnpm run benchmark:sdk:js && pnpm run benchmark:sdk:python",
+    "benchmark:sdk:js": "pnpm --filter @traice/sdk run benchmark",
+    "benchmark:sdk:python": "cd packages/python && PYTHONPATH=src python3 benchmarks/runtime_latency.py",
     "check": "pnpm run format:check && pnpm run lint && pnpm run release-notes:check && pnpm run typecheck && pnpm run test && pnpm run python:check && pnpm run pack:check && pnpm run public:verify && pnpm run docs:verify",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
