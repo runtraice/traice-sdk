@@ -193,6 +193,15 @@ type SemanticCacheEntry = {
   costBasis: ExactCacheCostBasis;
 };
 
+type SemanticOpportunityEntry = {
+  ruleId: string;
+  requestedModel: string;
+  vector: number[];
+  matches: number;
+  savingsUsdMicros: number;
+  expiresAt: number;
+};
+
 type EnforcementBudgetSnapshot = {
   scope: "WORKSPACE" | "FEATURE" | "USER";
   scopeValue: string | null;
@@ -215,6 +224,8 @@ export interface CloudCostEvent {
   toolName?: string;
   retryCount?: number;
   outcome?: string;
+  /** Versioned, API-key-scoped HMAC of the normalized prompt. Raw prompt content is not required. */
+  promptHash?: string;
   prompt?: string;
   output?: string;
   promptTokens: number;
@@ -304,6 +315,7 @@ export class CloudAdapter implements CostAdapter {
   private exactCache = new Map<string, ExactCacheEntry>();
   private exactCacheMaxEntries: number;
   private semanticCache = new Map<string, SemanticCacheEntry>();
+  private semanticOpportunityCache = new Map<string, SemanticOpportunityEntry>();
   private semanticCacheConfig?: SemanticCacheConfig;
   private semanticCacheMaxEntries: number;
   private semanticCacheTimeoutMs: number;
@@ -391,7 +403,11 @@ export class CloudAdapter implements CostAdapter {
   }
 
   async write(event: CostEvent): Promise<void> {
-    const queued = { event, enqueuedAt: Date.now() };
+    const promptHash = event.prompt ? promptFingerprint(event.prompt, this.apiKey) : event.promptHash;
+    const queuedEvent = this.captureContent
+      ? { ...event, promptHash }
+      : { ...event, promptHash, prompt: undefined, output: undefined };
+    const queued = { event: queuedEvent, enqueuedAt: Date.now() };
     let queueOverflowed = false;
     if (this.buffer.length >= this.maxQueueSize) {
       this.buffer.shift();
@@ -540,8 +556,9 @@ export class CloudAdapter implements CostAdapter {
    * deny and retry-cap rules throw a structured TraiceEnforcementError. Active
    * swap, downgrade, and route rules rewrite the model only with passing
    * experiment evidence. Active fallback rules make at most one configured
-   * fallback call after a provider error. Shadow, unsupported, unavailable, or
-   * malformed rules pass through unchanged.
+   * fallback call after a provider error. Shadow rules pass through; semantic
+   * cache shadow rules may report scored opportunities after the provider
+   * response. Unsupported, unavailable, or malformed rules pass through.
    */
   async enforceRequest<T, R extends ExactCacheRequest>(
     request: R,
@@ -563,12 +580,19 @@ export class CloudAdapter implements CostAdapter {
         this.rules,
         this.decisionContext(request, context),
       );
-      if (!decision.matched || decision.mode !== "active") return providerCall(request);
+      if (!decision.matched) return providerCall(request);
 
       rule = this.rules.find((candidate) => candidate.id === decision.ruleId);
       if (!rule) return providerCall(request);
     } catch {
       this.enforcementStats.failOpenRequests++;
+      return providerCall(request);
+    }
+
+    if (decision.mode === "shadow") {
+      if (decision.action === "CACHE_SEMANTIC") {
+        return this.executeSemanticCacheShadow(request, () => providerCall(request), context, rule);
+      }
       return providerCall(request);
     }
 
@@ -903,6 +927,68 @@ export class CloudAdapter implements CostAdapter {
     return response;
   }
 
+  private async executeSemanticCacheShadow<T>(
+    request: ExactCacheRequest,
+    providerCall: () => Promise<T>,
+    context: RequestEnforcementContext,
+    rule: EnforcementRule,
+  ): Promise<T> {
+    const response = await providerCall();
+    if (!this.semanticCacheConfig || request.stream === true || cacheBypassed(context)) return response;
+    const text = semanticCacheText(request, context);
+    if (!text) return response;
+    try {
+      const costBasis = responseCostBasis(response, context.provider);
+      this.trackDecision(this.observeSemanticOpportunity(rule, request.model, text, costBasis));
+    } catch {
+      // Shadow discovery is observational and never changes the response.
+    }
+    return response;
+  }
+
+  private async observeSemanticOpportunity(
+    rule: EnforcementRule,
+    requestedModel: string,
+    text: string,
+    costBasis: ExactCacheCostBasis,
+  ): Promise<void> {
+    if (!this.semanticCacheConfig) return;
+    const vector = await boundedEmbedding(this.semanticCacheConfig.embed, text, this.semanticCacheTimeoutMs);
+    if (!vector) {
+      this.semanticCacheEmbeddingFailures++;
+      return;
+    }
+
+    const threshold = boundedSimilarityThreshold(rule.actionParams.similarityThreshold);
+    const minClusterSize = boundedPositiveInteger(rule.actionParams.minClusterSize, 5, 2, 1_000);
+    const minSavingsUsd = boundedFiniteNumber(rule.actionParams.minSavingsUsd, 25, 0, 1_000_000);
+    const match = this.getSemanticOpportunity(rule.id, requestedModel, vector, threshold);
+    const key = semanticCacheKey(this.apiKey, rule.id, requestedModel, text);
+    const next: SemanticOpportunityEntry = match.entry
+      ? {
+          ...match.entry,
+          matches: match.entry.matches + 1,
+          savingsUsdMicros: match.entry.savingsUsdMicros + costBasis.savingsUsdMicros,
+        }
+      : {
+          ruleId: rule.id,
+          requestedModel,
+          vector,
+          matches: 1,
+          savingsUsdMicros: 0,
+          expiresAt: Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
+        };
+    this.setSemanticOpportunity(match.key ?? key, next);
+
+    if (
+      match.entry &&
+      next.matches >= minClusterSize &&
+      next.savingsUsdMicros >= Math.round(minSavingsUsd * 1_000_000)
+    ) {
+      await this.postSemanticCacheDecision(rule, requestedModel, "hit", match.similarity, costBasis, "shadow");
+    }
+  }
+
   private async executeFallbackRule<T, R extends ExactCacheRequest>(
     request: R,
     providerCall: (effectiveRequest: R) => Promise<T>,
@@ -994,6 +1080,45 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
+  private getSemanticOpportunity(
+    ruleId: string,
+    requestedModel: string,
+    vector: number[],
+    threshold: number,
+  ): { key?: string; entry?: SemanticOpportunityEntry; similarity: number | null } {
+    let bestKey: string | undefined;
+    let bestEntry: SemanticOpportunityEntry | undefined;
+    let bestSimilarity = -1;
+    for (const [key, entry] of this.semanticOpportunityCache) {
+      if (entry.expiresAt <= Date.now()) {
+        this.semanticOpportunityCache.delete(key);
+        continue;
+      }
+      if (entry.ruleId !== ruleId || entry.requestedModel !== requestedModel || entry.vector.length !== vector.length) {
+        continue;
+      }
+      const similarity = dotProduct(vector, entry.vector);
+      if (similarity > bestSimilarity) {
+        bestKey = key;
+        bestEntry = entry;
+        bestSimilarity = similarity;
+      }
+    }
+    return bestEntry && bestSimilarity >= threshold
+      ? { key: bestKey, entry: bestEntry, similarity: bestSimilarity }
+      : { similarity: bestSimilarity >= 0 ? bestSimilarity : null };
+  }
+
+  private setSemanticOpportunity(key: string, entry: SemanticOpportunityEntry): void {
+    this.semanticOpportunityCache.delete(key);
+    this.semanticOpportunityCache.set(key, entry);
+    while (this.semanticOpportunityCache.size > this.semanticCacheMaxEntries) {
+      const oldest = this.semanticOpportunityCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.semanticOpportunityCache.delete(oldest);
+    }
+  }
+
   private postExactCacheDecision(
     rule: EnforcementRule,
     requestedModel: string,
@@ -1026,11 +1151,13 @@ export class CloudAdapter implements CostAdapter {
     cacheOutcome: "hit" | "miss",
     similarity: number | null,
     costBasis?: ExactCacheCostBasis,
+    mode: "active" | "shadow" = "active",
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
       action: "CACHE_SEMANTIC",
       cacheOutcome,
+      mode,
       requestedModel,
       similarity,
       ...(costBasis
@@ -1203,7 +1330,9 @@ export class CloudAdapter implements CostAdapter {
             "X-Source": "traice-sdk",
           },
           body: JSON.stringify({
-            events: batch.map(({ event }) => toCloudEvent(event, { captureContent: this.captureContent })),
+            events: batch.map(({ event }) =>
+              toCloudEvent(event, { captureContent: this.captureContent, fingerprintSecret: this.apiKey }),
+            ),
           }),
           signal: controller.signal,
         });
@@ -1414,6 +1543,16 @@ function boundedSimilarityThreshold(value: unknown): number {
   return Number.isFinite(threshold) ? Math.max(0.5, Math.min(1, threshold)) : 0.92;
 }
 
+function boundedPositiveInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === "number" && Number.isInteger(value) ? value : fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function boundedFiniteNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
 function stableStringify(value: unknown): string {
   return JSON.stringify(normalizeJson(value));
 }
@@ -1496,7 +1635,10 @@ function nonNegativeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 }
 
-export function toCloudEvent(event: CostEvent, options: { captureContent?: boolean } = {}): CloudCostEvent {
+export function toCloudEvent(
+  event: CostEvent,
+  options: { captureContent?: boolean; fingerprintSecret?: string } = {},
+): CloudCostEvent {
   return omitUndefined({
     source: "traice-sdk",
     externalId: event.id,
@@ -1513,6 +1655,11 @@ export function toCloudEvent(event: CostEvent, options: { captureContent?: boole
     toolName: event.toolName ?? stringTag(event.tags, "toolName"),
     retryCount: event.retryCount ?? numberTag(event.tags, "retryCount"),
     outcome: event.outcome ?? stringTag(event.tags, "outcome"),
+    promptHash:
+      event.promptHash ??
+      (event.prompt && options.fingerprintSecret
+        ? promptFingerprint(event.prompt, options.fingerprintSecret)
+        : undefined),
     prompt: options.captureContent ? event.prompt : undefined,
     output: options.captureContent ? event.output : undefined,
     promptTokens: event.inputTokens,
@@ -1525,6 +1672,16 @@ export function toCloudEvent(event: CostEvent, options: { captureContent?: boole
     status: event.status,
     metadata: toCloudMetadata(event),
   });
+}
+
+/**
+ * Create an API-key-scoped prompt identity without exposing prompt content.
+ * Normalization is intentionally conservative so distinct prompts are not
+ * merged merely because their formatting differs beyond whitespace.
+ */
+export function promptFingerprint(prompt: string, secret: string): string {
+  const normalized = prompt.trim().replace(/\s+/g, " ");
+  return `v1:${crypto.createHmac("sha256", secret).update(normalized, "utf8").digest("hex")}`;
 }
 
 function deliverySummary(value: unknown, batchSize: number): CloudDeliverySummary {

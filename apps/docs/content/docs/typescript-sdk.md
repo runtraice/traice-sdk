@@ -216,6 +216,11 @@ on a local `CostEvent`. Set `captureContent: true` on `CloudAdapter`, or
 `cloudCaptureContent: true` in global configuration, only after the workspace
 has approved content collection.
 
+When a local event includes `prompt`, cloud delivery derives a versioned,
+API-key-scoped HMAC for duplicate-spend analysis. The fingerprint is stable
+after conservative whitespace normalization. Raw prompt content remains
+omitted unless content capture is enabled.
+
 ## Framework integrations
 
 The package exports helpers for Express, Next.js, and LangChain:
@@ -290,7 +295,7 @@ try {
 }
 ```
 
-Active deny and retry-cap rules throw `TraiceEnforcementError` before the provider call. Shadow rules, unsupported actions, malformed rules, unavailable evidence, rule API errors, and explicit bypasses pass through. Streaming requests can be denied or retry-capped but are never cached.
+Active deny and retry-cap rules throw `TraiceEnforcementError` before the provider call. Shadow rules pass through. A shadow semantic-cache rule may observe the completed call with the configured embedder and report a scored cache opportunity, but it never bypasses the provider. Unsupported actions, malformed rules, unavailable evidence, rule API errors, and explicit bypasses also pass through. Streaming requests can be denied or retry-capped but are never cached.
 
 Swap and downgrade require current experiment evidence for the exact feature, source model, and target model. Fallback makes one configured fallback call after the original provider call fails. If it also fails, the original provider error is preserved.
 
@@ -322,13 +327,17 @@ isolated by workspace, rule, and requested model, then governed by the rule TTL
 and similarity threshold. Streams and explicit bypasses are never cached.
 Missing configuration, invalid input, embedding errors, and embedding timeouts
 fail open to one normal provider call. Use `getSemanticCacheStats()` for local
-cache health and savings metrics.
+cache health and savings metrics. For a shadow semantic-cache rule, matching
+and the USD floor are evaluated in process. Only the similarity and verified
+token cost basis are reported to trAIce.
 
 ## Privacy and failure behavior
 
 Provider errors are re-thrown. Adapter failures do not replace a successful provider response unless your application explicitly waits for adapter writes. Use `onError` or `verbose` configuration for adapter diagnostics.
 
-Prompts and outputs are not required for attribution. Only pass `prompt` or `output` when your organization has explicitly approved sample capture.
+Prompts and outputs are not required for attribution. You may pass `prompt` for
+local fingerprinting without enabling content capture. Raw prompt or output
+delivery still requires explicit `captureContent` approval.
 
 ## Reference and source
 

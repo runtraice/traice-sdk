@@ -29,6 +29,12 @@ default. Enable `captureContent` or `capture_content` only after reviewing data
 classification, retention, and access controls. Durable local queues can
 contain event metadata and must use user-only file permissions.
 
+When the TypeScript SDK receives a local `prompt`, its cloud adapter can send a
+versioned HMAC for exact duplicate analysis without sending the prompt itself.
+The API key scopes the fingerprint to that credential. Semantic shadow analysis
+uses only the embedding function configured by the application and reports a
+similarity score plus token cost basis, not request text or embedding vectors.
+
 ## Product usage importers
 
 The LiteLLM and Langfuse import commands read vendor credentials from environment variables and keep them in the local process. They send only normalized usage, cost, attribution, and a small allowlist of operational metadata to trAIce.

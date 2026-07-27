@@ -1,4 +1,4 @@
-import { CloudAdapter, TraiceEnforcementError, toCloudEvent } from "../src/adapters/cloud";
+import { CloudAdapter, promptFingerprint, TraiceEnforcementError, toCloudEvent } from "../src/adapters/cloud";
 import { CostEvent } from "../src/types";
 import { configurePricing } from "../src/pricing";
 import * as http from "http";
@@ -198,6 +198,18 @@ describe("CloudAdapter", () => {
     });
   });
 
+  it("sends a stable API-key-scoped prompt fingerprint without sending content", () => {
+    const cloudEvent = toCloudEvent(makeEvent({ prompt: "  Reset\n  my password  " }), {
+      fingerprintSecret: "workspace-api-key",
+    });
+
+    expect(cloudEvent.promptHash).toBe(promptFingerprint("Reset my password", "workspace-api-key"));
+    expect(cloudEvent).not.toHaveProperty("prompt");
+    expect(
+      toCloudEvent(makeEvent({ prompt: "Reset my password" }), { fingerprintSecret: "other-key" }).promptHash,
+    ).not.toBe(cloudEvent.promptHash);
+  });
+
   it("maps legacy workflow tags into cloud fields while preserving metadata.tags", () => {
     const tags = {
       tenantId: "legacy-tenant",
@@ -297,6 +309,7 @@ describe("CloudAdapter", () => {
             toolName: "search",
             retryCount: 1,
             outcome: "success",
+            promptHash: promptFingerprint("Prompt text", "test-key"),
             prompt: "Prompt text",
             output: "Output text",
             promptTokens: 400,
@@ -410,6 +423,23 @@ describe("CloudAdapter", () => {
       prompt: "secret prompt",
       output: "secret output",
     });
+  });
+
+  it("fingerprints and removes content before default cloud queueing", async () => {
+    const adapter = new CloudAdapter({
+      apiKey: "test-key",
+      endpoint: `http://localhost:${port}/v1/events`,
+      batchSize: 1,
+    });
+
+    await adapter.write(makeEvent({ prompt: "secret prompt", output: "secret output" }));
+    await adapter.flush();
+
+    expect(receivedBodies[0].events[0]).toMatchObject({
+      promptHash: promptFingerprint("secret prompt", "test-key"),
+    });
+    expect(receivedBodies[0].events[0]).not.toHaveProperty("prompt");
+    expect(receivedBodies[0].events[0]).not.toHaveProperty("output");
   });
 
   it("bounds the queue, drops the oldest event, and reports delivery health", async () => {
@@ -734,7 +764,7 @@ describe("CloudAdapter", () => {
     };
 
     function activeRule(
-      action: "DENY" | "CAP_RETRIES" | "SWAP" | "DOWNGRADE" | "FALLBACK" | "CACHE_SEMANTIC" | "ROUTE",
+      action: "DENY" | "CAP_RETRIES" | "SWAP" | "DOWNGRADE" | "FALLBACK" | "CACHE_EXACT" | "CACHE_SEMANTIC" | "ROUTE",
       actionParams: Record<string, unknown> = {},
       overrides: Record<string, unknown> = {},
     ) {
@@ -1094,6 +1124,54 @@ describe("CloudAdapter", () => {
         expect.objectContaining({
           action: "CACHE_SEMANTIC",
           cacheOutcome: "hit",
+          similarity: expect.closeTo(0.96, 5),
+        }),
+      );
+    });
+
+    it("observes semantic-cache opportunities in shadow mode without bypassing the provider", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "CACHE_SEMANTIC",
+            { cacheTtlSec: 300, similarityThreshold: 0.92, minClusterSize: 2, minSavingsUsd: 0 },
+            { state: "SHADOW" },
+          ),
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+        semanticCache: {
+          embed: async (text) => (text === "reset password" ? [1, 0] : ([0.96, 0.28] as const)),
+        },
+      });
+      const provider = jest.fn(async () => ({
+        object: "chat.completion",
+        model: "gpt-4o-mini",
+        usage: { prompt_tokens: 400, completion_tokens: 100 },
+      }));
+      await adapter.warmEnforcement();
+
+      await adapter.enforceRequest(request, provider, {
+        feature: "support",
+        provider: "openai",
+        semanticCacheText: "reset password",
+      });
+      await adapter.enforceRequest(request, provider, {
+        feature: "support",
+        provider: "openai",
+        semanticCacheText: "forgot password",
+      });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledTimes(2);
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          action: "CACHE_SEMANTIC",
+          cacheOutcome: "hit",
+          mode: "shadow",
           similarity: expect.closeTo(0.96, 5),
         }),
       );
