@@ -93,8 +93,9 @@ Every adapter implements `CostAdapter` with an asynchronous `write(event)` metho
 | `getDeliveryStats()`                                 | Return queue, acknowledgement, retry, failure, and delivery timestamp counters       |
 
 `CloudAdapterConfig` supports a bounded memory queue, request timeout, retry
-attempt and delay caps, delivery observers, privacy-safe content capture, and
-an optional `durableQueuePath`. Global configuration exposes
+attempt and delay caps, delivery observers, privacy-safe prompt
+fingerprinting, opt-in content capture, and an optional `durableQueuePath`.
+Global configuration exposes
 `cloudMaxQueueSize`, `cloudCaptureContent`, and `cloudDurableQueuePath`.
 
 ## Request enforcement
@@ -105,7 +106,7 @@ an optional `durableQueuePath`. Global configuration exposes
 | `TraiceEnforcementError`      | Structured refusal for active `DENY` and `CAP_RETRIES` decisions                                  | [cloud.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/adapters/cloud.ts)    |
 | `CloudAdapter.enforceRequest` | Executor for exact or semantic cache, deny, retry cap, evidence-gated model actions, and fallback | [cloud.ts](https://github.com/runtraice/traice-sdk/blob/main/packages/sdk/src/adapters/cloud.ts)    |
 
-`TraiceEnforcementError` exposes `code`, `action`, `ruleId`, `ruleName`, `requestedModel`, `reason`, and `toJSON()`. Route requires a non-empty allowlist and passing experiment evidence. Semantic cache requires an opt-in customer-supplied embedder and remains process-local.
+`TraiceEnforcementError` exposes `code`, `action`, `ruleId`, `ruleName`, `requestedModel`, `reason`, and `toJSON()`. Route requires a non-empty allowlist and passing experiment evidence. Semantic cache requires an opt-in customer-supplied embedder and remains process-local. Shadow semantic-cache rules always call the provider, then report only qualifying similarity and cost evidence.
 
 ## Framework integrations
 

@@ -44,6 +44,8 @@ export interface CostEvent {
   env?: string;
   /** Optional prompt text for cloud sample capture when the workspace opts in. */
   prompt?: string;
+  /** Optional versioned, API-key-scoped prompt fingerprint. Usually derived by CloudAdapter. */
+  promptHash?: string;
   /** Optional output text for cloud sample capture when the workspace opts in. */
   output?: string;
   /** Arbitrary structured metadata. Use tags for legacy string key/value data. */
