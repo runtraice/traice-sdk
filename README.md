@@ -84,8 +84,13 @@ trAIce accepts OTLP HTTP/JSON GenAI spans and the CLI can backfill normalized Li
 
 ## Development
 
+pnpm is the canonical lockfile and CI installer. The repository does not
+enforce a local package manager, and locally generated npm, Yarn, or Bun
+lockfiles stay uncommitted.
+
 ```sh
-corepack enable pnpm
+corepack enable
+corepack prepare pnpm@10.34.5 --activate
 pnpm install
 pnpm run check
 ```

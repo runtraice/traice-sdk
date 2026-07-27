@@ -1,4 +1,8 @@
 node_modules
+package-lock.json
+yarn.lock
+bun.lock
+bun.lockb
 dist
 .next
 out
