@@ -38,7 +38,6 @@ Application process
                               |
                               v
                         trAIce platform
-                        (treated as a black box here)
 ```
 
 The metering and guardrail APIs are separate. `meter()` and `CostMeter.track()` record a provider call. They do not automatically apply active rules. TypeScript applications opt into request enforcement by wrapping the provider call with `CloudAdapter.enforceRequest()`.
