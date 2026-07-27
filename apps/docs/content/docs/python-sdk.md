@@ -174,6 +174,12 @@ delivered = flush(timeout=2.0)
 
 `flush()` returns `False` when the timeout expires. The SDK also registers a best-effort flush at normal interpreter shutdown. Call `shutdown(timeout=2.0)` when your application owns an explicit lifecycle hook.
 
+In Lambda and similar runtimes, the daemon worker can be frozen after the
+handler returns. Warm invocations may reuse the queue, but delivery is not
+guaranteed unless the handler waits for it or delegates it to a lifecycle-aware
+extension. See
+[SDK Runtime Architecture and Performance](/docs/runtime-performance).
+
 ## Inspect client health
 
 `configure()` returns a `TraiceClient`. Its process-local statistics distinguish successful delivery from drops.
@@ -239,6 +245,7 @@ The handler reads model and token information exposed through `llm_output`. Lang
 ## Reference and source
 
 - [Python API reference](/docs/python-reference)
+- [SDK runtime architecture and performance](/docs/runtime-performance)
 - [Package on PyPI](https://pypi.org/project/traice-sdk/)
 - [Python package source](https://github.com/runtraice/traice-sdk/tree/main/packages/python)
 - [Python README](https://github.com/runtraice/traice-sdk/blob/main/packages/python/README.md)

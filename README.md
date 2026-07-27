@@ -45,6 +45,18 @@ const { configure, meter } = require("@traice/sdk");
 
 Python applications install `traice-sdk` from PyPI and import `traice`. The [Python SDK guide](https://runtraice.github.io/traice-sdk/docs/python-sdk) covers decorators, context managers, batching, and LangChain callbacks.
 
+## Runtime performance
+
+Local SDK work per event measured up to 32 microseconds (0.032 ms) p95 before
+batching across 100 GCP benchmark runs. Under sustained default batching, p99
+stayed below 0.35 ms in JavaScript and Python. Network delivery is separate. Read the
+[runtime architecture and performance guide](https://runtraice.github.io/traice-sdk/docs/runtime-performance)
+for the client-side flow, full results, limits, and serverless workarounds.
+
+```sh
+pnpm run benchmark:sdk
+```
+
 ## Coding-Agent Collection
 
 ```sh

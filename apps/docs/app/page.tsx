@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, Braces, Code2, Radio, Terminal } from "lucide-react";
+import { ArrowRight, Braces, Code2, Gauge, Radio, Terminal } from "lucide-react";
 import { LanguageSnippet, type LanguageSnippets } from "./components/LanguageSnippet";
 import { allDocs, groupedDocs } from "./lib/docs";
 
@@ -30,6 +30,17 @@ export default function HomePage() {
             Attribute product LLM spend to customers, users, features, and workflows. Use the TypeScript SDK, Python
             SDK, or the HTTP API, then collect internal coding-agent usage with the same public repository.
           </p>
+          <Link className="performance-note" href="/docs/runtime-performance">
+            <Gauge aria-hidden="true" size={17} />
+            <span className="performance-copy">
+              <strong>Up to 32 microseconds (0.032 ms) p95 local SDK work per event before batching.</strong> Across 100
+              GCP runs; default-batch p99 stayed below 0.35 ms, and network delivery is separate.
+            </span>
+            <span className="performance-learn">
+              Learn more
+              <ArrowRight aria-hidden="true" size={15} />
+            </span>
+          </Link>
           <div className="hero-actions">
             <Link className="primary-link" href="/docs/sdk-quickstart">
               Choose an integration

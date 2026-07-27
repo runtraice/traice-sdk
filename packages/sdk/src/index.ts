@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import {
+import type {
   CostEvent,
   MeterOptions,
   CostMeterConfig,
@@ -17,7 +17,7 @@ import { resolveAdapters } from "./adapters";
 import { budgetMonitor } from "./budget";
 
 // Re-export types
-export {
+export type {
   CostEvent,
   EventMetadata,
   MeterOptions,

@@ -43,6 +43,7 @@
     "traice-sdk": "./dist/cli.cjs"
   },
   "scripts": {
+    "benchmark": "tsx benchmarks/runtime-latency.ts",
     "build": "tsup",
     "demo": "tsx demo.ts",
     "dashboard": "node dist/dashboard/server.cjs",

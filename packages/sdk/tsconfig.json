@@ -7,6 +7,14 @@
     "rootDir": ".",
     "types": ["node", "jest"]
   },
-  "include": ["src/**/*.ts", "dashboard/**/*.ts", "tests/**/*.ts", "examples/**/*.ts", "demo.ts", "tsup.config.ts"],
+  "include": [
+    "src/**/*.ts",
+    "benchmarks/**/*.ts",
+    "dashboard/**/*.ts",
+    "tests/**/*.ts",
+    "examples/**/*.ts",
+    "demo.ts",
+    "tsup.config.ts"
+  ],
   "exclude": ["dist", "node_modules"]
 }
