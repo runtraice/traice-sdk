@@ -5,7 +5,8 @@ Thanks for helping improve trAIce.
 ## Local Setup
 
 ```sh
-corepack enable pnpm
+corepack enable
+corepack prepare pnpm@10.34.5 --activate
 pnpm install
 pnpm run check
 ```

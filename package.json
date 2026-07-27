@@ -4,7 +4,6 @@
   "private": true,
   "description": "Public SDKs and coding-agent collectors for trAIce.",
   "license": "MIT",
-  "packageManager": "pnpm@10.34.5",
   "workspaces": [
     "apps/*",
     "packages/*"
