@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, Braces, Code2, Gauge, Radio, Terminal } from "lucide-react";
+import { ArrowRight, Braces, Code2, Radio, Terminal } from "lucide-react";
 import { LanguageSnippet, type LanguageSnippets } from "./components/LanguageSnippet";
 import { allDocs, groupedDocs } from "./lib/docs";
 
@@ -30,17 +30,6 @@ export default function HomePage() {
             Attribute product LLM spend to customers, users, features, and workflows. Use the TypeScript SDK, Python
             SDK, or the HTTP API, then collect internal coding-agent usage with the same public repository.
           </p>
-          <Link className="performance-note" href="/docs/runtime-performance">
-            <Gauge aria-hidden="true" size={17} />
-            <span className="performance-copy">
-              <strong>&lt;1 ms local telemetry overhead per event at p99.</strong> Measured across Node.js and Python on
-              GCP with default buffered delivery; network uploads and opt-in guardrails are separate.
-            </span>
-            <span className="performance-learn">
-              Learn more
-              <ArrowRight aria-hidden="true" size={15} />
-            </span>
-          </Link>
           <div className="hero-actions">
             <Link className="primary-link" href="/docs/sdk-quickstart">
               Choose an integration

@@ -8,7 +8,7 @@ order: 6
 
 # SDK Runtime Architecture and Performance
 
-> Local telemetry overhead per event stayed under 1 ms at p99 across our Node.js and Python GCP benchmark matrix with default buffered delivery. Network delivery and opt-in guardrail evaluation are separate.
+> Local SDK overhead per tracked LLM call stayed under 1 ms at p99 across our Node.js and Python GCP benchmark matrix with default buffered delivery. Network delivery and opt-in guardrail evaluation are separate.
 
 ## Client-side architecture
 
@@ -123,7 +123,7 @@ Large prompts, outputs, and metadata increase event construction, memory, and JS
 
 ## Published benchmark results
 
-The headline is a per-event measurement, not a batch duration. The timed operation starts with an immediate mock provider response and ends after the SDK has extracted usage, calculated price, attached attribution, built an event, and handed that event to its in-process buffer or queue. Because the provider stub returns immediately, the result closely represents the local work added around a normal provider call.
+The summary above is a per-call measurement, not a batch duration. The timed operation starts with an immediate mock provider response and ends after the SDK has extracted usage, calculated price, attached attribution, built an event, and handed that event to its in-process buffer or queue. Because the provider stub returns immediately, the result closely represents the local work added around a normal provider call.
 
 The measurement includes the mock provider invocation instead of subtracting one percentile from another. Provider-only p95 was at most 0.001 ms in JavaScript and 0.0003 ms in Python. Percentiles are not additive, so reporting the complete instrumented operation is less misleading than subtracting independently calculated p95 values.
 
@@ -158,7 +158,7 @@ The default-batch load test uses a batch size of 50 and calls the mock provider 
 | JavaScript                   |     0.003 to 0.014 ms |     0.128 to 0.342 ms |    0.014 ms |    0.342 ms |
 | Python                       |     0.011 to 0.170 ms |     0.016 to 0.348 ms |    0.170 ms |    0.348 ms |
 
-The landing page rounds this evidence to a conservative "under 1 ms" claim for local telemetry in default buffered mode. In TypeScript, every 50th event starts JSON serialization on the event-loop thread. That 2% path is visible at p99 but usually not p95. Python moves delivery to a daemon thread, but a zero-latency tight loop can contend with that thread on smaller machines. Real LLM calls normally leave much more time between events, but applications should measure their own traffic pattern.
+These results support a conservative "under 1 ms" summary for local SDK overhead in default buffered mode. In TypeScript, every 50th event starts JSON serialization on the event-loop thread. That 2% path is visible at p99 but usually not p95. Python moves delivery to a daemon thread, but a zero-latency tight loop can contend with that thread on smaller machines. Real LLM calls normally leave much more time between events, but applications should measure their own traffic pattern.
 
 ### What the GCP coverage taught us
 
@@ -168,14 +168,6 @@ The landing page rounds this evidence to a conservative "under 1 ms" claim for l
 - **Runtime and machine choice matter most under sustained load.** Isolated results were close across the matrix. Wider variation appeared when application and delivery work competed for CPU.
 - **Rules and payloads need separate numbers.** Warm evaluation of 100 non-matching rules remained below 0.02 ms p95, while 1,000 rules remained below 0.17 ms. Large metadata moved whole-batch serialization into the millisecond range.
 - **Buffered does not mean delivered.** None of these local measurements include a real upload. `awaitWrites: true` with `batchSize: 1`, or an awaited `flush()`, adds serialization and the actual network round trip.
-
-### How to answer "What latency does the SDK add?"
-
-For the default buffered integration:
-
-> In default buffered mode, measured local telemetry overhead stayed under 1 ms per event at p99 across our Node.js and Python GCP matrix. Uploads are asynchronous by default, so this excludes network delivery. Guardrail evaluation and synchronous flushes are separate.
-
-This is the short answer for the standard integration. Use the detailed tables when discussing high-throughput applications or comparing configurations. If the application awaits upload confirmation, measure and report its network round trip instead of using these local numbers.
 
 ### How the benchmarks work
 

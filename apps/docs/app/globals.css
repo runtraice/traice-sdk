@@ -170,46 +170,6 @@ kbd {
   margin-top: 28px;
 }
 
-.hero .performance-note {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: fit-content;
-  max-width: 660px;
-  margin-top: 22px;
-  border: 1px solid color-mix(in srgb, var(--accent-2) 44%, var(--line));
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: color-mix(in srgb, var(--accent-2) 9%, var(--panel));
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.performance-note svg {
-  flex: 0 0 auto;
-  color: var(--accent-2);
-}
-
-.performance-copy {
-  min-width: 0;
-}
-
-.performance-note strong {
-  color: var(--text);
-}
-
-.performance-learn {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 5px;
-  margin-left: auto;
-  color: var(--accent);
-  font-weight: 700;
-  white-space: nowrap;
-}
-
 .primary-link,
 .secondary-link {
   display: inline-flex;

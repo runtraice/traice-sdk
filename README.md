@@ -47,8 +47,8 @@ Python applications install `traice-sdk` from PyPI and import `traice`. The [Pyt
 
 ## Runtime performance
 
-Local telemetry overhead per event stayed under 1 ms at p99 across the Node.js
-and Python GCP benchmark matrix with default buffered delivery. Network
+Local SDK overhead per tracked LLM call stayed under 1 ms at p99 across the
+Node.js and Python GCP benchmark matrix with default buffered delivery. Network
 delivery and opt-in guardrails are measured separately. Read the [runtime
 architecture and performance
 guide](https://runtraice.github.io/traice-sdk/docs/runtime-performance) for the
