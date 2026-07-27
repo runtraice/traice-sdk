@@ -3,5 +3,5 @@ dist
 .next
 out
 coverage
-package-lock.json
+pnpm-lock.yaml
 *.tgz

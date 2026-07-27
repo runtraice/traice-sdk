@@ -5,7 +5,7 @@ import { join, relative } from "node:path";
 const root = process.cwd();
 
 const ignoredDirs = new Set([".git", ".next", "coverage", "dist", "node_modules", "out"]);
-const ignoredFiles = new Set(["package-lock.json"]);
+const ignoredFiles = new Set(["pnpm-lock.yaml"]);
 
 const bannedPathFragments = [
   "/.env",

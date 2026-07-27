@@ -9,7 +9,7 @@ worktree_dir=""
 
 usage() {
   cat <<'EOF'
-Usage: npm run release:prepare
+Usage: pnpm run release:prepare
 
 Opens a reviewable Changesets version PR. Merging that PR lets the release
 workflow publish through npm trusted publishing (OIDC), without an npm token.
@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for command in git gh npm; do
+for command in git gh pnpm; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command not found: $command" >&2
     exit 1
@@ -88,10 +88,10 @@ branch="release/version-packages-$(date -u +%Y%m%d%H%M%S)"
 (
   cd "$worktree_dir"
   git switch -c "$branch"
-  npm ci
-  npm run version
+  pnpm install --frozen-lockfile
+  pnpm run version
   git diff --check
-  npm run check
+  pnpm run check
 
   if git diff --quiet; then
     echo "Changesets produced no version changes." >&2
@@ -117,7 +117,7 @@ repository's GCP Cloud Build or Terraform deployment path.
 
 ## Verification
 
-- `npm run check`
+- `pnpm run check`
 - package tarball dry runs
 - `git diff --check`
 EOF

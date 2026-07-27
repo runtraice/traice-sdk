@@ -7,8 +7,8 @@
  * Uses the cheapest models to minimize cost (~$0.001 per run).
  *
  * Usage:
- *   ANTHROPIC_API_KEY=sk-ant-... npm run test:smoke
- *   OPENAI_API_KEY=sk-...       npm run test:smoke
+ *   ANTHROPIC_API_KEY=sk-ant-... pnpm run test:smoke
+ *   OPENAI_API_KEY=sk-...       pnpm run test:smoke
  *
  * Set one or both API keys. Tests for missing keys are skipped.
  */

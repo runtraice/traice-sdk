@@ -4,7 +4,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/.next/**", "**/coverage/**", "**/dist/**", "**/node_modules/**", "**/out/**", "**/package-lock.json"],
+    ignores: ["**/.next/**", "**/coverage/**", "**/dist/**", "**/node_modules/**", "**/out/**", "**/pnpm-lock.yaml"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

@@ -64,7 +64,7 @@ describe("CLI report", () => {
   beforeAll(() => {
     // Ensure dist is built
     if (!fs.existsSync(CLI_PATH)) {
-      execSync("npm run build", { cwd: path.join(__dirname, "..") });
+      execSync("pnpm run build", { cwd: path.join(__dirname, "..") });
     }
 
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "traice-sdk-cli-"));

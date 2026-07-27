@@ -46,11 +46,11 @@
     "build": "tsup",
     "demo": "tsx demo.ts",
     "dashboard": "node dist/dashboard/server.cjs",
-    "test": "npm run build && jest",
+    "test": "pnpm run build && jest",
     "test:smoke": "tsx tests/smoke.ts",
-    "test:enforcement": "npm run build --workspace @traice/collector && npm run build && node examples/enforcement-smoke.mjs",
+    "test:enforcement": "pnpm --filter @traice/collector run build && pnpm run build && node examples/enforcement-smoke.mjs",
     "typecheck": "tsc --noEmit",
-    "prepack": "npm run build"
+    "prepack": "pnpm run build"
   },
   "keywords": [
     "llm",

@@ -28,16 +28,19 @@ jobs:
           else
             echo "pending=false" >> "$GITHUB_OUTPUT"
           fi
+      - uses: pnpm/action-setup@v4
+        if: steps.changesets.outputs.pending == 'false'
       - uses: actions/setup-node@v7
         if: steps.changesets.outputs.pending == 'false'
         with:
           node-version: 24
+          cache: pnpm
       - name: Install dependencies
         if: steps.changesets.outputs.pending == 'false'
-        run: npm ci
+        run: pnpm install --frozen-lockfile
       - name: Validate release
         if: steps.changesets.outputs.pending == 'false'
-        run: npm run check
+        run: pnpm run check
       - name: Determine unpublished packages
         id: release_plan
         if: steps.changesets.outputs.pending == 'false'
@@ -93,7 +96,7 @@ jobs:
         if: steps.release_plan.outputs.pending == 'true'
         shell: bash
         run: |
-          output="$(npm exec -- changeset publish 2>&1)"
+          output="$(pnpm exec changeset publish 2>&1)"
           printf '%s\n' "$output"
           if grep -q 'packages published successfully' <<< "$output"; then
             echo "published=true" >> "$GITHUB_OUTPUT"

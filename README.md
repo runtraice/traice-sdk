@@ -90,8 +90,9 @@ trAIce accepts OTLP HTTP/JSON GenAI spans and the CLI can backfill normalized Li
 ## Development
 
 ```sh
-npm install
-npm run check
+corepack enable pnpm
+pnpm install
+pnpm run check
 ```
 
 Published-package changes require a Changeset. A reviewed version PR is the
