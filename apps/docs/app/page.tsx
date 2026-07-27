@@ -33,8 +33,8 @@ export default function HomePage() {
           <Link className="performance-note" href="/docs/runtime-performance">
             <Gauge aria-hidden="true" size={17} />
             <span className="performance-copy">
-              <strong>Under 1 ms local telemetry overhead per event.</strong> Measured at p99 across Node.js and Python
-              on GCP with default buffered delivery; network uploads and opt-in guardrails are separate.
+              <strong>&lt;1 ms local telemetry overhead per event at p99.</strong> Measured across Node.js and Python on
+              GCP with default buffered delivery; network uploads and opt-in guardrails are separate.
             </span>
             <span className="performance-learn">
               Learn more
