@@ -1,5 +1,15 @@
 # Repository instructions
 
+## Toolchain
+
+- Agents use pnpm 10.34.5. Enable it with `corepack enable` and
+  `corepack prepare pnpm@10.34.5 --activate`.
+- `pnpm-lock.yaml` is the canonical dependency lockfile and CI uses pnpm.
+  Developers may use npm, Yarn, or Bun locally, but do not commit or replace the
+  canonical lockfile with an alternate package manager's lockfile.
+- Use Node.js 20 or newer. Python 3 is also required for the full
+  `pnpm run check` suite.
+
 ## Copywriting
 
 - Do not use Unicode em dash characters (U+2014).
