@@ -5,8 +5,9 @@ Thanks for helping improve trAIce.
 ## Local Setup
 
 ```sh
-npm install
-npm run check
+corepack enable pnpm
+pnpm install
+pnpm run check
 ```
 
 ## Development Standards
@@ -14,7 +15,7 @@ npm run check
 - Write TypeScript for npm package source and typed Python for `packages/python`.
 - Keep public APIs usable from both TypeScript and JavaScript.
 - Add or update tests for behavior changes.
-- Run `npm run check` before opening a pull request.
+- Run `pnpm run check` before opening a pull request.
 - Do not commit secrets, `.env` files, private SaaS code, database schemas, migrations, customer data, or local collector state.
 
 ## Pull Requests
@@ -32,14 +33,14 @@ Packages are released from `main` with Changesets. Add a changeset to every PR
 that changes a published package:
 
 ```sh
-npm run changeset
+pnpm run changeset
 ```
 
 After package PRs merge, a maintainer prepares the reviewable version PR with
 the release helper:
 
 ```sh
-npm run release:prepare
+pnpm run release:prepare
 ```
 
 The helper runs the full package checks in a temporary worktree and opens the
@@ -61,7 +62,7 @@ The Python distribution has an independent version in
 `packages/python/src/traice/_version.py`. Run its tests and build before tagging:
 
 ```sh
-npm run python:check
+pnpm run python:check
 cd packages/python
 python -m build
 ```

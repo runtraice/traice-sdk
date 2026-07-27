@@ -36,7 +36,7 @@
     "build": "tsup src/index.ts --format esm,cjs --dts --clean",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prepack": "npm run build"
+    "prepack": "pnpm run build"
   },
   "publishConfig": {
     "access": "public"

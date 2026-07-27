@@ -19,12 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v7
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run docs:build
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run docs:build
         env:
           GITHUB_PAGES: "true"
           NEXT_PUBLIC_BASE_PATH: /traice-sdk

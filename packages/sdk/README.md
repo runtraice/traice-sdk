@@ -178,7 +178,7 @@ Run the enforcement smoke harness against the workspace saved by the collector.
 It uses a simulated provider, so it does not incur model spend:
 
 ```sh
-npm run test:enforcement --workspace @traice/sdk
+pnpm --filter @traice/sdk run test:enforcement
 ```
 
 Set `TRAICE_API_KEY` and optionally `TRAICE_API_URL` to use a different
