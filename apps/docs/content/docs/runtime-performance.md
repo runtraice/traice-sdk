@@ -8,7 +8,7 @@ order: 6
 
 # SDK Runtime Architecture and Performance
 
-> Local SDK work per event measured up to 32 microseconds (0.032 ms) p95 before batching across 100 GCP benchmark runs. This is the work needed to turn one completed provider response into one buffered event. It does not mean that the event has reached trAIce.
+> Local telemetry overhead per event stayed under 1 ms at p99 across our Node.js and Python GCP benchmark matrix with default buffered delivery. Network delivery and opt-in guardrail evaluation are separate.
 
 ## Client-side architecture
 
@@ -125,20 +125,6 @@ Large prompts, outputs, and metadata increase event construction, memory, and JS
 
 The headline is a per-event measurement, not a batch duration. The timed operation starts with an immediate mock provider response and ends after the SDK has extracted usage, calculated price, attached attribution, built an event, and handed that event to its in-process buffer or queue. Because the provider stub returns immediately, the result closely represents the local work added around a normal provider call.
 
-### Milliseconds and microseconds
-
-One millisecond is 1,000 microseconds:
-
-| Milliseconds | Microseconds |
-| -----------: | -----------: |
-|     0.005 ms |         5 µs |
-|     0.032 ms |        32 µs |
-|     0.170 ms |       170 µs |
-|     0.348 ms |       348 µs |
-|     1.000 ms |     1,000 µs |
-
-The same duration can be written in either unit. Microseconds make these small local measurements easier to read. Milliseconds are retained beside headline values so they can be compared with provider and application latency.
-
 The measurement includes the mock provider invocation instead of subtracting one percentile from another. Provider-only p95 was at most 0.001 ms in JavaScript and 0.0003 ms in Python. Percentiles are not additive, so reporting the complete instrumented operation is less misleading than subtracting independently calculated p95 values.
 
 It excludes real provider latency, rule-refresh network time, background delivery, and event-upload network time. An event is only buffered when this timer stops.
@@ -160,36 +146,36 @@ JavaScript ran on Node.js 20.20.2 and 24.18.0. Python ran on CPython 3.9, 3.12, 
 
 The isolated handoff keeps the batch threshold above the sample count. It answers: "How much foreground local work does the SDK add for one event when that event does not trigger a batch?"
 
-| Isolated foreground handoff | p95 range across runs | p99 range across runs |      Highest p95 |
-| --------------------------- | --------------------: | --------------------: | ---------------: |
-| JavaScript                  |            5 to 12 µs |            6 to 39 µs | 12 µs (0.012 ms) |
-| Python                      |           11 to 32 µs |           15 to 52 µs | 32 µs (0.032 ms) |
+| Isolated foreground handoff | p95 range across runs | p99 range across runs | Highest p95 |
+| --------------------------- | --------------------: | --------------------: | ----------: |
+| JavaScript                  |     0.005 to 0.012 ms |     0.006 to 0.039 ms |    0.012 ms |
+| Python                      |     0.011 to 0.032 ms |     0.015 to 0.052 ms |    0.032 ms |
 
 The default-batch load test uses a batch size of 50 and calls the mock provider continuously with no real provider delay. This deliberately exposes serialization tails and, in Python, contention with the delivery thread.
 
-| Sustained default-batch load | p95 range across runs | p99 range across runs |       Highest p95 |       Highest p99 |
-| ---------------------------- | --------------------: | --------------------: | ----------------: | ----------------: |
-| JavaScript                   |            3 to 14 µs |         128 to 342 µs |  14 µs (0.014 ms) | 342 µs (0.342 ms) |
-| Python                       |          11 to 170 µs |          16 to 348 µs | 170 µs (0.170 ms) | 348 µs (0.348 ms) |
+| Sustained default-batch load | p95 range across runs | p99 range across runs | Highest p95 | Highest p99 |
+| ---------------------------- | --------------------: | --------------------: | ----------: | ----------: |
+| JavaScript                   |     0.003 to 0.014 ms |     0.128 to 0.342 ms |    0.014 ms |    0.342 ms |
+| Python                       |     0.011 to 0.170 ms |     0.016 to 0.348 ms |    0.170 ms |    0.348 ms |
 
-This is why the landing page does not say "all SDK latency is below 0.1 ms." In TypeScript, every 50th event starts JSON serialization on the event-loop thread. That 2% path is visible at p99 but usually not p95. Python moves delivery to a daemon thread, but a zero-latency tight loop can contend with that thread on smaller machines. Real LLM calls normally leave much more time between events, but applications should measure their own traffic pattern.
+The landing page rounds this evidence to a conservative "under 1 ms" claim for local telemetry in default buffered mode. In TypeScript, every 50th event starts JSON serialization on the event-loop thread. That 2% path is visible at p99 but usually not p95. Python moves delivery to a daemon thread, but a zero-latency tight loop can contend with that thread on smaller machines. Real LLM calls normally leave much more time between events, but applications should measure their own traffic pattern.
 
 ### What the GCP coverage taught us
 
-- **The isolated handoff was consistently small.** The highest per-run p95 was 12 µs in JavaScript and 32 µs in Python across x86-64 and Arm64 machines.
-- **p95 alone hides the TypeScript batch boundary.** With a batch size of 50, only 2% of events trigger serialization. The effect appears at p99, which reached 342 µs, rather than p95.
-- **Python trades caller-thread work for delivery-thread contention.** Its daemon thread keeps serialization and network I/O off the request thread, but a continuous zero-latency loop on smaller machines pushed p95 to 170 µs.
+- **The isolated handoff was consistently small.** It remained below 0.04 ms p95 across JavaScript and Python on x86-64 and Arm64 machines.
+- **p95 alone hides the TypeScript batch boundary.** With a batch size of 50, only 2% of events trigger serialization. The default-batch p99 remained below 0.35 ms in both implementations.
+- **Python trades caller-thread work for delivery-thread contention.** Its daemon thread keeps serialization and network I/O off the request thread, but a continuous zero-latency loop on smaller machines pushed p95 as high as 0.17 ms.
 - **Runtime and machine choice matter most under sustained load.** Isolated results were close across the matrix. Wider variation appeared when application and delivery work competed for CPU.
-- **Rules and payloads need separate numbers.** Warm evaluation of 100 non-matching rules reached 18 µs p95, while 1,000 rules reached 161 µs. Large metadata moved whole-batch serialization into the millisecond range.
+- **Rules and payloads need separate numbers.** Warm evaluation of 100 non-matching rules remained below 0.02 ms p95, while 1,000 rules remained below 0.17 ms. Large metadata moved whole-batch serialization into the millisecond range.
 - **Buffered does not mean delivered.** None of these local measurements include a real upload. `awaitWrites: true` with `batchSize: 1`, or an awaited `flush()`, adds serialization and the actual network round trip.
 
 ### How to answer "What latency does the SDK add?"
 
 For the default buffered integration:
 
-> The local SDK handoff for one event measured 5 to 32 microseconds p95 before batching across our GCP matrix. Under a sustained zero-latency load with default batching, p95 reached 14 microseconds in JavaScript and 170 microseconds in Python; batch-trigger p99 stayed below 0.35 ms in both. Uploads are asynchronous by default, so those figures exclude network delivery. Guardrail evaluation is measured separately.
+> In default buffered mode, measured local telemetry overhead stayed under 1 ms per event at p99 across our Node.js and Python GCP matrix. Uploads are asynchronous by default, so this excludes network delivery. Guardrail evaluation and synchronous flushes are separate.
 
-Use the isolated number to describe the common foreground handoff. Include the sustained-load and p99 figures when discussing high-throughput applications. If the application awaits upload confirmation, measure and report its network round trip instead of using these local numbers.
+This is the short answer for the standard integration. Use the detailed tables when discussing high-throughput applications or comparing configurations. If the application awaits upload confirmation, measure and report its network round trip instead of using these local numbers.
 
 ### How the benchmarks work
 
@@ -217,27 +203,24 @@ The Python batch-completion number is not added directly to a normal request. It
 
 | Other measured path                                 |   p95 range across GCP runs |
 | --------------------------------------------------- | --------------------------: |
-| TypeScript plan, 100 non-matching rules             |                  2 to 10 µs |
-| TypeScript plan, 1,000 non-matching rules           |                29 to 161 µs |
-| TypeScript warm enforcement, 100 rules              |                  5 to 18 µs |
-| TypeScript cloud buffer append                      |               0.3 to 4.4 µs |
+| TypeScript plan, 100 non-matching rules             |           0.002 to 0.010 ms |
+| TypeScript plan, 1,000 non-matching rules           |           0.029 to 0.161 ms |
+| TypeScript warm enforcement, 100 rules              |           0.005 to 0.018 ms |
+| TypeScript cloud buffer append                      |         0.0003 to 0.0044 ms |
 | TypeScript 50-event batch, normal metadata          | 0.159 to 1.075 ms per batch |
-| Python queue append                                 |               0.5 to 2.7 µs |
+| Python queue append                                 |         0.0005 to 0.0027 ms |
 | Python 50-event background batch, normal metadata   | 0.125 to 0.970 ms per batch |
 | TypeScript 50-event batch, 10 KB metadata per event | 0.784 to 3.896 ms per batch |
 | Python 50-event background batch, 10 KB per event   | 1.128 to 5.252 ms per batch |
 
 ### Latency chart
 
-This chart uses the highest percentile across the GCP matrix. Each `#` is approximately 20 µs up to 400 µs.
+This chart rounds the highest observed percentile across the GCP matrix. Each `#` is approximately 0.02 ms.
 
 ```text
-JavaScript isolated handoff p95  #                     12 µs
-Python isolated handoff p95      ##                    32 µs
-JavaScript default batch p95     #                     14 µs
-Python default batch p95         #########            170 µs
-JavaScript default batch p99     #################    342 µs
-Python default batch p99         ##################   348 µs
+Isolated handoff p95, both SDKs  ##                  <0.04 ms
+Default batching p95, both SDKs  #########           <0.18 ms
+Default batching p99, both SDKs  ##################  <0.35 ms
 ```
 
 ### Reproduce the benchmark

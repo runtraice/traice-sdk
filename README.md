@@ -47,11 +47,13 @@ Python applications install `traice-sdk` from PyPI and import `traice`. The [Pyt
 
 ## Runtime performance
 
-Local SDK work per event measured up to 32 microseconds (0.032 ms) p95 before
-batching across 100 GCP benchmark runs. Under sustained default batching, p99
-stayed below 0.35 ms in JavaScript and Python. Network delivery is separate. Read the
-[runtime architecture and performance guide](https://runtraice.github.io/traice-sdk/docs/runtime-performance)
-for the client-side flow, full results, limits, and serverless workarounds.
+Local telemetry overhead per event stayed under 1 ms at p99 across the Node.js
+and Python GCP benchmark matrix with default buffered delivery. Network
+delivery and opt-in guardrails are measured separately. Read the [runtime
+architecture and performance
+guide](https://runtraice.github.io/traice-sdk/docs/runtime-performance) for the
+client-side flow, benchmark method and results, limits, and serverless
+workarounds.
 
 ```sh
 pnpm run benchmark:sdk

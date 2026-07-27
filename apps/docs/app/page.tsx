@@ -33,8 +33,8 @@ export default function HomePage() {
           <Link className="performance-note" href="/docs/runtime-performance">
             <Gauge aria-hidden="true" size={17} />
             <span className="performance-copy">
-              <strong>Up to 32 microseconds (0.032 ms) p95 local SDK work per event before batching.</strong> Across 100
-              GCP runs; default-batch p99 stayed below 0.35 ms, and network delivery is separate.
+              <strong>Under 1 ms local telemetry overhead per event.</strong> Measured at p99 across Node.js and Python
+              on GCP with default buffered delivery; network uploads and opt-in guardrails are separate.
             </span>
             <span className="performance-learn">
               Learn more
