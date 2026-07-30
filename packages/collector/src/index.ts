@@ -3,6 +3,8 @@ export type {
   CollectorConfig,
   CollectorDestinationIdentity,
   CollectorDestination,
+  CollectorFolderRoute,
+  CollectorFolderRouteAgent,
   CollectorInstallOptions,
   CollectorManualContext,
   CollectorRunOptions,
@@ -22,18 +24,31 @@ export {
   allRoutedDestinationNames,
   collectorDestination,
   collectorDestinationSummaries,
+  collectorFolderRouteSummaries,
   collectorRouteSummaries,
   configuredDestinationNames,
   configForDestination,
   defaultDestinationName,
   formatCollectorRouteList,
+  formatCollectorRouteExplanation,
   normalizeDestinationName,
   removeCollectorDestination,
+  removeCollectorFolderRoute,
+  resolveCollectorRoute,
   routedDestinationNames,
   setCollectorRoute,
+  setCollectorFolderRoute,
   upsertCollectorDestination,
 } from "./destinations";
-export type { CollectorDestinationSummary, CollectorRouteSummary, ResolvedCollectorConfig } from "./destinations";
+export type {
+  CollectorDestinationSummary,
+  CollectorFolderRouteSummary,
+  CollectorRouteCandidate,
+  CollectorRouteResolution,
+  CollectorRouteSummary,
+  CollectorRouteSource,
+  ResolvedCollectorConfig,
+} from "./destinations";
 export {
   clearCollectorDestinationContext,
   collectorDestinationContextSummary,
@@ -76,6 +91,7 @@ export type {
 } from "./backfill";
 export { installAgent } from "./install";
 export { runCollector } from "./run";
+export { CollectorSessionFolderResolver, sessionFolderFromFile } from "./session-folders";
 export { checkCollectorUpdate, updateCollector } from "./updates";
 export type { CollectorUpdateStatus } from "./updates";
 export { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";

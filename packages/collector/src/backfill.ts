@@ -5,7 +5,13 @@ import type { InternalUsageEvent } from "@traice/protocol";
 import { createCollectorAccessTokenProvider } from "./auth";
 import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
 import { resolveHome } from "./fs";
-import { configForDestination, defaultDestinationName, normalizeDestinationName } from "./destinations";
+import {
+  canonicalFolderPath,
+  configForDestination,
+  defaultDestinationName,
+  normalizeDestinationName,
+  routedDestinationNames,
+} from "./destinations";
 import { forwardEvents } from "./run";
 import { eventForCollectorDestination } from "./context";
 
@@ -24,6 +30,7 @@ interface CodexSessionRow {
     type?: unknown;
     id?: unknown;
     session_id?: unknown;
+    cwd?: unknown;
     model?: unknown;
     info?: { last_token_usage?: TokenUsage; total_token_usage?: TokenUsage };
   };
@@ -39,6 +46,7 @@ interface HistoricalUsageEvent {
   outputTokens: number;
   totalTokens: number;
   reasoningOutputTokens: number;
+  folder?: string;
 }
 
 export interface CodexBackfillDryRunOptions {
@@ -96,69 +104,99 @@ export async function backfillCodex(options: CodexBackfillOptions): Promise<Code
     ...options,
     until: options.until ?? rootConfig.telemetryEnabledAt?.codex,
   });
-  const destinationName = normalizeDestinationName(options.destination ?? defaultDestinationName(rootConfig, "codex"));
-  const config = configForDestination(rootConfig, destinationName);
-  const getAccessToken = createCollectorAccessTokenProvider(configPath, {}, destinationName);
-  await getAccessToken();
-
-  const source = config.sources.codex ?? defaultSourceForAgent("codex");
-  const liveEvents = await fetchLiveEvents({
-    serverUrl: config.serverUrl,
-    getAccessToken,
-    since: result.summary.since,
-    until: result.summary.until,
-    sourceKey: source.sourceKey,
-  });
-  const liveKeys = countedSemanticKeys(liveEvents);
-  let crossModeDuplicatesSkipped = 0;
-  const events: InternalUsageEvent[] = [];
-
+  const eventsByDestination = new Map<string, HistoricalUsageEvent[]>();
   for (const event of result.events) {
-    const key = semanticUsageKey(event);
-    const remaining = liveKeys.get(key) ?? 0;
-    if (remaining > 0) {
-      liveKeys.set(key, remaining - 1);
-      crossModeDuplicatesSkipped += 1;
-      continue;
+    const destinationNames = options.destination
+      ? [normalizeDestinationName(options.destination)]
+      : routedDestinationNames(rootConfig, "codex", undefined, event.folder);
+    for (const destinationName of destinationNames) {
+      eventsByDestination.set(destinationName, [...(eventsByDestination.get(destinationName) ?? []), event]);
     }
-    events.push(
-      eventForCollectorDestination(
-        rootConfig,
-        destinationName,
-        {
-          ...source,
-          ...rootConfig.identity,
-          sourceEventId: event.sourceEventId,
-          occurredAt: event.occurredAt,
-          runId: event.runId,
-          ...(event.model ? { model: event.model } : {}),
-          inputTokens: event.inputTokens,
-          cacheReadTokens: event.cacheReadTokens,
-          outputTokens: event.outputTokens,
-          totalTokens: event.totalTokens,
-          costBasis: "usage_only",
-          status: "unknown",
-          metadata: { historySource: "codex-session-jsonl", reasoningOutputTokens: event.reasoningOutputTokens },
-        },
-        { includeTaskContext: false },
-      ),
+  }
+  if (eventsByDestination.size === 0) {
+    const destinationName = normalizeDestinationName(
+      options.destination ?? defaultDestinationName(rootConfig, "codex"),
     );
+    eventsByDestination.set(destinationName, []);
   }
 
-  const accepted = await forwardEvents(config, events, {
-    batchSize: 100,
-    onBatch: options.onProgress,
-    getAccessToken,
-  });
+  let liveEventsInspected = 0;
+  let crossModeDuplicatesSkipped = 0;
+  let uploadCandidates = 0;
+  let accepted = 0;
+  let processed = 0;
+  const total = [...eventsByDestination.values()].reduce((sum, events) => sum + events.length, 0);
+
+  for (const [destinationName, historicalEvents] of eventsByDestination) {
+    const config = configForDestination(rootConfig, destinationName);
+    const getAccessToken = createCollectorAccessTokenProvider(configPath, {}, destinationName);
+    await getAccessToken();
+    const source = config.sources.codex ?? defaultSourceForAgent("codex");
+    const liveEvents = await fetchLiveEvents({
+      serverUrl: config.serverUrl,
+      getAccessToken,
+      since: result.summary.since,
+      until: result.summary.until,
+      sourceKey: source.sourceKey,
+    });
+    liveEventsInspected += liveEvents.length;
+    const liveKeys = countedSemanticKeys(liveEvents);
+    const events: InternalUsageEvent[] = [];
+    for (const event of historicalEvents) {
+      const key = semanticUsageKey(event);
+      const remaining = liveKeys.get(key) ?? 0;
+      if (remaining > 0) {
+        liveKeys.set(key, remaining - 1);
+        crossModeDuplicatesSkipped += 1;
+        continue;
+      }
+      events.push(
+        eventForCollectorDestination(
+          rootConfig,
+          destinationName,
+          {
+            ...source,
+            ...rootConfig.identity,
+            sourceEventId: event.sourceEventId,
+            occurredAt: event.occurredAt,
+            runId: event.runId,
+            ...(event.model ? { model: event.model } : {}),
+            inputTokens: event.inputTokens,
+            cacheReadTokens: event.cacheReadTokens,
+            outputTokens: event.outputTokens,
+            totalTokens: event.totalTokens,
+            costBasis: "usage_only",
+            status: "unknown",
+            metadata: { historySource: "codex-session-jsonl", reasoningOutputTokens: event.reasoningOutputTokens },
+          },
+          { includeTaskContext: false },
+        ),
+      );
+    }
+    uploadCandidates += events.length;
+    accepted += await forwardEvents(config, events, {
+      batchSize: 100,
+      onBatch: (progress) => {
+        options.onProgress?.({
+          processed: processed + progress.processed,
+          total,
+          accepted: accepted + progress.accepted,
+        });
+      },
+      getAccessToken,
+    });
+    processed += historicalEvents.length;
+  }
+
   return {
     dryRun: false,
     sendsData: true,
     ...result.summary,
-    liveEventsInspected: liveEvents.length,
+    liveEventsInspected,
     crossModeDuplicatesSkipped,
-    uploadCandidates: events.length,
+    uploadCandidates,
     accepted,
-    dropped: events.length - accepted,
+    dropped: uploadCandidates - accepted,
   };
 }
 
@@ -188,6 +226,7 @@ function scanCodexHistory(options: CodexBackfillDryRunOptions): {
   for (const file of files) {
     const lines = readFileSync(file, "utf8").split("\n");
     let sessionId: string | undefined;
+    let sessionFolder: string | undefined;
     let model: string | undefined;
     let previousTotalUsageKey: string | undefined;
     let previousTotalTokens: number | undefined;
@@ -206,6 +245,8 @@ function scanCodexHistory(options: CodexBackfillDryRunOptions): {
 
       if (row.type === "session_meta") {
         sessionId = stringValue(row.payload?.id) ?? stringValue(row.payload?.session_id) ?? sessionId;
+        const cwd = stringValue(row.payload?.cwd);
+        if (cwd) sessionFolder = canonicalFolderPath(cwd);
         continue;
       }
       if (row.type === "turn_context") {
@@ -250,6 +291,7 @@ function scanCodexHistory(options: CodexBackfillDryRunOptions): {
         outputTokens: normalized.output,
         totalTokens: normalized.total,
         reasoningOutputTokens: normalized.reasoningOutput,
+        ...(sessionFolder ? { folder: sessionFolder } : {}),
       });
       fileHasUsage = true;
       tokens.input += normalized.input;

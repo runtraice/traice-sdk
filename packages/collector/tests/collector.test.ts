@@ -19,6 +19,7 @@ import {
   inferAgents,
   normalizeDirectInternalUsagePayload,
   normalizePayloadForRequest,
+  routeEvents,
   warmDestinationAuthorizations,
 } from "../src/run";
 import {
@@ -29,12 +30,20 @@ import {
 import { setupAgent } from "../src/setup";
 import { codexTomlBlock, patchCodexConfig } from "../src/settings";
 import {
+  allRoutedDestinationNames,
   collectorDestinationSummaries,
+  canonicalFolderPath,
+  collectorFolderRouteSummaries,
+  formatCollectorRouteExplanation,
   formatCollectorRouteList,
   destinationNameFromWorkspace,
+  removeCollectorFolderRoute,
+  resolveCollectorRoute,
   routedDestinationNames,
+  setCollectorFolderRoute,
   setCollectorRoute,
 } from "../src/destinations";
+import { CollectorSessionFolderResolver, sessionFolderFromFile } from "../src/session-folders";
 import { formatCollectorStatus, getCollectorServiceStatus, getCollectorStatus } from "../src/status";
 import type { CollectorConfig } from "../src/types";
 import type { ResolvedCollectorConfig } from "../src/destinations";
@@ -310,9 +319,112 @@ describe("@traice/collector", () => {
         "  - production",
         "    API key workspace | www.runtraice.com",
         "",
-        "Each live event is sent to every destination listed for its agent.",
+        "Precedence: command override, most specific folder route, agent default, single destination.",
+        "Each live event is sent to every destination selected by its winning route.",
       ].join("\n"),
     );
+  });
+
+  it("uses the most specific folder route before the per-agent default", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-folder-route-"));
+    temporaryDirectories.push(directory);
+    const nested = join(directory, "repo", "feature");
+    mkdirSync(nested, { recursive: true });
+    const credential = { backend: "protected-file" as const, path: "/tmp/credential.json" };
+    let config: CollectorConfig = {
+      ...buildDefaultConfig(),
+      enabledAgents: ["codex", "claude-code"],
+      destinations: {
+        default: { serverUrl: "https://default.example.com", credential },
+        repository: { serverUrl: "https://repository.example.com", credential },
+        feature: { serverUrl: "https://feature.example.com", credential },
+        claude: { serverUrl: "https://claude.example.com", credential },
+      },
+    };
+    config = setCollectorRoute(config, "codex", ["default"]);
+    config = setCollectorRoute(config, "claude-code", ["default"]);
+    config = setCollectorFolderRoute(config, "all", join(directory, "repo"), ["repository"]);
+    config = setCollectorFolderRoute(config, "all", nested, ["feature"]);
+    config = setCollectorFolderRoute(config, "claude-code", nested, ["claude"]);
+
+    expect(routedDestinationNames(config, "codex", undefined, nested)).toEqual(["feature"]);
+    expect(routedDestinationNames(config, "claude-code", undefined, nested)).toEqual(["claude"]);
+    expect(routedDestinationNames(config, "codex", undefined, join(directory, "repo", "other"))).toEqual([
+      "repository",
+    ]);
+    expect(routedDestinationNames(config, "codex", ["default"], nested)).toEqual(["default"]);
+    const explanation = resolveCollectorRoute(config, "codex", { folder: nested });
+    expect(explanation).toMatchObject({
+      source: "folder",
+      matchedAgent: "all",
+      destinations: ["feature"],
+      fallbacks: [
+        { source: "folder", matchedAgent: "all", destinations: ["repository"] },
+        { source: "agent", destinations: ["default"] },
+      ],
+    });
+    expect(formatCollectorRouteExplanation(explanation)).toContain(
+      `all folder route at ${canonicalFolderPath(join(directory, "repo"))} -> repository`,
+    );
+    expect(collectorFolderRouteSummaries(config)).toHaveLength(3);
+    expect(allRoutedDestinationNames(config)).toEqual(["default", "repository", "feature", "claude"]);
+
+    config = removeCollectorFolderRoute(config, nested, "all");
+    expect(routedDestinationNames(config, "codex", undefined, nested)).toEqual(["repository"]);
+  });
+
+  it("resolves session folders locally and routes events without uploading the path", () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-session-folder-"));
+    temporaryDirectories.push(directory);
+    const codexHome = join(directory, "codex");
+    const sessionDirectory = join(codexHome, "sessions", "2026", "07", "30");
+    const workspace = join(directory, "workspace");
+    mkdirSync(sessionDirectory, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    const sessionId = "019c0000-0000-7000-8000-000000000001";
+    const sessionFile = join(sessionDirectory, `rollout-2026-07-30T12-00-00-${sessionId}.jsonl`);
+    writeFileSync(
+      sessionFile,
+      `${JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd: workspace } })}\n`,
+    );
+    expect(sessionFolderFromFile("codex", sessionFile, sessionId)).toBe(canonicalFolderPath(workspace));
+
+    const credential = { backend: "protected-file" as const, path: "/tmp/credential.json" };
+    let config: CollectorConfig = {
+      ...buildDefaultConfig(),
+      codexHome,
+      enabledAgents: ["codex"],
+      destinations: {
+        default: { serverUrl: "https://default.example.com", credential },
+        workspace: { serverUrl: "https://workspace.example.com", credential },
+      },
+    };
+    config = setCollectorRoute(config, "codex", ["default"]);
+    config = setCollectorFolderRoute(config, "codex", workspace, ["workspace"]);
+    const resolver = new CollectorSessionFolderResolver(config);
+    const event: InternalUsageEvent = {
+      ...defaultSourceForAgent("codex"),
+      ...identity,
+      sourceEventId: "event-1",
+      occurredAt: "2026-07-30T12:00:00.000Z",
+      runId: sessionId,
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      costBasis: "usage_only",
+      status: "unknown",
+      metadata: {},
+    };
+
+    const onRouting = vi.fn();
+    const routed = routeEvents(config, [event], undefined, resolver, onRouting);
+    expect([...routed.keys()]).toEqual(["workspace"]);
+    expect(onRouting).toHaveBeenCalledWith({
+      agent: "codex",
+      sessionId,
+      folder: canonicalFolderPath(workspace),
+    });
+    expect(JSON.stringify(routed.get("workspace"))).not.toContain(canonicalFolderPath(workspace));
   });
 
   it("reads a v1 config without disrupting an older service, then persists it on an explicit write", () => {
@@ -601,6 +713,65 @@ describe("@traice/collector", () => {
       until: "2026-07-10T13:00:00.000Z",
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
+  });
+
+  it("uses folder routes for Codex backfill without uploading the local path", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "traice-codex-folder-backfill-"));
+    temporaryDirectories.push(directory);
+    const workspace = join(directory, "workspace");
+    const sessions = join(directory, "codex", "sessions", "2026", "07", "10");
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(sessions, { recursive: true });
+    writeFileSync(
+      join(sessions, "rollout.jsonl"),
+      [
+        JSON.stringify({ type: "session_meta", payload: { id: "session-1", cwd: workspace } }),
+        JSON.stringify({
+          timestamp: "2026-07-10T12:00:00.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
+              last_token_usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    const configPath = join(directory, "collector.json");
+    let config: CollectorConfig = {
+      ...buildDefaultConfig(),
+      enabledAgents: ["codex"],
+      destinations: {
+        default: { serverUrl: "https://default.example.test", apiKey: "default-key" },
+        workspace: { serverUrl: "https://workspace.example.test", apiKey: "workspace-key" },
+      },
+      routes: { codex: ["default"] },
+      sources: { codex: defaultSourceForAgent("codex") },
+    };
+    config = setCollectorFolderRoute(config, "codex", workspace, ["workspace"]);
+    writeFileSync(configPath, JSON.stringify(config));
+    const uploadedBodies: string[] = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      expect(url).toContain("workspace.example.test");
+      if (url.includes("/api/v1/collector/usage")) return Response.json({ usage: [] });
+      uploadedBodies.push(String(init?.body));
+      return Response.json({ accepted: 1 });
+    });
+
+    const result = await backfillCodex({
+      configPath,
+      codexHome: join(directory, "codex"),
+      since: "2026-07-10T00:00:00.000Z",
+      until: "2026-07-11T00:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({ uploadCandidates: 1, accepted: 1, dropped: 0 });
+    expect(uploadedBodies).toHaveLength(1);
+    expect(uploadedBodies[0]).not.toContain(canonicalFolderPath(workspace));
     fetchSpy.mockRestore();
   });
 

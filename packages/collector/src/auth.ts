@@ -192,7 +192,7 @@ export async function loginCollectorOAuth(
   let intervalSeconds = positiveInteger(device.interval ?? 5, "interval");
   const deadline = now() + expiresIn * 1000;
 
-  report(`Open ${verificationUri}`);
+  report(`Open ${verificationUriComplete}`);
   report(`Enter code: ${userCode}`);
   if (!options.noBrowser) {
     const opened = (dependencies.openBrowser ?? openSystemBrowser)(verificationUriComplete);
@@ -214,7 +214,7 @@ export async function loginCollectorOAuth(
     });
     const body = (await tokenResponse.json().catch(() => ({}))) as Record<string, unknown>;
     if (tokenResponse.ok) {
-      return tokenLoginResult(body, verificationUri, now());
+      return tokenLoginResult(body, verificationUriComplete, now());
     }
     const code = typeof body.error === "string" ? body.error : "";
     if (code === "authorization_pending") continue;

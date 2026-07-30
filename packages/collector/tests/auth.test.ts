@@ -69,7 +69,9 @@ describe("collector OAuth", () => {
     expect(result.authorizations[0]?.workspace).toEqual({ id: "workspace-1", name: "Acme", slug: null });
     expect(result.authorizations[0]?.user.email).toBe("alex@acme.com");
     expect(result.authorizations[0]?.bundle.accessToken).toBe("tr_oauth_at_secret");
+    expect(result.verificationUri).toBe("https://runtraice.com/device?user_code=ABCD-EFGH");
     expect(openBrowser).toHaveBeenCalledWith("https://runtraice.com/device?user_code=ABCD-EFGH");
+    expect(report).toHaveBeenCalledWith("Open https://runtraice.com/device?user_code=ABCD-EFGH");
     expect(report).toHaveBeenCalledWith("Enter code: ABCD-EFGH");
     expect(sleep).toHaveBeenCalledTimes(3);
     const deviceRequest = fetchImpl.mock.calls[0][1];
@@ -84,6 +86,7 @@ describe("collector OAuth", () => {
           device_code: "device-secret",
           user_code: "ABCD-EFGH",
           verification_uri: "https://runtraice.com/device",
+          verification_uri_complete: "https://runtraice.com/device?user_code=ABCD-EFGH",
           expires_in: 600,
           interval: 5,
         }),
@@ -113,7 +116,7 @@ describe("collector OAuth", () => {
     );
 
     expect(openBrowser).not.toHaveBeenCalled();
-    expect(report).toHaveBeenCalledWith("Open https://runtraice.com/device");
+    expect(report).toHaveBeenCalledWith("Open https://runtraice.com/device?user_code=ABCD-EFGH");
   });
 
   it("stores the token bundle outside the collector config", async () => {
