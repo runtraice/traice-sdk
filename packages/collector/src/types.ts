@@ -1,4 +1,4 @@
-import type { CollectorIdentity, CollectorSource, InternalUsageEvent } from "@traice/protocol";
+import type { CollectorIdentity, CollectorSource, InternalUsageEvent, JsonRecord } from "@traice/protocol";
 
 export type AgentName = "claude-code" | "codex";
 export type CredentialStoreMode = "auto" | "keyring" | "file";
@@ -21,8 +21,24 @@ export interface CollectorDestination {
   serverUrl: string;
   credential?: CollectorCredential;
   authorization?: CollectorOAuthAuthorization;
+  /** Optional attribution overrides applied only to events sent to this destination. */
+  identity?: CollectorDestinationIdentity;
+  /** Explicit, bounded context attached only to events sent to this destination. */
+  context?: CollectorManualContext;
   /** Present only while a v1 plaintext credential is being migrated. */
   apiKey?: string;
+}
+
+export type CollectorDestinationIdentity = {
+  [K in keyof CollectorIdentity]?: CollectorIdentity[K] | null;
+};
+
+export interface CollectorManualContext {
+  role?: string;
+  department?: string;
+  description?: string;
+  repository?: string;
+  labels?: JsonRecord;
 }
 
 export interface CollectorConfig {

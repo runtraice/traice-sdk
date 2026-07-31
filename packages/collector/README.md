@@ -44,6 +44,40 @@ npx @traice/collector@latest auth login --destination sandbox --workspace sandbo
 
 New authorization defaults to the production trAIce service and never inherits another destination's deployment.
 
+## Opt-in task context
+
+Identity and task context can be scoped to one destination. Nothing beyond normal usage metadata is added until the
+user runs `context set`.
+
+```sh
+npx @traice/collector@latest context set \
+  --destination engineering-workspace \
+  --employee-email engineer@example.com \
+  --role "Staff Engineer" \
+  --department Engineering \
+  --repository auto \
+  --description "Improve collector attribution" \
+  --labels-json '{"workType":"product","priority":"p1"}'
+
+npx @traice/collector@latest context show --destination engineering-workspace
+npx @traice/collector@latest context clear --destination engineering-workspace
+```
+
+`--repository auto` reads the current local Git remote only when explicitly requested. Descriptions are limited to
+280 characters. Labels must be a JSON object and are limited to 24 keys, three nesting levels, 2 KiB, 256 characters
+per string, and 20 items per array. Secret-looking keys and values are redacted. The complete manual context is capped
+at 4 KiB.
+
+Context is added to the same internal-usage row as model, token, and cost data, so existing spend reporting attributes
+the cost to the selected labels. This command does not ask an LLM to classify work and does not collect prompts or raw
+OTLP payloads. Historical backfill keeps destination identity, role, and department, but excludes the current task
+description, repository, and labels so old work is not mislabeled.
+
+Local applications can also send normalized platform usage to
+`http://127.0.0.1:4318/v1/internal-usage`. The endpoint accepts a bounded `{ "events": [...] }` payload, applies the
+collector's destination routing and identity policy, and uses the same durable per-destination outboxes. It is intended
+for trusted applications on the same device and is never exposed beyond the collector's loopback listener.
+
 ## Health, service, and updates
 
 ```sh

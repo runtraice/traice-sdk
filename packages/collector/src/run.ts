@@ -1,6 +1,12 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { join } from "node:path";
-import type { InternalUsageEvent } from "@traice/protocol";
+import {
+  assertValidInternalUsageEvent,
+  normalizeInternalUsageEvent,
+  redactMetadata,
+  type InternalUsageEvent,
+  type JsonRecord,
+} from "@traice/protocol";
 import packageMetadata from "../package.json";
 import { createCollectorAccessTokenProvider } from "./auth";
 import { configDir, defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from "./config";
@@ -16,6 +22,7 @@ import { extractLogRecords, extractMetricPoints, pickString } from "./otel";
 import { CollectorOutbox } from "./outbox";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
 import { checkCollectorUpdate } from "./updates";
+import { eventForCollectorDestination } from "./context";
 
 const MAX_BATCH_SIZE = 10;
 const MAX_FORWARD_ATTEMPTS = 4;
@@ -23,6 +30,7 @@ const BASE_RETRY_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_LOCAL_BODY_BYTES = 1024 * 1024;
+const MAX_LOCAL_DIRECT_EVENTS = 100;
 const OUTBOX_MAX_EVENTS = 10_000;
 const OUTBOX_RETRY_INTERVAL_MS = 5_000;
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1_000;
@@ -185,9 +193,20 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
       return;
     }
 
+    const current = loadCollectorConfig(configPath);
+    let events: InternalUsageEvent[];
     try {
-      const current = loadCollectorConfig(configPath);
-      const events = normalizePayloadForRequest(req.url ?? "", payload, current, options.agent, receivedAt);
+      events =
+        requestPath(req) === "/v1/internal-usage"
+          ? normalizeDirectInternalUsagePayload(payload, current)
+          : normalizePayloadForRequest(req.url ?? "", payload, current, options.agent, receivedAt);
+    } catch (error) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : "invalid internal usage payload" }));
+      return;
+    }
+
+    try {
       const routedEvents = routeEvents(current, events, options.destinations);
       const destinationNames =
         routedEvents.size > 0 ? [...routedEvents.keys()] : allRoutedDestinationNames(current, options.destinations);
@@ -291,7 +310,10 @@ function routeEvents(
       ? routedDestinationNames(config, agent, destinationsOverride)
       : allRoutedDestinationNames(config, destinationsOverride);
     for (const destination of destinations) {
-      routed.set(destination, [...(routed.get(destination) ?? []), event]);
+      routed.set(destination, [
+        ...(routed.get(destination) ?? []),
+        eventForCollectorDestination(config, destination, event),
+      ]);
     }
   }
   return routed;
@@ -346,6 +368,43 @@ export function normalizePayloadForRequest(
   }
 
   return dedupeEvents(events);
+}
+
+export function normalizeDirectInternalUsagePayload(payload: unknown, config: CollectorConfig): InternalUsageEvent[] {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Direct internal usage payload must be a JSON object.");
+  }
+  const rawEvents = (payload as { events?: unknown }).events;
+  if (!Array.isArray(rawEvents) || rawEvents.length === 0) {
+    throw new Error("Direct internal usage payload must contain a non-empty events array.");
+  }
+  if (rawEvents.length > MAX_LOCAL_DIRECT_EVENTS) {
+    throw new Error(`Direct internal usage payload may contain at most ${MAX_LOCAL_DIRECT_EVENTS} events.`);
+  }
+
+  return dedupeEvents(
+    rawEvents.map((raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new Error("Each direct internal usage event must be a JSON object.");
+      }
+      const candidate = raw as InternalUsageEvent;
+      const event = normalizeInternalUsageEvent({
+        ...candidate,
+        ...config.identity,
+        ...(candidate.metadata ? { metadata: redactMetadata(candidate.metadata) as JsonRecord } : {}),
+      });
+      assertValidInternalUsageEvent(event);
+      return event;
+    }),
+  );
+}
+
+function requestPath(request: IncomingMessage): string {
+  try {
+    return new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    return "/";
+  }
 }
 
 export function createSerializedEventForwarder(dependencies: ForwardDependencies = {}) {

@@ -1,8 +1,10 @@
 export type {
   AgentName,
   CollectorConfig,
+  CollectorDestinationIdentity,
   CollectorDestination,
   CollectorInstallOptions,
+  CollectorManualContext,
   CollectorRunOptions,
   OtlpNormalizeOptions,
 } from "./types";
@@ -32,6 +34,16 @@ export {
   upsertCollectorDestination,
 } from "./destinations";
 export type { CollectorDestinationSummary, CollectorRouteSummary, ResolvedCollectorConfig } from "./destinations";
+export {
+  clearCollectorDestinationContext,
+  collectorDestinationContextSummary,
+  COLLECTOR_CONTEXT_LIMITS,
+  eventForCollectorDestination,
+  parseContextLabels,
+  resolveRepositoryLabel,
+  updateCollectorDestinationContext,
+} from "./context";
+export type { CollectorContextPatch } from "./context";
 export {
   collectorServiceDefinitionPath,
   installCollectorService,
