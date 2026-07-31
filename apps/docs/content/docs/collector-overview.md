@@ -114,6 +114,42 @@ npx @traice/collector@latest auth logout --destination sandbox
 A new authorization always uses the production trAIce service unless its login command explicitly selects another
 deployment.
 
+## Opt-in task context
+
+Use destination-scoped context when the same device sends to workspaces that need different employee attribution or
+task labels. Context is off until the user sets it:
+
+```bash
+npx @traice/collector@latest context set \
+  --destination engineering-workspace \
+  --employee-email engineer@example.com \
+  --role "Staff Engineer" \
+  --department Engineering \
+  --repository auto \
+  --description "Improve collector attribution" \
+  --labels-json '{"workType":"product","priority":"p1"}'
+```
+
+Inspect or clear it:
+
+```bash
+npx @traice/collector@latest context show --destination engineering-workspace
+npx @traice/collector@latest context clear --destination engineering-workspace
+```
+
+`--repository auto` reads the current Git remote only after this explicit opt-in. The collector caps descriptions at
+280 characters and custom labels at 24 keys, three nesting levels, 2 KiB, 256 characters per string, and 20 array
+items. The complete context is capped at 4 KiB. Secret-looking keys and values are redacted.
+
+The context is stored on the same internal-usage rows as token and cost data. It does not require another model call,
+enable prompt capture, or forward arbitrary OTLP attributes. Historical backfill keeps destination identity, role,
+and department, but excludes the current task description, repository, and labels so old work is not mislabeled.
+
+Trusted local applications can send normalized platform usage to
+`http://127.0.0.1:4318/v1/internal-usage`. The loopback-only endpoint accepts at most 100 events per request, applies
+the same destination routing and identity policy, and queues every destination durably. This lets local application
+worktrees report their own model calls without storing a workspace API key in each checkout.
+
 ## Health and updates
 
 ```bash
@@ -209,6 +245,7 @@ The environment value is not written into the collector config. Avoid `--api-key
 | `auth login/status/logout`        | Add, inspect, or revoke browser authorization                       |
 | `destination list`                | List authorized workspace destinations                              |
 | `route list/set`                  | Visualize or replace per-agent workspace routes                     |
+| `context show/set/clear`          | Manage explicit destination-scoped identity and task labels         |
 | `status`                          | Check configuration, credentials, service, listener, and access     |
 | `collect`                         | Run the local listener in the foreground                            |
 | `backfill codex --since <window>` | Inspect or upload bounded Codex history                             |

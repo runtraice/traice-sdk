@@ -24,6 +24,17 @@ forwarded. The raw OTLP log body is excluded unless prompt capture is enabled.
 
 Use `--include-prompts` only when the organization explicitly approves prompt logging.
 
+## Manual task context
+
+Destination-scoped task context is also opt-in. The collector sends a description, repository label, role,
+department, or custom labels only after the user runs `context set`. Repository inference reads the local Git remote
+only when `--repository auto` is supplied.
+
+Manual descriptions are capped at 280 characters. Custom labels must be a JSON object and are capped at 24 keys,
+three nesting levels, 2 KiB, 256 characters per string, and 20 items per array. The complete context is capped at
+4 KiB. Secret-looking keys and values are redacted before storage. `context clear` stops attaching task context to new
+events.
+
 The TypeScript and Python product SDKs also omit prompt and output samples by
 default. Enable `captureContent` or `capture_content` only after reviewing data
 classification, retention, and access controls. Durable local queues can

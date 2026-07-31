@@ -31,6 +31,14 @@ import { verifyCollectorConnection } from "./setup";
 import { formatCollectorStatus, getCollectorStatus } from "./status";
 import type { AgentName, CollectorOAuthAuthorization, CredentialStoreMode } from "./types";
 import { checkCollectorUpdate, updateCollector } from "./updates";
+import {
+  clearCollectorDestinationContext,
+  collectorDestinationContextSummary,
+  parseContextLabels,
+  resolveRepositoryLabel,
+  updateCollectorDestinationContext,
+} from "./context";
+import type { CollectorContextPatch } from "./context";
 
 const program = new Command();
 
@@ -426,6 +434,80 @@ routeCommand
     console.log(`${parsedAgent} will send live usage to ${destinations.map(normalizeDestinationName).join(", ")}.`);
   });
 
+const contextCommand = program
+  .command("context")
+  .description("Manage explicit, destination-scoped attribution and task context");
+
+contextCommand
+  .command("show")
+  .description("Show the effective identity and opted-in context for one destination")
+  .requiredOption("--destination <name>", "workspace destination")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const summary = collectorDestinationContextSummary(
+      loadCollectorConfig(stringOption(options.config)),
+      requiredStringOption(options.destination, "destination"),
+    );
+    if (options.json) console.log(JSON.stringify(summary, null, 2));
+    else console.log(formatCollectorContext(summary));
+  });
+
+contextCommand
+  .command("set")
+  .description("Opt in to bounded identity and task context for one destination")
+  .requiredOption("--destination <name>", "workspace destination")
+  .option("--config <path>", "collector config path")
+  .option("--employee-email <email>", "destination-specific employee email")
+  .option("--employee-name <name>", "destination-specific employee display name")
+  .option("--team-name <name>", "destination-specific team display name")
+  .option("--clear-team", "leave this destination's team unset")
+  .option("--source-principal <principal>", "destination-specific source principal")
+  .option("--role <role>", "employee role, up to 80 characters")
+  .option("--department <department>", "employee department, up to 80 characters")
+  .option("--description <description>", "task description, up to 280 characters")
+  .option("--repository <name>", 'repository label, or "auto" to infer the current Git remote')
+  .option("--labels-json <object>", "bounded JSON object with task labels")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const configPath = stringOption(options.config);
+    const destination = requiredStringOption(options.destination, "destination");
+    const patch = collectorContextPatchFromOptions(options);
+    if (!patch.identity && !patch.context) {
+      throw new Error("Set at least one identity or context option.");
+    }
+    const config = updateConfig(configPath, (current) =>
+      updateCollectorDestinationContext(current, destination, patch),
+    );
+    refreshOutdatedService(configPath);
+    const summary = collectorDestinationContextSummary(config, destination);
+    if (options.json) console.log(JSON.stringify(summary, null, 2));
+    else {
+      console.log(`Saved opt-in context for destination "${normalizeDestinationName(destination)}".`);
+      console.log(formatCollectorContext(summary));
+    }
+  });
+
+contextCommand
+  .command("clear")
+  .description("Clear opted-in task context for one destination")
+  .requiredOption("--destination <name>", "workspace destination")
+  .option("--config <path>", "collector config path")
+  .option("--identity", "also clear destination-specific identity overrides")
+  .action((options: Record<string, unknown>) => {
+    const configPath = stringOption(options.config);
+    const destination = requiredStringOption(options.destination, "destination");
+    updateConfig(configPath, (current) =>
+      clearCollectorDestinationContext(current, destination, Boolean(options.identity)),
+    );
+    refreshOutdatedService(configPath);
+    console.log(
+      `Cleared task context for destination "${normalizeDestinationName(destination)}"${
+        options.identity ? " and restored the global identity" : ""
+      }.`,
+    );
+  });
+
 const cliArguments = process.argv.length <= 2 ? [...process.argv, "help"] : process.argv;
 program.parseAsync(cliArguments).catch((error) => {
   console.error(errorMessage(error));
@@ -467,6 +549,58 @@ function credentialStoreOption(value: unknown): CredentialStoreMode {
 
 function collectValues(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function collectorContextPatchFromOptions(options: Record<string, unknown>): CollectorContextPatch {
+  const employeeEmail = stringOption(options.employeeEmail);
+  const employeeName = stringOption(options.employeeName);
+  const teamName = stringOption(options.teamName);
+  const clearTeam = Boolean(options.clearTeam);
+  if (teamName && clearTeam) throw new Error("Use either --team-name or --clear-team, not both.");
+  const sourcePrincipal = stringOption(options.sourcePrincipal);
+  const role = stringOption(options.role);
+  const department = stringOption(options.department);
+  const description = stringOption(options.description);
+  const requestedRepository = stringOption(options.repository);
+  const repository = requestedRepository?.toLowerCase() === "auto" ? resolveRepositoryLabel() : requestedRepository;
+  const labelsJson = stringOption(options.labelsJson);
+  const identity =
+    employeeEmail || employeeName || teamName || clearTeam || sourcePrincipal
+      ? {
+          ...(employeeEmail ? { employeeEmail } : {}),
+          ...(employeeName ? { employeeName } : {}),
+          ...(clearTeam ? { teamName: null } : teamName ? { teamName } : {}),
+          ...(sourcePrincipal ? { sourcePrincipal } : {}),
+        }
+      : undefined;
+  const context =
+    role || department || description || repository || labelsJson
+      ? {
+          ...(role ? { role } : {}),
+          ...(department ? { department } : {}),
+          ...(description ? { description } : {}),
+          ...(repository ? { repository } : {}),
+          ...(labelsJson ? { labels: parseContextLabels(labelsJson) } : {}),
+        }
+      : undefined;
+  return { ...(identity ? { identity } : {}), ...(context ? { context } : {}) };
+}
+
+function formatCollectorContext(summary: ReturnType<typeof collectorDestinationContextSummary>): string {
+  const identity = summary.identity;
+  const context = summary.context;
+  return [
+    `Destination: ${summary.destination}`,
+    `Employee: ${identity.employeeEmail ?? identity.employeeName ?? "not set"}`,
+    `Team: ${identity.teamName ?? "not set"}`,
+    `Source principal: ${identity.sourcePrincipal ?? "not set"}`,
+    `Seat commitment: ${identity.seatMonthlyUsd === undefined ? "not set" : `$${identity.seatMonthlyUsd}/month`}`,
+    `Role: ${context.role ?? "not collected"}`,
+    `Department: ${context.department ?? "not collected"}`,
+    `Description: ${context.description ?? "not collected"}`,
+    `Repository: ${context.repository ?? "not collected"}`,
+    `Labels: ${context.labels ? JSON.stringify(context.labels) : "not collected"}`,
+  ].join("\n");
 }
 
 function stringArrayOption(value: unknown): string[] | undefined {

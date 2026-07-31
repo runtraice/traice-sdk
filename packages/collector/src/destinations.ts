@@ -1,4 +1,11 @@
-import type { AgentName, CollectorConfig, CollectorDestination, CollectorCredential } from "./types";
+import type { CollectorIdentity } from "@traice/protocol";
+import type {
+  AgentName,
+  CollectorConfig,
+  CollectorCredential,
+  CollectorDestination,
+  CollectorDestinationIdentity,
+} from "./types";
 
 const DESTINATION_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
@@ -16,7 +23,10 @@ export interface CollectorRouteSummary {
   destinations: CollectorDestinationSummary[];
 }
 
-export type ResolvedCollectorConfig = CollectorConfig & CollectorDestination;
+export type ResolvedCollectorConfig = Omit<CollectorConfig, "identity"> &
+  CollectorDestination & {
+    identity: CollectorConfig["identity"];
+  };
 
 export function normalizeDestinationName(value: string): string {
   const normalized = value.trim().toLowerCase();
@@ -63,8 +73,38 @@ export function collectorDestination(config: CollectorConfig, requestedDestinati
 }
 
 export function configForDestination(config: CollectorConfig, requestedDestination: string): ResolvedCollectorConfig {
-  return { ...config, ...collectorDestination(config, requestedDestination) };
+  const destination = collectorDestination(config, requestedDestination);
+  return {
+    ...config,
+    ...destination,
+    identity: effectiveDestinationIdentity(config.identity, destination.identity),
+  };
 }
+
+function effectiveDestinationIdentity(
+  base: CollectorIdentity,
+  override?: CollectorDestinationIdentity,
+): CollectorIdentity {
+  const identity = { ...base };
+  if (!override) return identity;
+  for (const key of identityKeys) {
+    const value = override[key];
+    if (value === undefined) continue;
+    if (value === null) delete identity[key];
+    else Object.assign(identity, { [key]: value });
+  }
+  return identity;
+}
+
+const identityKeys = [
+  "employeeEmail",
+  "employeeName",
+  "employeeExternalId",
+  "teamName",
+  "teamExternalId",
+  "sourcePrincipal",
+  "seatMonthlyUsd",
+] as const;
 
 export function configuredDestinationNames(config: CollectorConfig): string[] {
   return Object.keys(config.destinations).map(normalizeDestinationName);
@@ -117,7 +157,18 @@ export function upsertCollectorDestination(
   destination: CollectorDestination,
 ): CollectorConfig {
   const name = normalizeDestinationName(requestedName);
-  return { ...config, destinations: { ...config.destinations, [name]: destination } };
+  const current = config.destinations[name];
+  return {
+    ...config,
+    destinations: {
+      ...config.destinations,
+      [name]: {
+        ...destination,
+        ...(destination.identity === undefined && current?.identity ? { identity: current.identity } : {}),
+        ...(destination.context === undefined && current?.context ? { context: current.context } : {}),
+      },
+    },
+  };
 }
 
 export function removeCollectorDestination(config: CollectorConfig, requestedName: string): CollectorConfig {

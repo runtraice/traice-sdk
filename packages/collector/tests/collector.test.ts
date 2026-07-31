@@ -17,6 +17,7 @@ import {
   forwardEvents,
   forwardEventsToDestinations,
   inferAgents,
+  normalizeDirectInternalUsagePayload,
   normalizePayloadForRequest,
   warmDestinationAuthorizations,
 } from "../src/run";
@@ -701,6 +702,54 @@ describe("@traice/collector", () => {
     expect(
       normalizePayloadForRequest("/v1/logs", logPayload("codex", "model", 1, 1), config, undefined, config.createdAt),
     ).toHaveLength(1);
+  });
+
+  it("accepts bounded direct platform usage through the local collector", () => {
+    const config: CollectorConfig = {
+      version: 2,
+      createdAt: "2026-07-10T00:00:00.000Z",
+      updatedAt: "2026-07-10T00:00:00.000Z",
+      destinations: {},
+      listenHost: "127.0.0.1",
+      listenPort: 4318,
+      includePrompts: false,
+      enabledAgents: ["codex"],
+      identity,
+      sources: { codex: defaultSourceForAgent("codex") },
+    };
+
+    expect(
+      normalizeDirectInternalUsagePayload(
+        {
+          events: [
+            {
+              sourceKey: "traice-platform-local",
+              sourceName: "trAIce platform (local)",
+              sourceKind: "platform",
+              tool: "generateText",
+              category: "other",
+              sourceEventId: "platform-call-1",
+              occurredAt: "2026-07-10T12:00:00.000Z",
+              provider: "google-vertex",
+              model: "gemini-3.1-pro-preview",
+              inputTokens: 100,
+              outputTokens: 20,
+              metadata: { env: "development", apiKey: "must-redact" },
+            },
+          ],
+        },
+        config,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        sourceEventId: "platform-call-1",
+        employeeEmail: "alex@example.com",
+        sourcePrincipal: "host:user",
+        inputTokens: 100,
+        outputTokens: 20,
+        metadata: { env: "development", apiKey: "[redacted]" },
+      }),
+    ]);
   });
 
   it("detects Codex and Claude Code from structured OTLP attributes", () => {

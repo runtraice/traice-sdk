@@ -7,6 +7,7 @@ import { defaultSourceForAgent, loadCollectorConfig, resolveConfigPath } from ".
 import { resolveHome } from "./fs";
 import { configForDestination, defaultDestinationName, normalizeDestinationName } from "./destinations";
 import { forwardEvents } from "./run";
+import { eventForCollectorDestination } from "./context";
 
 interface TokenUsage {
   input_tokens?: unknown;
@@ -120,21 +121,28 @@ export async function backfillCodex(options: CodexBackfillOptions): Promise<Code
       crossModeDuplicatesSkipped += 1;
       continue;
     }
-    events.push({
-      ...source,
-      ...config.identity,
-      sourceEventId: event.sourceEventId,
-      occurredAt: event.occurredAt,
-      runId: event.runId,
-      ...(event.model ? { model: event.model } : {}),
-      inputTokens: event.inputTokens,
-      cacheReadTokens: event.cacheReadTokens,
-      outputTokens: event.outputTokens,
-      totalTokens: event.totalTokens,
-      costBasis: "usage_only",
-      status: "unknown",
-      metadata: { historySource: "codex-session-jsonl", reasoningOutputTokens: event.reasoningOutputTokens },
-    });
+    events.push(
+      eventForCollectorDestination(
+        rootConfig,
+        destinationName,
+        {
+          ...source,
+          ...rootConfig.identity,
+          sourceEventId: event.sourceEventId,
+          occurredAt: event.occurredAt,
+          runId: event.runId,
+          ...(event.model ? { model: event.model } : {}),
+          inputTokens: event.inputTokens,
+          cacheReadTokens: event.cacheReadTokens,
+          outputTokens: event.outputTokens,
+          totalTokens: event.totalTokens,
+          costBasis: "usage_only",
+          status: "unknown",
+          metadata: { historySource: "codex-session-jsonl", reasoningOutputTokens: event.reasoningOutputTokens },
+        },
+        { includeTaskContext: false },
+      ),
+    );
   }
 
   const accepted = await forwardEvents(config, events, {
