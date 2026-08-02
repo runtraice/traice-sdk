@@ -80,6 +80,8 @@ authCommand
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect in the browser")
   .option("--destination <name>", "name for a single workspace destination")
+  .option("--device-name <name>", "recognizable device name to prefill in the browser")
+  .option("--identity <email>", "account email to prefill and verify in the browser")
   .option("--no-browser", "print the authorization link without opening a browser")
   .action(async (options: Record<string, unknown>) => {
     const result = await loginAndStoreCollectorAuthorization({
@@ -88,6 +90,8 @@ authCommand
       credentialStore: credentialStoreOption(options.credentialStore),
       workspaceHint: stringOption(options.workspace),
       destination: stringOption(options.destination),
+      deviceName: stringOption(options.deviceName),
+      identityHint: stringOption(options.identity),
       noBrowser: options.browser === false,
     });
     for (const destination of result.destinations) {
@@ -165,6 +169,8 @@ program
   .option("--server-url <url>", "trAIce app URL")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect during authorization")
+  .option("--device-name <name>", "recognizable device name to prefill during authorization")
+  .option("--identity <email>", "account email to prefill and verify during authorization")
   .option("--no-browser", "print the authorization link without opening a browser")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
@@ -200,6 +206,8 @@ program
         noBrowser: options.browser === false,
         destination: requestedDestinations?.length === 1 ? requestedDestinations[0] : undefined,
         workspaceHint: stringOption(options.workspace),
+        deviceName: stringOption(options.deviceName),
+        identityHint: stringOption(options.identity),
       });
       if (login.destinations.length === 0) throw new Error("Authorization did not add any workspace destinations.");
       config = loadCollectorConfig(configPath);

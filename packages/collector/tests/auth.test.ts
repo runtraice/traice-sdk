@@ -62,7 +62,12 @@ describe("collector OAuth", () => {
     const sleep = vi.fn(async () => {});
 
     const result = await loginCollectorOAuth(
-      { serverUrl: "https://runtraice.com" },
+      {
+        serverUrl: "https://runtraice.com",
+        workspaceHint: "engineering",
+        identityHint: "alex@acme.com",
+        deviceName: "Alex benchmark host",
+      },
       { fetchImpl, report, openBrowser, sleep, now: () => Date.parse("2026-07-23T09:00:00.000Z") },
     );
 
@@ -70,10 +75,14 @@ describe("collector OAuth", () => {
     expect(result.authorizations[0]?.user.email).toBe("alex@acme.com");
     expect(result.authorizations[0]?.bundle.accessToken).toBe("tr_oauth_at_secret");
     expect(openBrowser).toHaveBeenCalledWith("https://runtraice.com/device?user_code=ABCD-EFGH");
+    expect(report).toHaveBeenCalledWith("Open https://runtraice.com/device?user_code=ABCD-EFGH");
     expect(report).toHaveBeenCalledWith("Enter code: ABCD-EFGH");
     expect(sleep).toHaveBeenCalledTimes(3);
     const deviceRequest = fetchImpl.mock.calls[0][1];
     expect(String(deviceRequest?.body)).toContain("internal_usage%3Adedupe");
+    expect(String(deviceRequest?.body)).toContain("workspace_hint=engineering");
+    expect(String(deviceRequest?.body)).toContain("identity_hint=alex%40acme.com");
+    expect(String(deviceRequest?.body)).toContain("device_name=Alex+benchmark+host");
   });
 
   it("supports SSH login without attempting to open a browser", async () => {
@@ -114,6 +123,41 @@ describe("collector OAuth", () => {
 
     expect(openBrowser).not.toHaveBeenCalled();
     expect(report).toHaveBeenCalledWith("Open https://runtraice.com/device");
+  });
+
+  it("prints the complete copy-ready authorization URL during SSH login", async () => {
+    const completeUrl =
+      "https://runtraice.com/device?user_code=ABCD-EFGH&workspace=engineering&identity=alex%40acme.com&device_name=Alex+host";
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          device_code: "device-secret",
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://runtraice.com/device",
+          verification_uri_complete: completeUrl,
+          expires_in: 600,
+          interval: 5,
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: "tr_oauth_at_secret",
+          refresh_token: "tr_oauth_rt_secret",
+          expires_in: 3600,
+          scope: "collector:status internal_usage:write benchmarks:write",
+          workspace: { id: "workspace-1", name: "Acme" },
+          user: { email: "alex@acme.com" },
+        }),
+      );
+    const report = vi.fn();
+
+    await loginCollectorOAuth(
+      { serverUrl: "https://runtraice.com", noBrowser: true },
+      { fetchImpl, report, sleep: async () => {} },
+    );
+
+    expect(report).toHaveBeenCalledWith(`Open ${completeUrl}`);
   });
 
   it("stores the token bundle outside the collector config", async () => {
