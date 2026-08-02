@@ -141,6 +141,9 @@ retry-safe. Duplicates do not increase stored usage or spend.
 
 ## Repository benchmark activity
 
+For the complete Baseline-versus-Candidate workflow, exact agent prompt, upload boundary, and public-report privacy
+model, read the [Repository Benchmarks guide](https://runtraice.github.io/traice-sdk/docs/repository-benchmarks).
+
 Repository benchmarks can capture a privacy-safe summary of Codex tool activity from local OpenTelemetry logs:
 
 ```sh
