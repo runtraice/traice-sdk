@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.9.0
+
+### Minor Changes
+
+- Capture privacy-safe aggregate agent activity for repository benchmarks and expose benchmark observation commands.
+
 ## 0.8.1
 
 ### Patch Changes
