@@ -1,5 +1,11 @@
 # @traice/sdk Changelog
 
+## 0.9.0
+
+### Minor Changes
+
+- ad97c2a: Add privacy-safe exact prompt fingerprints and customer-controlled semantic cache opportunity telemetry for shadow guardrails.
+
 ## 0.8.0
 
 ### Minor Changes
