@@ -15,7 +15,8 @@ unknown values before publishing or disclose that the metric is unavailable.
 
 Graphify's initial full build is `setup`. A required `--update` after source changes is `refresh`. Graphify reports its
 own extraction token counts; include them in the relevant stage. Structural code extraction can legitimately report
-zero LLM tokens.
+zero LLM tokens. Record or disclose whether the CLI and matching agent skill were preinstalled. If the benchmark
+claims a from-scratch setup, include CLI and skill installation time in the setup stage.
 
 ## Task parity
 
@@ -42,6 +43,17 @@ adds steady-state work.
 
 All-in token and cost totals include setup and refresh. Per-task rows remain execution-only so readers can see where
 the difference came from.
+
+## Agent activity
+
+The public activity summary is a bounded aggregate, not a trace viewer. Allowed categories are Graph queries,
+repository searches, file reads, shell commands, web requests, and other tool calls. Each row can include a count,
+aggregate duration, failed count, and a fixed source label.
+
+Codex OpenTelemetry `codex.tool_result` events may contain command arguments and output. Classify those events on the
+collector device, then discard the raw fields. Never add commands, arguments, output, prompts, absolute or relative
+paths, environment values, tool-returned content, or arbitrary span attributes to the benchmark manifest. A published
+report is an immutable aggregate snapshot and must not query live workspace telemetry.
 
 ## Stop conditions
 

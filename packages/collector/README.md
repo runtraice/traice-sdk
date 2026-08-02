@@ -139,6 +139,21 @@ npx @traice/collector@latest backfill codex --destination live-demo --since 7d
 Backfill uses stable source event IDs and paginated live-only reconciliation. Repeated or interrupted uploads are
 retry-safe. Duplicates do not increase stored usage or spend.
 
+## Repository benchmark activity
+
+Repository benchmarks can capture a privacy-safe summary of Codex tool activity from local OpenTelemetry logs:
+
+```sh
+npx @traice/collector@latest benchmark observe start --variant baseline
+# Run the public benchmark prompts.
+npx @traice/collector@latest benchmark observe stop
+```
+
+Repeat for `--variant candidate`. The collector records only fixed activity categories, counts, aggregate duration,
+and failed counts. Codex tool events can contain commands, arguments, output, and paths. Those raw fields are inspected
+only on the device for classification and are not written to the benchmark manifest or uploaded report. Only one
+activity capture can run on a device at a time, so avoid unrelated Codex work until it is stopped.
+
 ## Credentials
 
 Non-secret configuration lives at `~/.traice/collector/config.json`. Renewable credentials are stored in macOS

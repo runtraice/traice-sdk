@@ -40,14 +40,21 @@ import {
 } from "./context";
 import type { CollectorContextPatch } from "./context";
 import {
+  BENCHMARK_ACTIVITY_CATEGORIES,
+  BENCHMARK_ACTIVITY_SOURCES,
   BENCHMARK_STAGE_KINDS,
   BENCHMARK_VARIANTS,
   benchmarkComparison,
   buildBenchmarkReport,
   initializeBenchmark,
+  recordBenchmarkActivity,
   recordBenchmarkStage,
   recordBenchmarkTask,
+  startBenchmarkActivityCapture,
+  stopBenchmarkActivityCapture,
   uploadBenchmarkReport,
+  type BenchmarkActivityCategory,
+  type BenchmarkActivitySource,
   type BenchmarkStageKind,
   type BenchmarkVariantKey,
 } from "./benchmark";
@@ -595,6 +602,70 @@ benchmarkCommand
   });
 
 benchmarkCommand
+  .command("activity")
+  .description("Record a privacy-safe aggregate of agent tool activity")
+  .requiredOption("--variant <variant>", "baseline or candidate")
+  .requiredOption("--category <category>", BENCHMARK_ACTIVITY_CATEGORIES.join(", "))
+  .requiredOption("--count <count>", "observed calls")
+  .option("--path <path>", "manifest path")
+  .option("--source <source>", BENCHMARK_ACTIVITY_SOURCES.join(", "), "manual")
+  .option("--duration-ms <milliseconds>", "aggregate activity duration")
+  .option("--failed-count <count>", "failed calls", "0")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const result = recordBenchmarkActivity({
+      path: stringOption(options.path),
+      variant: benchmarkVariantOption(options.variant),
+      category: benchmarkActivityCategoryOption(options.category),
+      source: benchmarkActivitySourceOption(options.source),
+      count: requiredIntegerOption(options.count, "count"),
+      durationMs: integerOption(options.durationMs, "duration-ms"),
+      failedCount: integerOption(options.failedCount, "failed-count"),
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`Recorded ${String(options.category)} activity for ${String(options.variant)}.`);
+  });
+
+const benchmarkObserveCommand = benchmarkCommand
+  .command("observe")
+  .description("Capture bounded Codex tool activity from local OpenTelemetry logs");
+
+benchmarkObserveCommand
+  .command("start")
+  .description("Start one local activity capture")
+  .requiredOption("--variant <variant>", "baseline or candidate")
+  .option("--path <path>", "manifest path")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    refreshOutdatedService(stringOption(options.config), !options.json);
+    const result = startBenchmarkActivityCapture({
+      path: stringOption(options.path),
+      configPath: stringOption(options.config),
+      variant: benchmarkVariantOption(options.variant),
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Capturing aggregate OpenTelemetry activity for ${String(options.variant)}.`);
+      console.log("Run the benchmark prompts now, then run traice-collector benchmark observe stop.");
+    }
+  });
+
+benchmarkObserveCommand
+  .command("stop")
+  .description("Stop capture and add its aggregates to the benchmark manifest")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const result = stopBenchmarkActivityCapture({ configPath: stringOption(options.config) });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      const count = result.activity.reduce((total, activity) => total + activity.count, 0);
+      console.log(`Recorded ${count} bounded tool activity events for ${result.variant}.`);
+    }
+  });
+
+benchmarkCommand
   .command("compare")
   .description("Validate parity and show the local A/B report")
   .option("--path <path>", "manifest path")
@@ -734,6 +805,20 @@ function benchmarkStageKindOption(value: unknown): BenchmarkStageKind {
     return value as BenchmarkStageKind;
   }
   throw new Error("Invalid benchmark stage kind. Expected setup, refresh, execute, or verify.");
+}
+
+function benchmarkActivityCategoryOption(value: unknown): BenchmarkActivityCategory {
+  if (typeof value === "string" && BENCHMARK_ACTIVITY_CATEGORIES.includes(value as BenchmarkActivityCategory)) {
+    return value as BenchmarkActivityCategory;
+  }
+  throw new Error(`Invalid activity category. Expected ${BENCHMARK_ACTIVITY_CATEGORIES.join(", ")}.`);
+}
+
+function benchmarkActivitySourceOption(value: unknown): BenchmarkActivitySource {
+  if (typeof value === "string" && BENCHMARK_ACTIVITY_SOURCES.includes(value as BenchmarkActivitySource)) {
+    return value as BenchmarkActivitySource;
+  }
+  throw new Error(`Invalid activity source. Expected ${BENCHMARK_ACTIVITY_SOURCES.join(", ")}.`);
 }
 
 function credentialStoreOption(value: unknown): CredentialStoreMode {
