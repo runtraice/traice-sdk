@@ -1,5 +1,13 @@
 # @traice/collector
 
+## 0.8.0
+
+### Minor Changes
+
+- fc69773: Add local repository benchmark manifests, A/B stage and task recording, comparison output, private draft upload, and
+  the `benchmarks:write` collector authorization scope.
+- 2e6ec88: Add opt-in, destination-scoped employee attribution and bounded manual task context with CLI management. Accept local application usage through the collector's machine-local loopback endpoint so one collector can route it to configured destinations.
+
 ## 0.7.3
 
 ### Patch Changes
