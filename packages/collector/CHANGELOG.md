@@ -1,5 +1,11 @@
 # @traice/collector
 
+## 0.8.1
+
+### Patch Changes
+
+- 98e5690: Print the complete device authorization URL and support prefilled workspace, identity, and device name hints.
+
 ## 0.8.0
 
 ### Minor Changes
