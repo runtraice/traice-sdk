@@ -36,7 +36,7 @@ import type {
 
 const CLIENT_ID = "traice-collector";
 const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
-const SCOPES = ["collector:status", "internal_usage:dedupe", "internal_usage:write"];
+const SCOPES = ["collector:status", "internal_usage:dedupe", "internal_usage:write", "benchmarks:write"];
 const EXPIRY_SKEW_MS = 60_000;
 const REFRESH_LOCK_TIMEOUT_MS = 10_000;
 const STALE_REFRESH_LOCK_MS = 2 * 60_000;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Benchmark Repository"
+  short_description: "Run reproducible A/B repository benchmarks"
+  default_prompt: "Use $benchmark-repo to benchmark this repository with a baseline and Graphify."
