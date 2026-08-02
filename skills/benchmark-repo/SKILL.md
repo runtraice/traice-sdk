@@ -46,6 +46,12 @@ repository.
 
 ### 2. Run the Baseline
 
+When the local collector is configured, start bounded OpenTelemetry activity capture before the first prompt:
+
+```sh
+npx @traice/collector@latest benchmark observe start --variant baseline
+```
+
 Run every task without the Candidate tool. For each task:
 
 1. Capture start and end wall-clock time.
@@ -67,7 +73,22 @@ npx @traice/collector@latest benchmark task \
   --quality-score N
 ```
 
+After the last Baseline prompt, stop capture:
+
+```sh
+npx @traice/collector@latest benchmark observe stop
+```
+
+Observation records only fixed categories, counts, aggregate duration, and failures. It must never persist raw
+commands, arguments, output, or paths. If OpenTelemetry is unavailable, use `benchmark activity` to record a bounded
+aggregate from agent events and disclose its source.
+
 ### 3. Prepare and run the Candidate
+
+Verify the Graphify CLI and the installed agent skill report the same version. If either is absent or stale, install
+the Codex integration with `graphify install --platform codex` and include that wall time in Candidate setup. If the
+CLI or skill was already installed globally, disclose that precondition instead of claiming a from-scratch software
+install.
 
 Record Candidate initialization before the first task. Invoke Graphify through its installed agent skill with
 `/graphify . --no-viz` (or `graphify extract . --code-only` in a code-only headless CLI flow), time the complete graph
@@ -86,7 +107,14 @@ npx @traice/collector@latest benchmark stage \
   --source-revision REVISION
 ```
 
-Run the identical tasks and record them with `benchmark task --variant candidate`.
+Start Candidate observation immediately before its first prompt, run the identical tasks, and record them with
+`benchmark task --variant candidate`:
+
+```sh
+npx @traice/collector@latest benchmark observe start --variant candidate
+# Run every Candidate prompt and any required refreshes.
+npx @traice/collector@latest benchmark observe stop
+```
 
 Before each later Candidate task, compare the repository state with the state used by its graph. If tracked or
 untracked source changed, run the tool's incremental preparation. For Graphify, invoke `/graphify . --update` through
@@ -106,7 +134,8 @@ show `N/A`, never an invented percentage. Call out where cold-start and steady-s
 
 ### 5. Authenticate and upload a draft
 
-Local initialization and comparison do not require an account. Cloud measurement and durable reports do:
+Local initialization, manual activity aggregates, and comparison do not require an account. Automatic OpenTelemetry
+observation requires a configured local collector. Cloud measurement and durable reports require an account:
 
 ```sh
 npx @traice/collector@latest auth login

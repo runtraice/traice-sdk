@@ -23,6 +23,7 @@ import { CollectorOutbox } from "./outbox";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
 import { checkCollectorUpdate } from "./updates";
 import { eventForCollectorDestination } from "./context";
+import { captureBenchmarkActivityPayload } from "./benchmark";
 
 const MAX_BATCH_SIZE = 10;
 const MAX_FORWARD_ATTEMPTS = 4;
@@ -196,6 +197,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
     const current = loadCollectorConfig(configPath);
     let events: InternalUsageEvent[];
     try {
+      if (requestPath(req) === "/v1/logs") captureBenchmarkActivityPayload(payload, configPath);
       events =
         requestPath(req) === "/v1/internal-usage"
           ? normalizeDirectInternalUsagePayload(payload, current)

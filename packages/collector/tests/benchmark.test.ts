@@ -3,12 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  benchmarkActivityFromOtlp,
   benchmarkComparison,
   buildBenchmarkReport,
+  captureBenchmarkActivityPayload,
   initializeBenchmark,
   recordBenchmarkStage,
   recordBenchmarkTask,
+  startBenchmarkActivityCapture,
+  stopBenchmarkActivityCapture,
 } from "../src/benchmark";
+import { buildDefaultConfig, writeCollectorConfig } from "../src/config";
 
 describe("repository benchmarks", () => {
   it("records setup and refresh in all-in A/B totals", () => {
@@ -89,6 +94,58 @@ describe("repository benchmarks", () => {
       differencePercent: null,
     });
   });
+
+  it("reduces raw Codex OpenTelemetry tool logs to bounded activity categories", () => {
+    expect(benchmarkActivityFromOtlp(toolActivityPayload())).toEqual([
+      {
+        category: "file_read",
+        source: "opentelemetry",
+        count: 1,
+        durationMs: 12,
+        failedCount: 0,
+      },
+      {
+        category: "graph_query",
+        source: "opentelemetry",
+        count: 1,
+        durationMs: 41,
+        failedCount: 0,
+      },
+      {
+        category: "repository_search",
+        source: "opentelemetry",
+        count: 1,
+        durationMs: 7,
+        failedCount: 1,
+      },
+    ]);
+  });
+
+  it("captures only aggregate activity in the benchmark manifest", () => {
+    const directory = temporaryDirectory();
+    const path = join(directory, "benchmark.json");
+    const configPath = join(directory, "collector", "config.json");
+    writeCollectorConfig(buildDefaultConfig(), configPath);
+    initializeBenchmark({
+      path,
+      cwd: directory,
+      title: "Comparison",
+      summary: "Comparison summary",
+      repositoryUrl: "https://github.com/vercel/next.js",
+      repositoryRevision: "0123456789abcdef",
+      prompts: ["Trace the request flow."],
+    });
+
+    startBenchmarkActivityCapture({ path, variant: "candidate", configPath });
+    captureBenchmarkActivityPayload(toolActivityPayload(), configPath);
+    const result = stopBenchmarkActivityCapture({ configPath });
+
+    expect(result.activity).toHaveLength(3);
+    const serialized = readFileSync(path, "utf8");
+    expect(serialized).not.toContain("graphify query lifecycle");
+    expect(serialized).not.toContain("lib/route.js");
+    expect(JSON.parse(serialized).candidate.activity).toEqual(result.activity);
+  });
 });
 
 function recordTask(
@@ -109,4 +166,36 @@ function recordTask(
 
 function temporaryDirectory() {
   return mkdtempSync(join(tmpdir(), "traice-benchmark-"));
+}
+
+function toolActivityPayload() {
+  const attribute = (key: string, value: string | number) => ({
+    key,
+    value: typeof value === "number" ? { intValue: String(value) } : { stringValue: value },
+  });
+  const record = (tool: string, args: string, duration: number, success: boolean) => ({
+    attributes: [
+      attribute("event.name", "codex.tool_result"),
+      attribute("tool_name", tool),
+      attribute("arguments", args),
+      attribute("duration_ms", duration),
+      attribute("success", String(success)),
+      attribute("output", "private tool output"),
+    ],
+  });
+  return {
+    resourceLogs: [
+      {
+        scopeLogs: [
+          {
+            logRecords: [
+              record("exec", '{"cmd":"graphify query lifecycle"}', 41, true),
+              record("exec", '{"cmd":"rg route lib"}', 7, false),
+              record("exec", '{"cmd":"sed -n 1,80p lib/route.js"}', 12, true),
+            ],
+          },
+        ],
+      },
+    ],
+  };
 }
