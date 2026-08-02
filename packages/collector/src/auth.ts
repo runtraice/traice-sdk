@@ -76,6 +76,8 @@ export async function loginAndStoreCollectorAuthorization(
     noBrowser?: boolean;
     workspaceHint?: string;
     destination?: string;
+    deviceName?: string;
+    identityHint?: string;
   },
   dependencies: AuthDependencies = {},
 ): Promise<CollectorLoginResult> {
@@ -96,6 +98,9 @@ export async function loginAndStoreCollectorAuthorization(
       noBrowser: options.noBrowser,
       workspaceHint: options.workspaceHint,
       allowMultipleWorkspaces: !requestedName,
+      deviceName: options.deviceName,
+      identityHint:
+        options.identityHint ?? previous?.authorization?.userEmail ?? current.identity.employeeEmail ?? undefined,
     },
     dependencies,
   );
@@ -159,6 +164,8 @@ export async function loginCollectorOAuth(
     noBrowser?: boolean;
     workspaceHint?: string;
     allowMultipleWorkspaces?: boolean;
+    deviceName?: string;
+    identityHint?: string;
   },
   dependencies: AuthDependencies = {},
 ) {
@@ -173,10 +180,11 @@ export async function loginCollectorOAuth(
     body: new URLSearchParams({
       client_id: CLIENT_ID,
       scope: SCOPES.join(" "),
-      device_name: hostname(),
+      device_name: options.deviceName?.trim() || hostname(),
       client_version: packageMetadata.version,
       platform: `${platform()} ${release()}`,
       ...(options.workspaceHint ? { workspace_hint: options.workspaceHint } : {}),
+      ...(options.identityHint?.trim() ? { identity_hint: options.identityHint.trim() } : {}),
       ...(options.allowMultipleWorkspaces ? { allow_multiple_workspaces: "true" } : {}),
     }),
   });
@@ -192,7 +200,7 @@ export async function loginCollectorOAuth(
   let intervalSeconds = positiveInteger(device.interval ?? 5, "interval");
   const deadline = now() + expiresIn * 1000;
 
-  report(`Open ${verificationUri}`);
+  report(`Open ${verificationUriComplete}`);
   report(`Enter code: ${userCode}`);
   if (!options.noBrowser) {
     const opened = (dependencies.openBrowser ?? openSystemBrowser)(verificationUriComplete);

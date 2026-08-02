@@ -42,6 +42,16 @@ Add one explicitly named destination:
 npx @traice/collector@latest auth login --destination sandbox --workspace sandbox
 ```
 
+For a remote host, print one copy-ready approval URL with the intended workspace, account, and device name prefilled:
+
+```bash
+npx @traice/collector@latest auth login --no-browser \
+  --destination production \
+  --workspace production-operations \
+  --identity alex@example.com \
+  --device-name "Alex workstation"
+```
+
 New authorization defaults to the production trAIce service and never inherits another destination's deployment.
 
 ## Opt-in task context
