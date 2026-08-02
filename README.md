@@ -73,6 +73,14 @@ Collectors send internal usage rows to `/api/v1/internal-usage`. Product-runtime
 
 Restart every running coding-agent session after setup so it loads the new telemetry settings.
 
+## Repository benchmarks
+
+Use the open-source [`benchmark-repo` skill](skills/benchmark-repo/SKILL.md) to compare the same coding-agent prompt
+suite with and without Graphify or another Candidate tool. It records tokens, cost, time, quality, setup, required
+refreshes, and privacy-safe activity aggregates. Read the
+[Repository Benchmarks guide](https://runtraice.github.io/traice-sdk/docs/repository-benchmarks) for the exact prompt,
+protocol, upload flow, and public-report privacy boundary.
+
 ## Ask trAIce
 
 The SDK also ships the `traice` CLI. Save a workspace API key once in the operating system credential store, then query the same attributed data available through the dashboard and MCP endpoint:
