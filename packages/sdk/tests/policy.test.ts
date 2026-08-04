@@ -4,7 +4,11 @@ describe("portable policy export", () => {
   it("fetches and validates a portable policy without exposing the API key", async () => {
     const fetchMock = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe("https://www.runtraice.com/api/v1/rules");
-      expect(init?.headers).toEqual({ authorization: "Bearer workspace-secret", accept: "application/json" });
+      expect(init?.headers).toEqual({
+        authorization: "Bearer workspace-secret",
+        accept: "application/json",
+        "x-traice-enforcement-version": "2",
+      });
       return Response.json({
         generatedAt: "2026-07-19T23:00:00.000Z",
         enabled: true,
@@ -57,5 +61,55 @@ describe("portable policy export", () => {
     await expect(exportPolicy({ apiKey: "workspace-key", fetchImpl: fetchMock as typeof fetch })).rejects.toThrow(
       "invalid policy bundle",
     );
+  });
+
+  it("validates rollout policy fields", async () => {
+    const bundle = {
+      generatedAt: "2026-08-04T12:00:00.000Z",
+      enabled: true,
+      ttlSeconds: 60,
+      rules: [
+        {
+          id: "rule-1",
+          name: "Canary",
+          state: "ACTIVE",
+          priority: 10,
+          condition: { type: "always" },
+          action: "DOWNGRADE",
+          actionParams: { targetModel: "gpt-4o-mini" },
+          requireEquivalencePct: 95,
+          modelAllowlist: ["gpt-4o-mini"],
+          rollout: {
+            id: "rollout-1",
+            status: "RUNNING",
+            allocationBps: 500,
+            revision: 1,
+            assignmentSalt: "test-salt",
+            assignmentUnit: "request",
+            sourceFallbackEnabled: true,
+          },
+        },
+      ],
+      evidence: [],
+      budgets: [],
+    };
+
+    await expect(
+      exportPolicy({
+        apiKey: "workspace-key",
+        fetchImpl: (async () => Response.json(bundle)) as typeof fetch,
+      }),
+    ).resolves.toMatchObject({ rules: [{ rollout: { id: "rollout-1", allocationBps: 500 } }] });
+
+    await expect(
+      exportPolicy({
+        apiKey: "workspace-key",
+        fetchImpl: (async () =>
+          Response.json({
+            ...bundle,
+            rules: [{ ...bundle.rules[0], rollout: { ...bundle.rules[0].rollout, allocationBps: 10_001 } }],
+          })) as typeof fetch,
+      }),
+    ).rejects.toThrow("invalid policy bundle");
   });
 });

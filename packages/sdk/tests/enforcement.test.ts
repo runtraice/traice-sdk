@@ -163,6 +163,33 @@ describe("decide", () => {
     });
   });
 
+  it("preserves rollout instructions on a matched model decision", () => {
+    const rollout = {
+      id: "rollout-1",
+      workspaceId: "workspace-1",
+      status: "RUNNING" as const,
+      allocationBps: 500,
+      revision: 1,
+      assignmentSalt: "test-salt",
+      assignmentUnit: "request" as const,
+      sourceFallbackEnabled: true,
+    };
+    const guarded = rule({
+      action: "DOWNGRADE",
+      actionParams: { targetModel: "gpt-4o-mini" },
+      requireEquivalencePct: 90,
+      modelAllowlist: ["gpt-4o-mini"],
+      rollout,
+    });
+
+    expect(
+      decide({ model: "gpt-4o" }, [guarded], {
+        equivalencePctFor: () => 97,
+        experimentIdFor: () => "experiment-1",
+      }),
+    ).toMatchObject({ matched: true, rollout });
+  });
+
   it("requires a target model and honors the allowlist for fallback", () => {
     expect(decide({ model: "gpt-4o" }, [rule({ action: "FALLBACK" })])).toMatchObject({ matched: false });
     expect(

@@ -1,6 +1,12 @@
 import { CostAdapter, CostEvent, EventMetadata } from "../types";
 import { calculateCost } from "../pricing";
-import { decide, type EnforcementRule } from "../enforcement";
+import {
+  assignRollout,
+  decide,
+  type EnforcementRollout,
+  type EnforcementRule,
+  type RolloutAssignment,
+} from "../enforcement";
 import * as crypto from "crypto";
 import { DurableCloudOutbox, type DurableQueuedCostEvent } from "./cloud-outbox";
 
@@ -66,6 +72,8 @@ export interface ExactCacheContext {
   headers?: Headers | Record<string, string | string[] | undefined>;
   /** Optional text passed to the customer-supplied semantic embedder instead of the normalized request. */
   semanticCacheText?: string;
+  /** Stable, non-secret cohort key such as a tenant or account ID. Omit for per-request assignment. */
+  rolloutKey?: string;
 }
 
 export type RequestEnforcementContext = ExactCacheContext;
@@ -590,6 +598,23 @@ export class CloudAdapter implements CostAdapter {
     }
 
     if (decision.mode === "shadow") {
+      if (
+        (decision.action === "SWAP" || decision.action === "DOWNGRADE" || decision.action === "ROUTE") &&
+        decision.servedModel &&
+        decision.evidence?.satisfied &&
+        decision.evidence.experimentId
+      ) {
+        this.trackDecision(
+          this.postTargetVerificationDecision(
+            rule,
+            decision.action,
+            request.model,
+            decision.servedModel,
+            context.feature,
+            decision.evidence.experimentId,
+          ),
+        );
+      }
       if (decision.action === "CACHE_SEMANTIC") {
         return this.executeSemanticCacheShadow(request, () => providerCall(request), context, rule);
       }
@@ -620,6 +645,18 @@ export class CloudAdapter implements CostAdapter {
     if (decision.action === "SWAP" || decision.action === "DOWNGRADE" || decision.action === "ROUTE") {
       if (!decision.servedModel || !decision.evidence?.satisfied || !decision.evidence.experimentId) {
         return providerCall(request);
+      }
+      if (decision.rollout) {
+        return this.executeModelRollout(
+          request,
+          providerCall,
+          context,
+          rule,
+          decision.action,
+          decision.servedModel,
+          decision.evidence.experimentId,
+          decision.rollout,
+        );
       }
       const effectiveRequest = { ...request, model: decision.servedModel } as R;
       const response = await providerCall(effectiveRequest);
@@ -739,7 +776,11 @@ export class CloudAdapter implements CostAdapter {
     const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
     try {
       const response = await fetch(this.siblingEndpoint("rules"), {
-        headers: { Authorization: `Bearer ${this.apiKey}`, "X-Source": "traice-sdk" },
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+          "X-Traice-Enforcement-Version": "2",
+        },
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -1016,6 +1057,231 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
+  private async executeModelRollout<T, R extends ExactCacheRequest>(
+    request: R,
+    providerCall: (effectiveRequest: R) => Promise<T>,
+    context: RequestEnforcementContext,
+    rule: EnforcementRule,
+    action: Exclude<ModelRuleAction, "FALLBACK">,
+    targetModel: string,
+    experimentId: string,
+    rollout: EnforcementRollout,
+  ): Promise<T> {
+    const enforcementStartedAt = Date.now();
+    const suppliedKey = context.rolloutKey?.trim();
+    const assignmentUnit = suppliedKey ? "stable_key" : "request";
+    const assignment = assignRollout(rollout, suppliedKey || crypto.randomUUID());
+    const rolloutRequestId = crypto.randomUUID();
+    this.trackDecision(
+      this.postRolloutAssignment(
+        rule,
+        action,
+        request.model,
+        context.feature,
+        experimentId,
+        rollout,
+        assignment,
+        assignmentUnit,
+        rolloutRequestId,
+      ),
+    );
+    const enforcementOverheadMs = Date.now() - enforcementStartedAt;
+
+    if (assignment.arm === "control") {
+      const providerStartedAt = Date.now();
+      try {
+        const response = await providerCall(request);
+        const providerLatencyMs = Date.now() - providerStartedAt;
+        this.trackRolloutDecision(
+          rule,
+          action,
+          request.model,
+          request.model,
+          context,
+          experimentId,
+          rollout,
+          assignment,
+          assignmentUnit,
+          rolloutRequestId,
+          "succeeded",
+          Date.now() - enforcementStartedAt,
+          providerLatencyMs,
+          enforcementOverheadMs,
+          null,
+          response,
+        );
+        return response;
+      } catch (error) {
+        this.trackRolloutDecision(
+          rule,
+          action,
+          request.model,
+          null,
+          context,
+          experimentId,
+          rollout,
+          assignment,
+          assignmentUnit,
+          rolloutRequestId,
+          "failed",
+          Date.now() - enforcementStartedAt,
+          Date.now() - providerStartedAt,
+          enforcementOverheadMs,
+          null,
+          undefined,
+          error,
+        );
+        throw error;
+      }
+    }
+
+    const treatmentRequest = { ...request, model: targetModel } as R;
+    const candidateStartedAt = Date.now();
+    try {
+      const response = await providerCall(treatmentRequest);
+      const candidateLatencyMs = Date.now() - candidateStartedAt;
+      this.trackRolloutDecision(
+        rule,
+        action,
+        request.model,
+        targetModel,
+        context,
+        experimentId,
+        rollout,
+        assignment,
+        assignmentUnit,
+        rolloutRequestId,
+        "succeeded",
+        Date.now() - enforcementStartedAt,
+        candidateLatencyMs,
+        enforcementOverheadMs,
+        null,
+        response,
+      );
+      return response;
+    } catch (candidateError) {
+      const candidateLatencyMs = Date.now() - candidateStartedAt;
+      if (!rollout.sourceFallbackEnabled) {
+        this.trackRolloutDecision(
+          rule,
+          action,
+          request.model,
+          null,
+          context,
+          experimentId,
+          rollout,
+          assignment,
+          assignmentUnit,
+          rolloutRequestId,
+          "failed",
+          Date.now() - enforcementStartedAt,
+          candidateLatencyMs,
+          enforcementOverheadMs,
+          null,
+          undefined,
+          candidateError,
+        );
+        throw candidateError;
+      }
+
+      const fallbackStartedAt = Date.now();
+      try {
+        const response = await providerCall(request);
+        const fallbackLatencyMs = Date.now() - fallbackStartedAt;
+        this.trackRolloutDecision(
+          rule,
+          action,
+          request.model,
+          request.model,
+          context,
+          experimentId,
+          rollout,
+          assignment,
+          assignmentUnit,
+          rolloutRequestId,
+          "source_fallback",
+          Date.now() - enforcementStartedAt,
+          candidateLatencyMs,
+          enforcementOverheadMs,
+          fallbackLatencyMs,
+          response,
+          candidateError,
+        );
+        return response;
+      } catch {
+        this.trackRolloutDecision(
+          rule,
+          action,
+          request.model,
+          null,
+          context,
+          experimentId,
+          rollout,
+          assignment,
+          assignmentUnit,
+          rolloutRequestId,
+          "failed",
+          Date.now() - enforcementStartedAt,
+          candidateLatencyMs,
+          enforcementOverheadMs,
+          Date.now() - fallbackStartedAt,
+          undefined,
+          candidateError,
+        );
+        throw candidateError;
+      }
+    }
+  }
+
+  private trackRolloutDecision<T>(
+    rule: EnforcementRule,
+    action: Exclude<ModelRuleAction, "FALLBACK">,
+    requestedModel: string,
+    servedModel: string | null,
+    context: RequestEnforcementContext,
+    experimentId: string,
+    rollout: EnforcementRollout,
+    assignment: RolloutAssignment,
+    assignmentUnit: "request" | "stable_key",
+    rolloutRequestId: string,
+    outcome: "succeeded" | "failed" | "source_fallback",
+    latencyMs: number,
+    providerLatencyMs: number,
+    enforcementOverheadMs: number,
+    fallbackLatencyMs: number | null,
+    response?: T,
+    error?: unknown,
+  ): void {
+    try {
+      const costBasis = response === undefined ? undefined : responseCostBasis(response, context.provider);
+      this.trackDecision(
+        this.postRolloutModelDecision(
+          rule,
+          action,
+          requestedModel,
+          servedModel,
+          context.feature,
+          experimentId,
+          rollout,
+          assignment,
+          assignmentUnit,
+          rolloutRequestId,
+          outcome,
+          latencyMs,
+          providerLatencyMs,
+          enforcementOverheadMs,
+          fallbackLatencyMs,
+          costBasis,
+          context.provider,
+          context.retryCount,
+          error,
+        ),
+      );
+    } catch {
+      // Telemetry extraction must never change the provider result.
+    }
+  }
+
   private getExactCache(key: string): ExactCacheEntry | undefined {
     const entry = this.exactCache.get(key);
     if (!entry) return undefined;
@@ -1210,6 +1476,116 @@ export class CloudAdapter implements CostAdapter {
       outputTokens: costBasis.outputTokens,
       cacheReadTokens: costBasis.cacheReadTokens,
       cacheWriteTokens: costBasis.cacheWriteTokens,
+    });
+  }
+
+  private postTargetVerificationDecision(
+    rule: EnforcementRule,
+    action: Exclude<ModelRuleAction, "FALLBACK">,
+    requestedModel: string,
+    targetModel: string,
+    feature: string | undefined,
+    experimentId: string,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: rule.id,
+      action,
+      mode: "shadow",
+      requestedModel,
+      targetModel,
+      feature,
+      experimentId,
+      eligibilityOutcome: "matched",
+      eligibilitySource: "sdk_pre_call",
+      protocolVersion: 2,
+      policyAgeMs: Math.max(0, Date.now() - this.rulesFetchedAt),
+    });
+  }
+
+  private postRolloutAssignment(
+    rule: EnforcementRule,
+    action: Exclude<ModelRuleAction, "FALLBACK">,
+    requestedModel: string,
+    feature: string | undefined,
+    experimentId: string,
+    rollout: EnforcementRollout,
+    assignment: RolloutAssignment,
+    assignmentUnit: "request" | "stable_key",
+    rolloutRequestId: string,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: rule.id,
+      action,
+      requestedModel,
+      feature,
+      experimentId,
+      rolloutId: rollout.id,
+      rolloutRevision: rollout.revision,
+      rolloutRequestId,
+      rolloutArm: assignment.arm,
+      rolloutBucket: assignment.bucket,
+      rolloutOutcome: "assigned",
+      assignmentUnit,
+      eligibilitySource: "sdk_pre_call",
+      protocolVersion: 2,
+      policyAgeMs: Math.max(0, Date.now() - this.rulesFetchedAt),
+    });
+  }
+
+  private postRolloutModelDecision(
+    rule: EnforcementRule,
+    action: Exclude<ModelRuleAction, "FALLBACK">,
+    requestedModel: string,
+    servedModel: string | null,
+    feature: string | undefined,
+    experimentId: string,
+    rollout: EnforcementRollout,
+    assignment: RolloutAssignment,
+    assignmentUnit: "request" | "stable_key",
+    rolloutRequestId: string,
+    rolloutOutcome: "succeeded" | "failed" | "source_fallback",
+    latencyMs: number,
+    providerLatencyMs: number,
+    enforcementOverheadMs: number,
+    fallbackLatencyMs: number | null,
+    costBasis?: ExactCacheCostBasis,
+    provider?: CostEvent["provider"],
+    retryCount?: number,
+    error?: unknown,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: rule.id,
+      action,
+      requestedModel,
+      ...(servedModel ? { servedModel } : {}),
+      feature,
+      experimentId,
+      rolloutId: rollout.id,
+      rolloutRevision: rollout.revision,
+      rolloutRequestId,
+      rolloutArm: assignment.arm,
+      rolloutBucket: assignment.bucket,
+      rolloutOutcome,
+      assignmentUnit,
+      latencyMs,
+      providerLatencyMs,
+      enforcementOverheadMs,
+      ...(fallbackLatencyMs == null ? {} : { fallbackLatencyMs }),
+      eligibilitySource: "sdk_post_call",
+      protocolVersion: 2,
+      policyAgeMs: Math.max(0, Date.now() - this.rulesFetchedAt),
+      ...(provider ? { requestedProvider: provider, servedProvider: provider } : {}),
+      ...(retryCount == null ? {} : { retryCount }),
+      ...(error ? { errorType: asError(error).name.slice(0, 64) } : {}),
+      ...(costBasis
+        ? {
+            provider: costBasis.provider,
+            inputTokens: costBasis.inputTokens,
+            outputTokens: costBasis.outputTokens,
+            cacheReadTokens: costBasis.cacheReadTokens,
+            cacheWriteTokens: costBasis.cacheWriteTokens,
+          }
+        : {}),
     });
   }
 
@@ -1414,7 +1790,33 @@ function isCacheRule(value: unknown): value is EnforcementRule {
     typeof rule.actionParams === "object" &&
     (rule.requireEquivalencePct === null || typeof rule.requireEquivalencePct === "number") &&
     (rule.maxQualityDropPct == null || typeof rule.maxQualityDropPct === "number") &&
-    Array.isArray(rule.modelAllowlist)
+    Array.isArray(rule.modelAllowlist) &&
+    (rule.rollout == null || isEnforcementRollout(rule.rollout))
+  );
+}
+
+function isEnforcementRollout(value: unknown): value is EnforcementRollout {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const rollout = value as Partial<EnforcementRollout>;
+  return (
+    typeof rollout.id === "string" &&
+    typeof rollout.workspaceId === "string" &&
+    (rollout.status === "VERIFYING" ||
+      rollout.status === "RUNNING" ||
+      rollout.status === "PAUSED" ||
+      rollout.status === "ROLLED_BACK" ||
+      rollout.status === "COMPLETED") &&
+    typeof rollout.allocationBps === "number" &&
+    Number.isInteger(rollout.allocationBps) &&
+    rollout.allocationBps >= 0 &&
+    rollout.allocationBps <= 10_000 &&
+    typeof rollout.revision === "number" &&
+    Number.isInteger(rollout.revision) &&
+    rollout.revision >= 1 &&
+    typeof rollout.assignmentSalt === "string" &&
+    rollout.assignmentSalt.length > 0 &&
+    (rollout.assignmentUnit === "request" || rollout.assignmentUnit === "stable_key") &&
+    typeof rollout.sourceFallbackEnabled === "boolean"
   );
 }
 
