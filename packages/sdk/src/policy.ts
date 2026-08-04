@@ -41,7 +41,11 @@ export async function exportPolicy(options: ExportPolicyOptions): Promise<Portab
   if (!apiKey) throw new Error("trAIce API key is required");
   const serverUrl = normalizeServerUrl(options.serverUrl ?? DEFAULT_TRAICE_SERVER_URL);
   const response = await (options.fetchImpl ?? fetch)(`${serverUrl}/api/v1/rules`, {
-    headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" },
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      accept: "application/json",
+      "x-traice-enforcement-version": "2",
+    },
     signal: options.signal ?? AbortSignal.timeout(30_000),
   });
   const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
@@ -94,7 +98,29 @@ function isEnforcementRule(value: unknown): value is EnforcementRule {
     Array.isArray(value.modelAllowlist) &&
     value.modelAllowlist.every((model) => typeof model === "string") &&
     (value.requireEquivalencePct == null || finiteNumber(value.requireEquivalencePct)) &&
-    (value.maxQualityDropPct == null || finiteNumber(value.maxQualityDropPct))
+    (value.maxQualityDropPct == null || finiteNumber(value.maxQualityDropPct)) &&
+    (value.rollout == null || isEnforcementRollout(value.rollout))
+  );
+}
+
+function isEnforcementRollout(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    (value.status === "VERIFYING" ||
+      value.status === "RUNNING" ||
+      value.status === "PAUSED" ||
+      value.status === "ROLLED_BACK" ||
+      value.status === "COMPLETED") &&
+    Number.isInteger(value.allocationBps) &&
+    Number(value.allocationBps) >= 0 &&
+    Number(value.allocationBps) <= 10_000 &&
+    Number.isInteger(value.revision) &&
+    Number(value.revision) >= 1 &&
+    typeof value.assignmentSalt === "string" &&
+    value.assignmentSalt.length > 0 &&
+    (value.assignmentUnit === "request" || value.assignmentUnit === "stable_key") &&
+    typeof value.sourceFallbackEnabled === "boolean"
   );
 }
 

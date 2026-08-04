@@ -184,6 +184,25 @@ Experiment-derived rules also carry an explicit `sourceModel` guard. The SDK
 passes through when the live request model differs from the model that was
 validated, even if another experiment exists for the same feature and target.
 
+Controlled model rollouts assign each eligible request locally from the cached
+policy. Pass a non-PII `rolloutKey` in the enforcement context to keep an
+account, conversation, or user on one arm as the percentage grows:
+
+```ts
+await cloud.enforceRequest(request, providerCall, {
+  feature: "support",
+  provider: "openai",
+  rolloutKey: account.id,
+});
+```
+
+The raw key never leaves the process. The SDK reports only the deterministic
+bucket, arm, policy revision, a request-scoped correlation ID, and attempt
+health. Successful, failed, and source-fallback outcomes include available
+provider and retry provenance. Without `rolloutKey`, assignment is per request.
+Candidate failures make at most one source fallback call when the rollout
+policy enables it.
+
 A fallback rule calls the original model first. After a provider error it makes
 one call with the configured fallback model. If that call also fails, the SDK
 rethrows the original provider error and does not add another retry.
