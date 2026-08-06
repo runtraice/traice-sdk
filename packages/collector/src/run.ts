@@ -20,6 +20,7 @@ import { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./a
 import { normalizeCodexOtlpLogs } from "./adapters/codex";
 import { extractLogRecords, extractMetricPoints, pickString } from "./otel";
 import { CollectorOutbox } from "./outbox";
+import { CollectorSessionFolderResolver } from "./session-folders";
 import type { AgentName, CollectorConfig, CollectorRunOptions, OtlpNormalizeOptions } from "./types";
 import { checkCollectorUpdate } from "./updates";
 import { eventForCollectorDestination } from "./context";
@@ -62,6 +63,12 @@ export type DestinationDelivery = {
   error?: string;
 };
 
+export type CollectorRoutingObservation = {
+  agent: AgentName;
+  sessionId?: string;
+  folder?: string;
+};
+
 type CollectorDestinationRuntime = {
   name: string;
   outbox: CollectorOutbox;
@@ -77,6 +84,19 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
   let stopped = false;
   const runtimes = new Map<string, CollectorDestinationRuntime>();
   const runtimePromises = new Map<string, Promise<CollectorDestinationRuntime>>();
+  const sessionFolders = new CollectorSessionFolderResolver(config);
+  const resolvedFolderSessions = new Set<string>();
+  const unresolvedFolderSessions = new Set<string>();
+  const observeRouting = (observation: CollectorRoutingObservation) => {
+    if (!observation.sessionId) return;
+    const key = `${observation.agent}:${observation.sessionId}`;
+    if (observation.folder) {
+      unresolvedFolderSessions.delete(key);
+      resolvedFolderSessions.add(key);
+    } else if (!resolvedFolderSessions.has(key)) {
+      unresolvedFolderSessions.add(key);
+    }
+  };
 
   const destinationRuntime = async (name: string): Promise<CollectorDestinationRuntime> => {
     const existing = runtimes.get(name);
@@ -173,6 +193,11 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
           delivery: Object.fromEntries(
             destinationNames.map((name) => [name, runtimes.get(name)?.outbox.stats() ?? null]),
           ),
+          routing: {
+            folderRoutes: current.folderRoutes?.length ?? 0,
+            resolvedSessions: resolvedFolderSessions.size,
+            unresolvedSessions: unresolvedFolderSessions.size,
+          },
         }),
       );
       return;
@@ -209,7 +234,7 @@ export async function runCollector(options: CollectorRunOptions = {}): Promise<v
     }
 
     try {
-      const routedEvents = routeEvents(current, events, options.destinations);
+      const routedEvents = routeEvents(current, events, options.destinations, sessionFolders, observeRouting);
       const destinationNames =
         routedEvents.size > 0 ? [...routedEvents.keys()] : allRoutedDestinationNames(current, options.destinations);
       const destinations = await resolveDestinations(current, destinationNames);
@@ -299,17 +324,21 @@ export function warmDestinationAuthorizations(
   }
 }
 
-function routeEvents(
+export function routeEvents(
   config: CollectorConfig,
   events: InternalUsageEvent[],
   destinationsOverride?: string[],
+  sessionFolders?: Pick<CollectorSessionFolderResolver, "resolve">,
+  onRouting?: (observation: CollectorRoutingObservation) => void,
 ): Map<string, InternalUsageEvent[]> {
   const routed = new Map<string, InternalUsageEvent[]>();
   for (const event of events) {
     const agent: AgentName | undefined =
       event.tool === "codex" ? "codex" : event.tool === "claude-code" ? "claude-code" : undefined;
+    const folder = agent ? sessionFolders?.resolve(agent, event.runId) : undefined;
+    if (agent && config.folderRoutes?.length) onRouting?.({ agent, sessionId: event.runId, folder });
     const destinations = agent
-      ? routedDestinationNames(config, agent, destinationsOverride)
+      ? routedDestinationNames(config, agent, destinationsOverride, folder)
       : allRoutedDestinationNames(config, destinationsOverride);
     for (const destination of destinations) {
       routed.set(destination, [

@@ -104,6 +104,39 @@ The collector uses one local listener and one background service for all enabled
 delivery retries, and server-side deduplication stay isolated per destination. Sending one event to two destinations
 intentionally creates one row in each workspace.
 
+### Repository and worktree routes
+
+Add a folder override when one repository or worktree should use a different workspace:
+
+```bash
+npx @traice/collector@latest route set codex sandbox --folder "$PWD"
+npx @traice/collector@latest route set all sandbox --folder "$PWD"
+npx @traice/collector@latest route explain --agent codex --folder "$PWD"
+```
+
+Folder rules include descendants. A worktree rule therefore overrides its repository rule because the longest
+matching path wins. At the same path, a specific `codex` or `claude-code` rule wins over `all`.
+`route explain` prints the winning rule and the fallback chain. `status` reports counts of resolved and unresolved
+sessions while folder rules are active.
+
+The complete precedence order is:
+
+1. An explicit `--destination` command override
+2. The longest matching folder and agent rule
+3. The longest matching folder and `all` rule
+4. The per-agent default route
+5. The only configured destination
+
+Remove one agent's rule or every rule for a folder:
+
+```bash
+npx @traice/collector@latest route remove --agent codex --folder "$PWD"
+npx @traice/collector@latest route remove --folder "$PWD"
+```
+
+Folder routes can select only destinations already authorized on this device. Repository files cannot change them.
+The collector resolves the current folder from local session metadata and never adds that path to uploaded events.
+
 Add or remove one destination explicitly:
 
 ```bash
@@ -201,7 +234,8 @@ npx @traice/collector@latest backfill codex --destination live-demo --since 7d
 
 When setup has recorded the first telemetry activation time, an omitted `--until` stops there so history does not
 cross the normal live-collection boundary. Stable event IDs and paginated live-only reconciliation make interrupted
-or repeated uploads retry-safe. Duplicate rows do not increase stored usage, token totals, or spend.
+or repeated uploads retry-safe. Without `--destination`, backfill applies the same folder routing as live Codex
+events. Duplicate rows do not increase stored usage, token totals, or spend.
 
 ## Configuration and credential storage
 
@@ -244,7 +278,7 @@ The environment value is not written into the collector config. Avoid `--api-key
 | `setup`                           | Detect agents, authorize destinations, configure routes and service |
 | `auth login/status/logout`        | Add, inspect, or revoke browser authorization                       |
 | `destination list`                | List authorized workspace destinations                              |
-| `route list/set`                  | Visualize or replace per-agent workspace routes                     |
+| `route list/set/remove/explain`   | Inspect and manage per-agent and folder workspace routes            |
 | `context show/set/clear`          | Manage explicit destination-scoped identity and task labels         |
 | `status`                          | Check configuration, credentials, service, listener, and access     |
 | `collect`                         | Run the local listener in the foreground                            |

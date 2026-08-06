@@ -55,7 +55,12 @@ export interface CollectorStatusResult {
     expectedVersion?: string;
     message?: string;
   };
-  listener: { ok: boolean; url?: string; message?: string };
+  listener: {
+    ok: boolean;
+    url?: string;
+    message?: string;
+    routing?: { folderRoutes: number; resolvedSessions: number; unresolvedSessions: number };
+  };
   server: CollectorServerStatus;
 }
 
@@ -287,6 +292,11 @@ export function formatCollectorStatus(result: CollectorStatusResult): string {
     if (result.config.destination) lines.push(`Destination: ${result.config.destination}`);
   }
   if (result.config.listenUrl) lines.push(`Listener: ${checkLabel(result.listener.ok)} ${result.config.listenUrl}`);
+  if (result.listener.routing?.folderRoutes) {
+    lines.push(
+      `Folder routing: ${result.listener.routing.resolvedSessions} resolved session(s), ${result.listener.routing.unresolvedSessions} unresolved session(s)`,
+    );
+  }
   if (result.destinations.length <= 1) {
     lines.push(
       `Credential: ${checkLabel(result.credential.ok)}${
@@ -355,8 +365,29 @@ async function checkListener(
 ): Promise<CollectorStatusResult["listener"]> {
   try {
     const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
-    const body = (await response.json().catch(() => null)) as { service?: unknown } | null;
-    if (response.ok && body?.service === "traice-collector") return { ok: true, url };
+    const body = (await response.json().catch(() => null)) as {
+      service?: unknown;
+      routing?: { folderRoutes?: unknown; resolvedSessions?: unknown; unresolvedSessions?: unknown };
+    } | null;
+    if (response.ok && body?.service === "traice-collector") {
+      const routing = body.routing;
+      return {
+        ok: true,
+        url,
+        ...(routing &&
+        Number.isInteger(routing.folderRoutes) &&
+        Number.isInteger(routing.resolvedSessions) &&
+        Number.isInteger(routing.unresolvedSessions)
+          ? {
+              routing: {
+                folderRoutes: Number(routing.folderRoutes),
+                resolvedSessions: Number(routing.resolvedSessions),
+                unresolvedSessions: Number(routing.unresolvedSessions),
+              },
+            }
+          : {}),
+      };
+    }
     return {
       ok: false,
       url,

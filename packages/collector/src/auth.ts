@@ -222,7 +222,7 @@ export async function loginCollectorOAuth(
     });
     const body = (await tokenResponse.json().catch(() => ({}))) as Record<string, unknown>;
     if (tokenResponse.ok) {
-      return tokenLoginResult(body, verificationUri, now());
+      return tokenLoginResult(body, verificationUriComplete, now());
     }
     const code = typeof body.error === "string" ? body.error : "";
     if (code === "authorization_pending") continue;

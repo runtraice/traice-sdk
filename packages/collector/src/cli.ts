@@ -8,12 +8,17 @@ import { loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./
 import {
   collectorDestination,
   collectorDestinationSummaries,
+  collectorFolderRouteSummaries,
   collectorRouteSummaries,
   configuredDestinationNames,
   defaultDestinationName,
   formatCollectorRouteList,
+  formatCollectorRouteExplanation,
   normalizeDestinationName,
+  removeCollectorFolderRoute,
+  resolveCollectorRoute,
   routedDestinationNames,
+  setCollectorFolderRoute,
   setCollectorRoute,
 } from "./destinations";
 import { installAgent } from "./install";
@@ -29,7 +34,7 @@ import { refreshCollectorServiceIfOutdated } from "./service";
 import { setupAgent } from "./setup";
 import { verifyCollectorConnection } from "./setup";
 import { formatCollectorStatus, getCollectorStatus } from "./status";
-import type { AgentName, CollectorOAuthAuthorization, CredentialStoreMode } from "./types";
+import type { AgentName, CollectorFolderRouteAgent, CollectorOAuthAuthorization, CredentialStoreMode } from "./types";
 import { checkCollectorUpdate, updateCollector } from "./updates";
 import {
   clearCollectorDestinationContext,
@@ -444,21 +449,71 @@ routeCommand
   .option("--json", "print machine-readable JSON")
   .action((options: Record<string, unknown>) => {
     const config = loadCollectorConfig(stringOption(options.config));
-    if (options.json) console.log(JSON.stringify(collectorRouteSummaries(config), null, 2));
-    else console.log(formatCollectorRouteList(config));
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          { agents: collectorRouteSummaries(config), folders: collectorFolderRouteSummaries(config) },
+          null,
+          2,
+        ),
+      );
+    } else console.log(formatCollectorRouteList(config));
   });
 
 routeCommand
   .command("set")
-  .description("Replace the destinations for one agent")
-  .argument("<agent>", "agent to route: claude-code or codex")
+  .description("Replace destinations for an agent or folder")
+  .argument("<agent>", "agent to route: claude-code, codex, or all with --folder")
   .argument("<destinations...>", "one or more destination names")
   .option("--config <path>", "collector config path")
+  .option("--folder <path>", "limit the route to this folder and its descendants")
   .action((agent: string, destinations: string[], options: Record<string, unknown>) => {
-    const parsedAgent = parseAgent(agent);
-    updateConfig(stringOption(options.config), (config) => setCollectorRoute(config, parsedAgent, destinations));
+    const folder = stringOption(options.folder);
+    const parsedAgent = folder ? parseFolderRouteAgent(agent) : parseAgent(agent);
+    updateConfig(stringOption(options.config), (config) =>
+      folder
+        ? setCollectorFolderRoute(config, parsedAgent, folder, destinations)
+        : setCollectorRoute(config, parsedAgent as AgentName, destinations),
+    );
     refreshOutdatedService(stringOption(options.config));
-    console.log(`${parsedAgent} will send live usage to ${destinations.map(normalizeDestinationName).join(", ")}.`);
+    console.log(
+      `${parsedAgent}${folder ? ` in ${folder}` : ""} will send live usage to ${destinations
+        .map(normalizeDestinationName)
+        .join(", ")}.`,
+    );
+  });
+
+routeCommand
+  .command("remove")
+  .description("Remove a folder route")
+  .requiredOption("--folder <path>", "folder route to remove")
+  .option("--agent <agent>", "remove only this agent route: claude-code, codex, or all")
+  .option("--config <path>", "collector config path")
+  .action((options: Record<string, unknown>) => {
+    const folder = requiredStringOption(options.folder, "folder");
+    const agent = stringOption(options.agent);
+    updateConfig(stringOption(options.config), (config) =>
+      removeCollectorFolderRoute(config, folder, agent ? parseFolderRouteAgent(agent) : undefined),
+    );
+    refreshOutdatedService(stringOption(options.config));
+    console.log(`Removed folder route for ${folder}${agent ? ` (${agent})` : ""}.`);
+  });
+
+routeCommand
+  .command("explain")
+  .description("Explain which route wins for an agent and folder")
+  .requiredOption("--agent <agent>", "agent to explain: claude-code or codex")
+  .requiredOption("--folder <path>", "folder to explain")
+  .option("--config <path>", "collector config path")
+  .option("--destination <name...>", "explicit destination override")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const config = loadCollectorConfig(stringOption(options.config));
+    const resolution = resolveCollectorRoute(config, parseAgent(requiredStringOption(options.agent, "agent")), {
+      folder: requiredStringOption(options.folder, "folder"),
+      override: stringArrayOption(options.destination),
+    });
+    console.log(options.json ? JSON.stringify(resolution, null, 2) : formatCollectorRouteExplanation(resolution));
   });
 
 const contextCommand = program
@@ -762,6 +817,11 @@ program.parseAsync(cliArguments).catch((error) => {
 function parseAgent(value: string): AgentName {
   if (value === "claude-code" || value === "codex") return value;
   throw new Error(`Unsupported agent "${value}". Expected "claude-code" or "codex".`);
+}
+
+function parseFolderRouteAgent(value: string): CollectorFolderRouteAgent {
+  if (value === "all") return value;
+  return parseAgent(value);
 }
 
 function stringOption(value: unknown): string | undefined {
