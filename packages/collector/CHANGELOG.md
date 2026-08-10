@@ -1,5 +1,12 @@
 # @traice/collector
 
+## 0.10.0
+
+### Minor Changes
+
+- bf6a051: Add account-scoped benchmark authorization, automatic My Benchmarks login during upload, and a dedicated benchmark
+  login command that does not select or create a workspace.
+
 ## 0.9.0
 
 ### Minor Changes
