@@ -37,6 +37,7 @@ import type {
 const CLIENT_ID = "traice-collector";
 const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 const SCOPES = ["collector:status", "internal_usage:dedupe", "internal_usage:write", "benchmarks:write"];
+const BENCHMARK_SCOPES = ["benchmarks:write"];
 const EXPIRY_SKEW_MS = 60_000;
 const REFRESH_LOCK_TIMEOUT_MS = 10_000;
 const STALE_REFRESH_LOCK_MS = 2 * 60_000;
@@ -78,18 +79,25 @@ export async function loginAndStoreCollectorAuthorization(
     destination?: string;
     deviceName?: string;
     identityHint?: string;
+    purpose?: "collector" | "benchmark";
   },
   dependencies: AuthDependencies = {},
 ): Promise<CollectorLoginResult> {
   const configPath = resolveConfigPath(options.configPath);
   const current = existsSync(configPath) ? loadCollectorConfig(configPath) : buildDefaultConfig();
-  const requestedName = options.destination ? normalizeDestinationName(options.destination) : undefined;
+  const requestedName = options.destination
+    ? normalizeDestinationName(options.destination)
+    : options.purpose === "benchmark"
+      ? benchmarkDestinationName(current)
+      : undefined;
   const previous = requestedName ? current.destinations[requestedName] : undefined;
   const serverUrl = normalizeUrl(options.serverUrl ?? previous?.serverUrl ?? DEFAULT_SERVER_URL);
   const report = dependencies.report ?? ((message: string) => console.error(message));
   report(
     requestedName
-      ? `Authorizing destination "${requestedName}" on ${new URL(serverUrl).host}.`
+      ? options.purpose === "benchmark"
+        ? `Authorizing My Benchmarks on ${new URL(serverUrl).host}.`
+        : `Authorizing destination "${requestedName}" on ${new URL(serverUrl).host}.`
       : `Authorizing workspace destinations on ${new URL(serverUrl).host}.`,
   );
   const login = await loginCollectorOAuth(
@@ -101,6 +109,7 @@ export async function loginAndStoreCollectorAuthorization(
       deviceName: options.deviceName,
       identityHint:
         options.identityHint ?? previous?.authorization?.userEmail ?? current.identity.employeeEmail ?? undefined,
+      scopes: options.purpose === "benchmark" ? BENCHMARK_SCOPES : SCOPES,
     },
     dependencies,
   );
@@ -128,6 +137,7 @@ export async function loginAndStoreCollectorAuthorization(
     );
     const authorization: CollectorOAuthAuthorization = {
       type: "oauth",
+      ...(options.purpose ? { purpose: options.purpose } : {}),
       clientId: CLIENT_ID,
       workspaceId: authorized.workspace.id,
       workspaceName: authorized.workspace.name,
@@ -137,6 +147,17 @@ export async function loginAndStoreCollectorAuthorization(
       authorizedAt: new Date((dependencies.now ?? Date.now)() + index).toISOString(),
     };
     next = upsertCollectorDestination(next, name, { serverUrl, credential: stored.credential, authorization });
+    if (options.purpose === "benchmark" && next.routes) {
+      next = {
+        ...next,
+        routes: Object.fromEntries(
+          Object.entries(next.routes).map(([agent, route]) => [
+            agent,
+            route?.filter((destination) => destination !== name),
+          ]),
+        ),
+      };
+    }
     let credentialWarning = stored.warning;
     if (previousDestination?.credential && !sameCredential(previousDestination.credential, stored.credential)) {
       try {
@@ -158,6 +179,28 @@ export async function loginAndStoreCollectorAuthorization(
   return { destinations: results, verificationUri: login.verificationUri };
 }
 
+export async function loginAndStoreBenchmarkAuthorization(
+  options: Omit<Parameters<typeof loginAndStoreCollectorAuthorization>[0], "destination" | "workspaceHint" | "purpose">,
+  dependencies: AuthDependencies = {},
+) {
+  return loginAndStoreCollectorAuthorization({ ...options, purpose: "benchmark" }, dependencies);
+}
+
+function benchmarkDestinationName(config: CollectorConfig): string {
+  const existing = Object.entries(config.destinations).find(
+    ([, destination]) =>
+      destination.authorization?.purpose === "benchmark" ||
+      (destination.authorization?.workspaceId === "personal" &&
+        destination.authorization.scopes.length === 1 &&
+        destination.authorization.scopes[0] === "benchmarks:write"),
+  )?.[0];
+  if (existing) return normalizeDestinationName(existing);
+  for (const candidate of ["benchmarks", "my-benchmarks", "personal-benchmarks"]) {
+    if (!config.destinations[candidate]) return candidate;
+  }
+  throw new Error("No reserved benchmark destination name is available. Rename an existing destination first.");
+}
+
 export async function loginCollectorOAuth(
   options: {
     serverUrl: string;
@@ -166,6 +209,7 @@ export async function loginCollectorOAuth(
     allowMultipleWorkspaces?: boolean;
     deviceName?: string;
     identityHint?: string;
+    scopes?: string[];
   },
   dependencies: AuthDependencies = {},
 ) {
@@ -179,7 +223,7 @@ export async function loginCollectorOAuth(
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: CLIENT_ID,
-      scope: SCOPES.join(" "),
+      scope: (options.scopes ?? SCOPES).join(" "),
       device_name: options.deviceName?.trim() || hostname(),
       client_version: packageMetadata.version,
       platform: `${platform()} ${release()}`,

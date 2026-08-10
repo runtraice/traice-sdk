@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { Command } from "commander";
 import packageMetadata from "../package.json";
-import { loginAndStoreCollectorAuthorization, logoutCollector } from "./auth";
+import { loginAndStoreBenchmarkAuthorization, loginAndStoreCollectorAuthorization, logoutCollector } from "./auth";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
 import {
@@ -485,6 +485,31 @@ const benchmarkCommand = program
   .description("Create, measure, compare, and upload reproducible repository benchmarks");
 
 benchmarkCommand
+  .command("login")
+  .description("Authorize private uploads to My Benchmarks without selecting a workspace")
+  .option("--config <path>", "collector config path")
+  .option("--server-url <url>", "trAIce app URL")
+  .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
+  .option("--device-name <name>", "recognizable device name to prefill in the browser")
+  .option("--identity <email>", "account email to prefill and verify in the browser")
+  .option("--no-browser", "print the authorization link without opening a browser")
+  .action(async (options: Record<string, unknown>) => {
+    const result = await loginAndStoreBenchmarkAuthorization({
+      configPath: stringOption(options.config),
+      serverUrl: stringOption(options.serverUrl),
+      credentialStore: credentialStoreOption(options.credentialStore),
+      deviceName: stringOption(options.deviceName),
+      identityHint: stringOption(options.identity),
+      noBrowser: options.browser === false,
+    });
+    const destination = result.destinations[0];
+    if (!destination) throw new Error("Benchmark authorization did not return a destination.");
+    console.log(`Connected ${destination.authorization.workspaceName} as destination "${destination.name}".`);
+    if (destination.authorization.userEmail) console.log(`Signed in as ${destination.authorization.userEmail}.`);
+    console.log("This credential can upload private benchmark drafts only.");
+  });
+
+benchmarkCommand
   .command("init")
   .description("Create a private local A/B benchmark manifest")
   .requiredOption("--title <title>", "benchmark title")
@@ -527,7 +552,7 @@ benchmarkCommand
     else {
       console.log(`Created private benchmark manifest at ${result.path}.`);
       console.log(`Pinned ${result.manifest.repository.url} at ${result.manifest.repository.revision}.`);
-      console.log('Sign in before upload with "npx @traice/collector@latest auth login".');
+      console.log('Upload with "npx @traice/collector@latest benchmark upload". Sign-in starts automatically.');
     }
   });
 
@@ -679,22 +704,32 @@ benchmarkCommand
 
 benchmarkCommand
   .command("upload")
-  .description("Upload a validated private draft for owner or admin review")
+  .description("Upload a validated private draft to My Benchmarks")
   .option("--path <path>", "manifest path")
   .option("--config <path>", "collector config path")
-  .option("--destination <name>", "authorized workspace destination")
+  .option("--destination <name>", "existing benchmark destination; defaults to My Benchmarks")
+  .option("--server-url <url>", "trAIce app URL used when authorization is needed")
+  .option("--device-name <name>", "recognizable device name used when authorization is needed")
+  .option("--identity <email>", "account email to prefill when authorization is needed")
+  .option("--no-browser", "print the authorization link without opening a browser")
   .option("--json", "print machine-readable JSON")
   .action(async (options: Record<string, unknown>) => {
     const result = await uploadBenchmarkReport({
       path: stringOption(options.path),
       configPath: stringOption(options.config),
       destination: stringOption(options.destination),
+      serverUrl: stringOption(options.serverUrl),
+      deviceName: stringOption(options.deviceName),
+      identityHint: stringOption(options.identity),
+      noBrowser: options.browser === false,
     });
     if (options.json) console.log(JSON.stringify(result, null, 2));
     else {
-      const benchmark = result.benchmark as { reviewPath?: string } | undefined;
+      const benchmark = result.benchmark as { reviewPath?: string; reviewUrl?: string } | undefined;
       console.log("Uploaded a private benchmark draft.");
-      if (benchmark?.reviewPath) console.log(`Review and publish it at ${benchmark.reviewPath}.`);
+      if (benchmark?.reviewUrl ?? benchmark?.reviewPath) {
+        console.log(`Review and publish it at ${benchmark.reviewUrl ?? benchmark?.reviewPath}.`);
+      }
     }
   });
 

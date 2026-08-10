@@ -54,6 +54,19 @@ npx @traice/collector@latest auth login --no-browser \
 
 New authorization defaults to the production trAIce service and never inherits another destination's deployment.
 
+## Repository benchmarks
+
+Benchmark initialization, recording, activity reduction, and local comparison work without an account. Uploading a
+durable private draft authorizes the signed-in account, not a workspace:
+
+```sh
+npx @traice/collector@latest benchmark upload
+```
+
+Upload opens the browser automatically when a My Benchmarks credential is missing. For a remote host, run
+`benchmark login --no-browser --identity you@example.com --device-name "Build host"` first. The resulting credential
+has only `benchmarks:write`, is not added to live collector routes, and cannot ingest general usage or publish reports.
+
 ## Opt-in task context
 
 Identity and task context can be scoped to one destination. Nothing beyond normal usage metadata is added until the

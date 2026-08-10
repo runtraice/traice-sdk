@@ -138,13 +138,14 @@ Local initialization, manual activity aggregates, and comparison do not require 
 observation requires a configured local collector. Cloud measurement and durable reports require an account:
 
 ```sh
-npx @traice/collector@latest auth login
 npx @traice/collector@latest benchmark upload
 ```
 
-The browser flow creates or signs into a trAIce account, selects a workspace, and grants `benchmarks:write`. Uploading
-creates a private draft. Tell the user to review the allowlisted projection in trAIce. Only an owner or admin can
-publish it.
+When a personal benchmark credential is not already stored, upload starts browser authorization automatically. The
+browser flow creates or signs into a trAIce account and grants only `benchmarks:write` to My Benchmarks. It does not
+select or create a workspace and cannot ingest general usage or publish. Uploading creates a private personal draft.
+Tell the user to review the allowlisted projection in trAIce before publishing. Copy to team is a separate action that
+preserves the personal original and report lineage.
 
 ## Final response
 

@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import packageMetadata from "../package.json";
-import { resolveCollectorAccessToken } from "./auth";
+import { loginAndStoreBenchmarkAuthorization, resolveCollectorAccessToken } from "./auth";
 import { configDir, loadCollectorConfig } from "./config";
-import { collectorDestination, defaultDestinationName, normalizeDestinationName } from "./destinations";
+import { collectorDestination, normalizeDestinationName } from "./destinations";
 import { extractLogRecords, pickString } from "./otel";
 
 export const DEFAULT_BENCHMARK_PATH = ".traice/benchmark.json";
@@ -438,10 +438,29 @@ export async function uploadBenchmarkReport(options: {
   configPath?: string;
   destination?: string;
   fetchImpl?: typeof fetch;
+  noBrowser?: boolean;
+  serverUrl?: string;
+  deviceName?: string;
+  identityHint?: string;
 }) {
   const report = buildBenchmarkReport(options.path, options.cwd);
-  const config = loadCollectorConfig(options.configPath);
-  const destination = normalizeDestinationName(options.destination ?? defaultDestinationName(config));
+  let config = loadCollectorConfigIfPresent(options.configPath);
+  let destination = options.destination
+    ? normalizeDestinationName(options.destination)
+    : personalBenchmarkDestination(config);
+  if (!destination) {
+    const login = await loginAndStoreBenchmarkAuthorization({
+      configPath: options.configPath,
+      serverUrl: options.serverUrl,
+      noBrowser: options.noBrowser,
+      deviceName: options.deviceName,
+      identityHint: options.identityHint,
+    });
+    destination = login.destinations[0]?.name;
+    if (!destination) throw new Error("Benchmark authorization did not return a destination.");
+    config = loadCollectorConfig(options.configPath);
+  }
+  if (!config) throw new Error("Collector config could not be loaded after benchmark authorization.");
   const target = collectorDestination(config, destination);
   const fetchImpl = options.fetchImpl ?? fetch;
   let accessToken = await resolveCollectorAccessToken(options.configPath, { destination, fetchImpl });
@@ -459,6 +478,26 @@ export async function uploadBenchmarkReport(options: {
     throw new Error(`Benchmark upload failed (${response.status}): ${String(body.error ?? "unknown_error")}`);
   }
   return body;
+}
+
+function loadCollectorConfigIfPresent(configPath?: string) {
+  try {
+    return loadCollectorConfig(configPath);
+  } catch {
+    return null;
+  }
+}
+
+function personalBenchmarkDestination(config: ReturnType<typeof loadCollectorConfig> | null): string | undefined {
+  if (!config) return undefined;
+  if (config.destinations.benchmarks?.authorization?.purpose === "benchmark") return "benchmarks";
+  return Object.entries(config.destinations).find(
+    ([, destination]) =>
+      destination.authorization?.purpose === "benchmark" ||
+      (destination.authorization?.workspaceId === "personal" &&
+        destination.authorization.scopes.length === 1 &&
+        destination.authorization.scopes[0] === "benchmarks:write"),
+  )?.[0];
 }
 
 export function readBenchmarkManifest(path = DEFAULT_BENCHMARK_PATH): BenchmarkManifest {
