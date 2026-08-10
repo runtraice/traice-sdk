@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   loginAndStoreCollectorAuthorization,
+  loginAndStoreBenchmarkAuthorization,
   loginCollectorOAuth,
   logoutCollector,
   parseOAuthCredential,
@@ -186,6 +187,52 @@ describe("collector OAuth", () => {
     const stored = parseOAuthCredential(await readCollectorCredential(result.destinations[0]!.credential));
     expect(stored.accessToken).toBe("tr_oauth_at_secret");
     expect(stored.refreshToken).toBe("tr_oauth_rt_secret");
+  });
+
+  it("authorizes benchmark uploads as an account destination without workspace scopes", async () => {
+    const directory = temporaryDirectory("traice-benchmark-login-");
+    const configPath = join(directory, "config.json");
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          device_code: "device-secret",
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://runtraice.com/device",
+          verification_uri_complete: "https://runtraice.com/device?user_code=ABCD-EFGH",
+          expires_in: 600,
+          interval: 5,
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: "tr_oauth_at_benchmark",
+          refresh_token: "tr_oauth_rt_benchmark",
+          expires_in: 3600,
+          scope: "benchmarks:write",
+          workspace: { id: "personal", name: "My Benchmarks", slug: "my-benchmarks" },
+          user: { email: "alex@example.com" },
+        }),
+      );
+
+    const result = await loginAndStoreBenchmarkAuthorization(
+      { configPath, serverUrl: "https://runtraice.com", credentialStore: "file", noBrowser: true },
+      { fetchImpl, report: () => {}, sleep: async () => {} },
+    );
+
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).toContain("scope=benchmarks%3Awrite");
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).not.toContain("internal_usage");
+    expect(result.destinations).toHaveLength(1);
+    expect(result.destinations[0]).toMatchObject({
+      name: "benchmarks",
+      authorization: {
+        purpose: "benchmark",
+        workspaceId: "personal",
+        workspaceName: "My Benchmarks",
+        scopes: ["benchmarks:write"],
+      },
+    });
+    expect(loadCollectorConfig(configPath).routes).toBeUndefined();
   });
 
   it("stores named workspace destinations in separate credential entries", async () => {

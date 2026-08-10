@@ -95,15 +95,22 @@ Local initialization, manual activity aggregates, and comparison do not require 
 want to upload a durable report:
 
 ```sh
-npx @traice/collector@latest auth login
 npx @traice/collector@latest benchmark upload
 ```
 
-Browser authorization selects the account and workspace and grants `benchmarks:write`. Upload always creates a
-private draft. It does not publish a report.
+If needed, upload opens browser authorization automatically. You can also authorize first:
 
-Open [Benchmarks](https://www.runtraice.com/app/benchmarks) to review workspace history. Workspace owners and admins
-can publish, unpublish, or archive a benchmark. Other members can review drafts but cannot change their visibility.
+```sh
+npx @traice/collector@latest benchmark login
+```
+
+Browser authorization selects the signed-in account and grants only `benchmarks:write` to **My Benchmarks**. It does
+not select or create a workspace, ingest general coding-agent usage, read workspace telemetry, or publish. Upload
+always creates a private personal draft.
+
+Open [My Benchmarks](https://www.runtraice.com/app/benchmarks) to review personal and accessible team history. A
+personal owner can publish, unpublish, or archive local-only reports. Copy to team creates a separate team-owned fork
+with lineage and keeps the personal original. Team owners and admins manage publication for that fork.
 
 ## Public reports
 
@@ -115,5 +122,8 @@ It does not expose workspace identity, workspace telemetry, raw OpenTelemetry ev
 paths, credentials, or private repository content. Published reports appear in the public
 [benchmark directory](https://www.runtraice.com/benchmarks) and can be shared by URL.
 
-Unpublishing removes the report from the public directory and its public URL. Archiving keeps the workspace record
-but leaves it unpublished.
+Anyone can inspect a public report and download its exact prompt-suite manifest without signing in. Signed-in users
+can save a private reproduction fork to My Benchmarks. Both actions retain the parent report version for attribution.
+
+Unpublishing removes the report from the public directory and its public URL. Archiving keeps the private benchmark
+record but leaves it unpublished.
