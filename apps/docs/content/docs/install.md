@@ -10,6 +10,9 @@ order: 2
 
 This is the canonical setup guide for trAIce. Use it for a fresh workspace, a new service, or an internal AI-tool collector rollout.
 
+Prefer agent-assisted setup? Install the public skills and give your coding agent one prompt. See
+[Coding-Agent Setup](agent-setup).
+
 ## Before You Start
 
 You need:

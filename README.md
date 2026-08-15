@@ -11,6 +11,26 @@ Public SDKs and coding-agent collectors for trAIce.
 | `@traice/collector` | Local collector for coding-agent usage signals.  |
 | `@traice/protocol`  | Shared event schemas and normalization helpers.  |
 
+## Agent-assisted setup
+
+Install the public setup skills, then ask your coding agent to run `$setup-traice` in the repository you want to
+instrument:
+
+```sh
+npx skills add runtraice/traice-sdk \
+  --skill setup-traice \
+  --skill setup-traice-sdk \
+  --skill setup-traice-collector \
+  -g -y
+```
+
+`setup-traice` detects whether the repository needs the product SDK, the local Codex and Claude Code collector, or
+both. If no account exists, it opens trAIce sign-in and waits. Product API keys use hidden terminal entry or a
+deployment secret manager and never need to enter agent chat. Interactive collectors use browser authorization and do
+not require an API key.
+
+Read the [agent setup guide](apps/docs/content/docs/agent-setup.md) for the onboarding prompt and security behavior.
+
 ## Install
 
 TypeScript, JavaScript, and Python projects are supported.
