@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up trAIce"
+  short_description: "Set up trAIce for this project and machine"
+  default_prompt: "Use $setup-traice to configure trAIce for this repository and its coding agents."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up trAIce Collector"
+  short_description: "Connect Codex and Claude Code to trAIce"
+  default_prompt: "Use $setup-traice-collector to configure trAIce collectors for the coding agents on this machine."
