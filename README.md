@@ -103,6 +103,9 @@ npx @traice/collector@latest route explain --agent codex --folder "$PWD"
 
 Folder routes include descendants. The most specific folder wins, an agent-specific rule wins over `all` at the same
 folder, and an explicit `--destination` remains the highest-priority override. Local folder paths stay on the device.
+See [Collector Configuration](https://runtraice.github.io/traice-sdk/docs/collector-configuration) for local state and
+compatibility, and [Collector Routing](https://runtraice.github.io/traice-sdk/docs/collector-routing) for the complete
+priority and fallback rules.
 
 ## Repository benchmarks
 

@@ -52,6 +52,9 @@ an agent-specific rule wins over `all`. `route explain` shows the winning rule a
 `route list` marks an agent without a default as unresolved, while `status` reports resolved and unresolved local
 sessions when folder rules exist.
 
+See the public [Collector Routing guide](https://runtraice.github.io/traice-sdk/docs/collector-routing) for exact
+precedence, worktree behavior, missing session folders, backfill, and machine-readable output.
+
 Add one explicitly named destination:
 
 ```sh
@@ -215,6 +218,9 @@ printf '%s\n' "$TRAICE_API_KEY" |
 
 The API key is stored through the selected credential backend, not in `config.json`. Avoid passing secrets directly
 on a shared command line.
+
+See the public [Collector Configuration guide](https://runtraice.github.io/traice-sdk/docs/collector-configuration)
+for the configuration model, schema compatibility, backups, and local data boundary.
 
 ## Important options
 

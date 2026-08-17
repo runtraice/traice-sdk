@@ -3,7 +3,7 @@ title: Privacy
 excerpt: What collectors send, what they avoid, and how prompt capture is controlled.
 section: Internal spend
 sectionOrder: 3
-order: 4
+order: 6
 ---
 
 # Privacy

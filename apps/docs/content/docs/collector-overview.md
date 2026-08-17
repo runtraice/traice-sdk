@@ -78,66 +78,15 @@ browser authorization can select multiple workspaces; each selected workspace re
 ```bash
 npx @traice/collector@latest destination list
 npx @traice/collector@latest route list
-npx @traice/collector@latest route set codex live-demo sandbox
-npx @traice/collector@latest route set claude-code live-demo
-```
-
-`route list` shows the workspace, signed-in account, and server behind every destination:
-
-```text
-Collector routes
-
-Codex -> 2 destinations
-  - live-demo
-    Live Demo | you@example.com | www.runtraice.com
-  - sandbox
-    Sandbox | you@example.com | www.runtraice.com
-
-Claude Code -> 1 destination
-  - live-demo
-    Live Demo | you@example.com | www.runtraice.com
-
-Precedence: command override, most specific folder route, agent default, single destination.
-Each live event is sent to every destination selected by its winning route.
+npx @traice/collector@latest route set codex live-demo
 ```
 
 The collector uses one local listener and one background service for all enabled agents. Credentials, durable queues,
 delivery retries, and server-side deduplication stay isolated per destination. Sending one event to two destinations
 intentionally creates one row in each workspace.
 
-### Repository and worktree routes
-
-Add a folder override when one repository or worktree should use a different workspace:
-
-```bash
-npx @traice/collector@latest route set codex sandbox --folder "$PWD"
-npx @traice/collector@latest route set all sandbox --folder "$PWD"
-npx @traice/collector@latest route explain --agent codex --folder "$PWD"
-```
-
-Folder rules include the selected directory and all descendants, including nested repositories and worktree
-directories. Add a separate rule for a linked worktree outside that directory tree. A more deeply nested rule wins
-because the longest matching path takes priority. At the same path, a specific `codex` or `claude-code` rule wins over
-`all`. `route explain` prints the winning rule and the fallback chain. `route list` marks agents without a default as
-unresolved, and `status` reports counts of resolved and unresolved sessions while folder rules are active.
-
-The complete precedence order is:
-
-1. An explicit `--destination` command override
-2. The longest matching folder and agent rule
-3. The longest matching folder and `all` rule
-4. The per-agent default route
-5. The only configured destination
-
-Remove one agent's rule or every rule for a folder:
-
-```bash
-npx @traice/collector@latest route remove --agent codex --folder "$PWD"
-npx @traice/collector@latest route remove --folder "$PWD"
-```
-
-Folder routes can select only destinations already authorized on this device. Repository files cannot change them.
-The collector resolves the current folder from local session metadata and never adds that path to uploaded events.
+Use [Collector Routing](/docs/collector-routing) for per-agent defaults, repository and worktree rules, exact
+precedence, explanation, removal, backfill, and fallback behavior.
 
 Add or remove one destination explicitly:
 
@@ -243,37 +192,8 @@ events. Duplicate rows do not increase stored usage, token totals, or spend.
 
 ## Configuration and credential storage
 
-Non-secret device configuration is stored at:
-
-```text
-~/.traice/collector/config.json
-```
-
-The config contains destination metadata and credential references, agent and local folder routes, employee and team
-mapping, adapter settings, and the local listener address. Folder paths stay in this local config and are never added
-to uploaded events. Before replacing it, the CLI retains bounded backups under `~/.traice/collector/backups/`.
-
-Renewable OAuth credentials are stored separately:
-
-- macOS Keychain
-- Windows Credential Manager
-- Linux Secret Service
-- A user-only protected file when an operating-system credential store is unavailable
-
-Use `--credential-store keyring` to require the native store or `--credential-store file` for a headless,
-externally encrypted environment. Do not place credentials in service definitions, shell history, or committed files.
-
-Workspace API keys remain available for CI, containers, MDM, and unattended automation:
-
-```bash
-printf '%s\n' "$TRAICE_API_KEY" |
-  npx @traice/collector@latest install codex \
-    --destination ci \
-    --api-key-stdin \
-    --patch-settings
-```
-
-The environment value is not written into the collector config. Avoid `--api-key <value>` in shared shells.
+Use [Collector Configuration](/docs/collector-configuration) for the configuration model, credential storage,
+backups, schema compatibility, inspection commands, and local data boundary.
 
 ## CLI reference
 
