@@ -42,6 +42,15 @@ export interface CollectorManualContext {
   labels?: JsonRecord;
 }
 
+export type CollectorFolderRouteAgent = AgentName | "all";
+
+export interface CollectorFolderRoute {
+  /** Canonical absolute path stored only in the local collector config. */
+  folder: string;
+  agent: CollectorFolderRouteAgent;
+  destinations: string[];
+}
+
 export interface CollectorConfig {
   version: 2;
   createdAt: string;
@@ -49,6 +58,8 @@ export interface CollectorConfig {
   destinations: Record<string, CollectorDestination>;
   /** Per-agent destination routes. */
   routes?: Partial<Record<AgentName, string[]>>;
+  /** Trusted local folder routes. Paths are never included in uploaded events. */
+  folderRoutes?: CollectorFolderRoute[];
   listenHost: string;
   listenPort: number;
   includePrompts: boolean;

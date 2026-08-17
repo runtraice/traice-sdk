@@ -3,7 +3,7 @@ title: Claude Code
 excerpt: Configure Claude Code telemetry for trAIce Internal Spend.
 section: Internal spend
 sectionOrder: 3
-order: 2
+order: 4
 ---
 
 # Claude Code

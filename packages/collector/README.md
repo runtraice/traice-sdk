@@ -36,6 +36,25 @@ npx @traice/collector@latest route set claude-code live-demo
 
 `route list` prints a readable agent-to-workspace map, including the account and server behind every destination.
 
+Override routing for one repository or worktree:
+
+```sh
+npx @traice/collector@latest route set codex sandbox --folder "$PWD"
+npx @traice/collector@latest route set all sandbox --folder "$PWD"
+npx @traice/collector@latest route explain --agent codex --folder "$PWD"
+npx @traice/collector@latest route remove --agent codex --folder "$PWD"
+```
+
+Folder routes match the selected directory and all descendants, including nested repositories and worktree
+directories. Add a separate rule for a linked worktree outside that directory tree. Precedence is explicit command
+override, longest matching folder route, per-agent route, then the single configured destination. At the same folder,
+an agent-specific rule wins over `all`. `route explain` shows the winning rule and its complete fallback chain.
+`route list` marks an agent without a default as unresolved, while `status` reports resolved and unresolved local
+sessions when folder rules exist.
+
+See the public [Collector Routing guide](https://runtraice.github.io/traice-sdk/docs/collector-routing) for exact
+precedence, worktree behavior, missing session folders, backfill, and machine-readable output.
+
 Add one explicitly named destination:
 
 ```sh
@@ -109,8 +128,9 @@ npx @traice/collector@latest update --check
 npx @traice/collector@latest update
 ```
 
-By default, `status` checks every unique destination used by the configured agent routes. Each destination reports
-its credential and authenticated server access separately. Use `status --destination <name>` for a focused check.
+By default, `status` checks every unique destination used by configured agent and folder routes. Each destination
+reports its credential and authenticated server access separately. Use `status --destination <name>` for a focused
+check.
 
 The service starts at user login and restarts on failure:
 
@@ -149,8 +169,9 @@ Upload a bounded window:
 npx @traice/collector@latest backfill codex --destination live-demo --since 7d
 ```
 
-Backfill uses stable source event IDs and paginated live-only reconciliation. Repeated or interrupted uploads are
-retry-safe. Duplicates do not increase stored usage or spend.
+Without `--destination`, Codex backfill uses the same folder and agent routing rules as live collection. Backfill uses
+stable source event IDs and paginated live-only reconciliation. Repeated or interrupted uploads are retry-safe.
+Duplicates do not increase stored usage or spend.
 
 ## Repository benchmark activity
 
@@ -176,6 +197,9 @@ Non-secret configuration lives at `~/.traice/collector/config.json`. Renewable c
 Keychain, Windows Credential Manager, or Linux Secret Service. If a native store is unavailable, `auto` mode uses a
 user-only protected file and reports the fallback.
 
+Folder paths are read from local session metadata and remain in the local collector config. They are used only to
+choose an already-authorized destination and are not added to uploaded events.
+
 For SSH:
 
 ```sh
@@ -194,6 +218,9 @@ printf '%s\n' "$TRAICE_API_KEY" |
 
 The API key is stored through the selected credential backend, not in `config.json`. Avoid passing secrets directly
 on a shared command line.
+
+See the public [Collector Configuration guide](https://runtraice.github.io/traice-sdk/docs/collector-configuration)
+for the configuration model, schema compatibility, backups, and local data boundary.
 
 ## Important options
 

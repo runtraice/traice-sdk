@@ -12,12 +12,14 @@ The public repository is the source of truth for package behavior. Each referenc
 
 ## Reference guides
 
-| Guide                                          | Covers                                                                                              |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| [TypeScript API](/docs/typescript-reference)   | `@traice/sdk` functions, classes, adapters, integrations, analytics, guardrails, and exported types |
-| [Python API](/docs/python-reference)           | `traice-sdk` functions, client lifecycle, tracker, callback handler, and public data classes        |
-| [Event contracts](/docs/event-reference)       | Product transport fields, SDK-local events, internal usage events, and `@traice/protocol` utilities |
-| [Collector overview](/docs/collector-overview) | `@traice/collector` CLI workflows, configuration, adapters, credentials, and service lifecycle      |
+| Guide                                                    | Covers                                                                                              |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| [TypeScript API](/docs/typescript-reference)             | `@traice/sdk` functions, classes, adapters, integrations, analytics, guardrails, and exported types |
+| [Python API](/docs/python-reference)                     | `traice-sdk` functions, client lifecycle, tracker, callback handler, and public data classes        |
+| [Event contracts](/docs/event-reference)                 | Product transport fields, SDK-local events, internal usage events, and `@traice/protocol` utilities |
+| [Collector overview](/docs/collector-overview)           | `@traice/collector` setup, adapters, service lifecycle, delivery, and backfill                      |
+| [Collector configuration](/docs/collector-configuration) | Device configuration, credentials, compatibility, backups, and local state                          |
+| [Collector routing](/docs/collector-routing)             | Per-agent defaults, folder and worktree rules, precedence, status, and route CLI behavior           |
 
 ## Packages and source
 

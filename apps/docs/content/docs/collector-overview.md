@@ -78,31 +78,15 @@ browser authorization can select multiple workspaces; each selected workspace re
 ```bash
 npx @traice/collector@latest destination list
 npx @traice/collector@latest route list
-npx @traice/collector@latest route set codex live-demo sandbox
-npx @traice/collector@latest route set claude-code live-demo
-```
-
-`route list` shows the workspace, signed-in account, and server behind every destination:
-
-```text
-Collector routes
-
-Codex -> 2 destinations
-  - live-demo
-    Live Demo | you@example.com | www.runtraice.com
-  - sandbox
-    Sandbox | you@example.com | www.runtraice.com
-
-Claude Code -> 1 destination
-  - live-demo
-    Live Demo | you@example.com | www.runtraice.com
-
-Each live event is sent to every destination listed for its agent.
+npx @traice/collector@latest route set codex live-demo
 ```
 
 The collector uses one local listener and one background service for all enabled agents. Credentials, durable queues,
 delivery retries, and server-side deduplication stay isolated per destination. Sending one event to two destinations
 intentionally creates one row in each workspace.
+
+Use [Collector Routing](/docs/collector-routing) for per-agent defaults, repository and worktree rules, exact
+precedence, explanation, removal, backfill, and fallback behavior.
 
 Add or remove one destination explicitly:
 
@@ -159,9 +143,11 @@ npx @traice/collector@latest update
 ```
 
 `status` checks the config, pinned service version, background service, local OTLP listener, and every unique
-destination used by the configured agent routes. Each destination reports its credential and authenticated server
-access separately. Use `status --destination <name>` for a focused check or `--json` for machine-readable results. The
-command exits non-zero when any required check fails and tells you when `update` is required.
+destination used by configured agent and folder routes. Each destination reports its credential and authenticated
+server access separately. Use `status --destination <name>` for a focused check or `--json` for machine-readable
+results. With folder routes active, status also reports how many observed sessions resolved a local folder and how
+many fell back without one. The command exits non-zero when any required check fails and tells you when `update` is
+required.
 
 The service uses an exact installed package version. It checks for a newer stable release once per day and logs an
 update notice. Read-only commands never persist a config migration underneath an older service. Commands that change
@@ -201,41 +187,13 @@ npx @traice/collector@latest backfill codex --destination live-demo --since 7d
 
 When setup has recorded the first telemetry activation time, an omitted `--until` stops there so history does not
 cross the normal live-collection boundary. Stable event IDs and paginated live-only reconciliation make interrupted
-or repeated uploads retry-safe. Duplicate rows do not increase stored usage, token totals, or spend.
+or repeated uploads retry-safe. Without `--destination`, backfill applies the same folder routing as live Codex
+events. Duplicate rows do not increase stored usage, token totals, or spend.
 
 ## Configuration and credential storage
 
-Non-secret device configuration is stored at:
-
-```text
-~/.traice/collector/config.json
-```
-
-The config contains destination metadata and credential references, agent routes, employee and team mapping, adapter
-settings, and the local listener address. Before replacing it, the CLI retains bounded backups under
-`~/.traice/collector/backups/`.
-
-Renewable OAuth credentials are stored separately:
-
-- macOS Keychain
-- Windows Credential Manager
-- Linux Secret Service
-- A user-only protected file when an operating-system credential store is unavailable
-
-Use `--credential-store keyring` to require the native store or `--credential-store file` for a headless,
-externally encrypted environment. Do not place credentials in service definitions, shell history, or committed files.
-
-Workspace API keys remain available for CI, containers, MDM, and unattended automation:
-
-```bash
-printf '%s\n' "$TRAICE_API_KEY" |
-  npx @traice/collector@latest install codex \
-    --destination ci \
-    --api-key-stdin \
-    --patch-settings
-```
-
-The environment value is not written into the collector config. Avoid `--api-key <value>` in shared shells.
+Use [Collector Configuration](/docs/collector-configuration) for the configuration model, credential storage,
+backups, schema compatibility, inspection commands, and local data boundary.
 
 ## CLI reference
 
@@ -244,7 +202,7 @@ The environment value is not written into the collector config. Avoid `--api-key
 | `setup`                           | Detect agents, authorize destinations, configure routes and service |
 | `auth login/status/logout`        | Add, inspect, or revoke browser authorization                       |
 | `destination list`                | List authorized workspace destinations                              |
-| `route list/set`                  | Visualize or replace per-agent workspace routes                     |
+| `route list/set/remove/explain`   | Inspect and manage per-agent and folder workspace routes            |
 | `context show/set/clear`          | Manage explicit destination-scoped identity and task labels         |
 | `status`                          | Check configuration, credentials, service, listener, and access     |
 | `collect`                         | Run the local listener in the foreground                            |

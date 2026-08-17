@@ -95,6 +95,10 @@ const isolatedGuides = {
   "http-api": ["typescript", "javascript", "python"],
 };
 
+for (const slug of ["collector-configuration", "collector-routing"]) {
+  if (!docs.has(slug)) fail(`${slug}.md`, "required collector guide is missing");
+}
+
 for (const [slug, forbiddenLanguages] of Object.entries(isolatedGuides)) {
   const doc = docs.get(slug);
   if (!doc) {
