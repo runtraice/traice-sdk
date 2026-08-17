@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { Command } from "commander";
 import packageMetadata from "../package.json";
-import { loginAndStoreCollectorAuthorization, logoutCollector } from "./auth";
+import { loginAndStoreBenchmarkAuthorization, loginAndStoreCollectorAuthorization, logoutCollector } from "./auth";
 import { backfillCodex, dryRunCodexBackfill } from "./backfill";
 import { loadCollectorConfig, resolveConfigPath, writeCollectorConfig } from "./config";
 import {
@@ -44,6 +44,25 @@ import {
   updateCollectorDestinationContext,
 } from "./context";
 import type { CollectorContextPatch } from "./context";
+import {
+  BENCHMARK_ACTIVITY_CATEGORIES,
+  BENCHMARK_ACTIVITY_SOURCES,
+  BENCHMARK_STAGE_KINDS,
+  BENCHMARK_VARIANTS,
+  benchmarkComparison,
+  buildBenchmarkReport,
+  initializeBenchmark,
+  recordBenchmarkActivity,
+  recordBenchmarkStage,
+  recordBenchmarkTask,
+  startBenchmarkActivityCapture,
+  stopBenchmarkActivityCapture,
+  uploadBenchmarkReport,
+  type BenchmarkActivityCategory,
+  type BenchmarkActivitySource,
+  type BenchmarkStageKind,
+  type BenchmarkVariantKey,
+} from "./benchmark";
 
 const program = new Command();
 
@@ -73,6 +92,8 @@ authCommand
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect in the browser")
   .option("--destination <name>", "name for a single workspace destination")
+  .option("--device-name <name>", "recognizable device name to prefill in the browser")
+  .option("--identity <email>", "account email to prefill and verify in the browser")
   .option("--no-browser", "print the authorization link without opening a browser")
   .action(async (options: Record<string, unknown>) => {
     const result = await loginAndStoreCollectorAuthorization({
@@ -81,6 +102,8 @@ authCommand
       credentialStore: credentialStoreOption(options.credentialStore),
       workspaceHint: stringOption(options.workspace),
       destination: stringOption(options.destination),
+      deviceName: stringOption(options.deviceName),
+      identityHint: stringOption(options.identity),
       noBrowser: options.browser === false,
     });
     for (const destination of result.destinations) {
@@ -158,6 +181,8 @@ program
   .option("--server-url <url>", "trAIce app URL")
   .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
   .option("--workspace <workspace>", "workspace slug or ID to preselect during authorization")
+  .option("--device-name <name>", "recognizable device name to prefill during authorization")
+  .option("--identity <email>", "account email to prefill and verify during authorization")
   .option("--no-browser", "print the authorization link without opening a browser")
   .option("--employee-email <email>", "employee email")
   .option("--employee-name <name>", "employee display name")
@@ -193,6 +218,8 @@ program
         noBrowser: options.browser === false,
         destination: requestedDestinations?.length === 1 ? requestedDestinations[0] : undefined,
         workspaceHint: stringOption(options.workspace),
+        deviceName: stringOption(options.deviceName),
+        identityHint: stringOption(options.identity),
       });
       if (login.destinations.length === 0) throw new Error("Authorization did not add any workspace destinations.");
       config = loadCollectorConfig(configPath);
@@ -508,6 +535,259 @@ contextCommand
     else console.log(formatCollectorContext(summary));
   });
 
+const benchmarkCommand = program
+  .command("benchmark")
+  .description("Create, measure, compare, and upload reproducible repository benchmarks");
+
+benchmarkCommand
+  .command("login")
+  .description("Authorize private uploads to My Benchmarks without selecting a workspace")
+  .option("--config <path>", "collector config path")
+  .option("--server-url <url>", "trAIce app URL")
+  .option("--credential-store <mode>", "credential storage: auto, keyring, or file", "auto")
+  .option("--device-name <name>", "recognizable device name to prefill in the browser")
+  .option("--identity <email>", "account email to prefill and verify in the browser")
+  .option("--no-browser", "print the authorization link without opening a browser")
+  .action(async (options: Record<string, unknown>) => {
+    const result = await loginAndStoreBenchmarkAuthorization({
+      configPath: stringOption(options.config),
+      serverUrl: stringOption(options.serverUrl),
+      credentialStore: credentialStoreOption(options.credentialStore),
+      deviceName: stringOption(options.deviceName),
+      identityHint: stringOption(options.identity),
+      noBrowser: options.browser === false,
+    });
+    const destination = result.destinations[0];
+    if (!destination) throw new Error("Benchmark authorization did not return a destination.");
+    console.log(`Connected ${destination.authorization.workspaceName} as destination "${destination.name}".`);
+    if (destination.authorization.userEmail) console.log(`Signed in as ${destination.authorization.userEmail}.`);
+    console.log("This credential can upload private benchmark drafts only.");
+  });
+
+benchmarkCommand
+  .command("init")
+  .description("Create a private local A/B benchmark manifest")
+  .requiredOption("--title <title>", "benchmark title")
+  .requiredOption("--summary <summary>", "benchmark summary")
+  .requiredOption("--prompt <prompt>", "benchmark prompt; repeat for multiple tasks", collectValues, [])
+  .option("--path <path>", "manifest path")
+  .option("--repository-url <url>", "public GitHub repository; defaults to origin")
+  .option("--repository-revision <revision>", "pinned revision; defaults to HEAD")
+  .option("--methodology-version <version>", "benchmark protocol version", "repo-context-v1")
+  .option("--amortization-task-count <count>", "tasks used to amortize one-time setup")
+  .option("--baseline-label <label>", "baseline display name", "Baseline")
+  .option("--baseline-tool <tool>", "baseline tool name", "Coding agent")
+  .option("--baseline-configuration <text>", "baseline configuration", "No candidate tool enabled.")
+  .option("--candidate-label <label>", "candidate display name", "Candidate")
+  .option("--candidate-tool <tool>", "candidate tool name", "Coding agent with candidate tool")
+  .option("--candidate-configuration <text>", "candidate configuration", "Candidate tool enabled.")
+  .option("--disclosure <text>", "public disclosure; repeat for more", collectValues, [])
+  .option("--force", "replace an existing manifest")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const result = initializeBenchmark({
+      path: stringOption(options.path),
+      force: Boolean(options.force),
+      title: requiredStringOption(options.title, "title"),
+      summary: requiredStringOption(options.summary, "summary"),
+      repositoryUrl: stringOption(options.repositoryUrl),
+      repositoryRevision: stringOption(options.repositoryRevision),
+      methodologyVersion: stringOption(options.methodologyVersion),
+      amortizationTaskCount: integerOption(options.amortizationTaskCount, "amortization-task-count"),
+      prompts: stringArrayOption(options.prompt) ?? [],
+      baselineLabel: stringOption(options.baselineLabel),
+      baselineTool: stringOption(options.baselineTool),
+      baselineConfiguration: stringOption(options.baselineConfiguration),
+      candidateLabel: stringOption(options.candidateLabel),
+      candidateTool: stringOption(options.candidateTool),
+      candidateConfiguration: stringOption(options.candidateConfiguration),
+      disclosures: stringArrayOption(options.disclosure),
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Created private benchmark manifest at ${result.path}.`);
+      console.log(`Pinned ${result.manifest.repository.url} at ${result.manifest.repository.revision}.`);
+      console.log('Upload with "npx @traice/collector@latest benchmark upload". Sign-in starts automatically.');
+    }
+  });
+
+benchmarkCommand
+  .command("stage")
+  .description("Record setup, refresh, execution, or verification overhead")
+  .requiredOption("--variant <variant>", "baseline or candidate")
+  .requiredOption("--kind <kind>", "setup, refresh, execute, or verify")
+  .requiredOption("--label <label>", "stage label")
+  .requiredOption("--duration-ms <milliseconds>", "stage wall-clock duration")
+  .option("--path <path>", "manifest path")
+  .option("--input-tokens <tokens>", "stage input tokens", "0")
+  .option("--output-tokens <tokens>", "stage output tokens", "0")
+  .option("--cost-usd-micros <micros>", "stage cost in millionths of a USD", "0")
+  .option("--status <status>", "completed, failed, or skipped", "completed")
+  .option("--command <command>", "public command summary")
+  .option("--source-revision <revision>", "revision or dirty-tree fingerprint")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const result = recordBenchmarkStage({
+      path: stringOption(options.path),
+      variant: benchmarkVariantOption(options.variant),
+      kind: benchmarkStageKindOption(options.kind),
+      label: requiredStringOption(options.label, "label"),
+      durationMs: requiredIntegerOption(options.durationMs, "duration-ms"),
+      inputTokens: integerOption(options.inputTokens, "input-tokens"),
+      outputTokens: integerOption(options.outputTokens, "output-tokens"),
+      costUsdMicros: integerOption(options.costUsdMicros, "cost-usd-micros"),
+      status: stringOption(options.status) as "completed" | "failed" | "skipped" | undefined,
+      command: stringOption(options.command),
+      sourceRevision: stringOption(options.sourceRevision),
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`Recorded ${String(options.kind)} stage for ${String(options.variant)}.`);
+  });
+
+benchmarkCommand
+  .command("task")
+  .description("Record one task result without storing raw agent output")
+  .requiredOption("--variant <variant>", "baseline or candidate")
+  .requiredOption("--id <id>", "stable task ID shared by both variants")
+  .requiredOption("--title <title>", "task title shared by both variants")
+  .requiredOption("--input-tokens <tokens>", "task input tokens")
+  .requiredOption("--output-tokens <tokens>", "task output tokens")
+  .requiredOption("--cost-usd-micros <micros>", "task cost in millionths of a USD")
+  .requiredOption("--duration-ms <milliseconds>", "task wall-clock duration")
+  .option("--path <path>", "manifest path")
+  .option("--cache-read-tokens <tokens>", "cached input tokens", "0")
+  .option("--billable-tokens <tokens>", "provider-equivalent billable tokens")
+  .option("--retries <count>", "task retries", "0")
+  .option("--quality-score <score>", "quality or completion score from 0 to 100")
+  .option("--status <status>", "completed, failed, or error", "completed")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const result = recordBenchmarkTask({
+      path: stringOption(options.path),
+      variant: benchmarkVariantOption(options.variant),
+      id: requiredStringOption(options.id, "id"),
+      title: requiredStringOption(options.title, "title"),
+      inputTokens: requiredIntegerOption(options.inputTokens, "input-tokens"),
+      cacheReadTokens: integerOption(options.cacheReadTokens, "cache-read-tokens"),
+      outputTokens: requiredIntegerOption(options.outputTokens, "output-tokens"),
+      billableTokens: integerOption(options.billableTokens, "billable-tokens"),
+      costUsdMicros: requiredIntegerOption(options.costUsdMicros, "cost-usd-micros"),
+      durationMs: requiredIntegerOption(options.durationMs, "duration-ms"),
+      retries: integerOption(options.retries, "retries"),
+      qualityScore: numberOption(options.qualityScore),
+      status: stringOption(options.status) as "completed" | "failed" | "error" | undefined,
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`Recorded task "${String(options.id)}" for ${String(options.variant)}.`);
+  });
+
+benchmarkCommand
+  .command("activity")
+  .description("Record a privacy-safe aggregate of agent tool activity")
+  .requiredOption("--variant <variant>", "baseline or candidate")
+  .requiredOption("--category <category>", BENCHMARK_ACTIVITY_CATEGORIES.join(", "))
+  .requiredOption("--count <count>", "observed calls")
+  .option("--path <path>", "manifest path")
+  .option("--source <source>", BENCHMARK_ACTIVITY_SOURCES.join(", "), "manual")
+  .option("--duration-ms <milliseconds>", "aggregate activity duration")
+  .option("--failed-count <count>", "failed calls", "0")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const result = recordBenchmarkActivity({
+      path: stringOption(options.path),
+      variant: benchmarkVariantOption(options.variant),
+      category: benchmarkActivityCategoryOption(options.category),
+      source: benchmarkActivitySourceOption(options.source),
+      count: requiredIntegerOption(options.count, "count"),
+      durationMs: integerOption(options.durationMs, "duration-ms"),
+      failedCount: integerOption(options.failedCount, "failed-count"),
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else console.log(`Recorded ${String(options.category)} activity for ${String(options.variant)}.`);
+  });
+
+const benchmarkObserveCommand = benchmarkCommand
+  .command("observe")
+  .description("Capture bounded Codex tool activity from local OpenTelemetry logs");
+
+benchmarkObserveCommand
+  .command("start")
+  .description("Start one local activity capture")
+  .requiredOption("--variant <variant>", "baseline or candidate")
+  .option("--path <path>", "manifest path")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    refreshOutdatedService(stringOption(options.config), !options.json);
+    const result = startBenchmarkActivityCapture({
+      path: stringOption(options.path),
+      configPath: stringOption(options.config),
+      variant: benchmarkVariantOption(options.variant),
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Capturing aggregate OpenTelemetry activity for ${String(options.variant)}.`);
+      console.log("Run the benchmark prompts now, then run traice-collector benchmark observe stop.");
+    }
+  });
+
+benchmarkObserveCommand
+  .command("stop")
+  .description("Stop capture and add its aggregates to the benchmark manifest")
+  .option("--config <path>", "collector config path")
+  .option("--json", "print machine-readable JSON")
+  .action((options: Record<string, unknown>) => {
+    const result = stopBenchmarkActivityCapture({ configPath: stringOption(options.config) });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      const count = result.activity.reduce((total, activity) => total + activity.count, 0);
+      console.log(`Recorded ${count} bounded tool activity events for ${result.variant}.`);
+    }
+  });
+
+benchmarkCommand
+  .command("compare")
+  .description("Validate parity and show the local A/B report")
+  .option("--path <path>", "manifest path")
+  .option("--json", "print the complete report and comparison as JSON")
+  .action((options: Record<string, unknown>) => {
+    const report = buildBenchmarkReport(stringOption(options.path));
+    const comparison = benchmarkComparison(report);
+    if (options.json) console.log(JSON.stringify({ report, comparison }, null, 2));
+    else console.log(formatBenchmarkComparison(report, comparison));
+  });
+
+benchmarkCommand
+  .command("upload")
+  .description("Upload a validated private draft to My Benchmarks")
+  .option("--path <path>", "manifest path")
+  .option("--config <path>", "collector config path")
+  .option("--destination <name>", "existing benchmark destination; defaults to My Benchmarks")
+  .option("--server-url <url>", "trAIce app URL used when authorization is needed")
+  .option("--device-name <name>", "recognizable device name used when authorization is needed")
+  .option("--identity <email>", "account email to prefill when authorization is needed")
+  .option("--no-browser", "print the authorization link without opening a browser")
+  .option("--json", "print machine-readable JSON")
+  .action(async (options: Record<string, unknown>) => {
+    const result = await uploadBenchmarkReport({
+      path: stringOption(options.path),
+      configPath: stringOption(options.config),
+      destination: stringOption(options.destination),
+      serverUrl: stringOption(options.serverUrl),
+      deviceName: stringOption(options.deviceName),
+      identityHint: stringOption(options.identity),
+      noBrowser: options.browser === false,
+    });
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      const benchmark = result.benchmark as { reviewPath?: string; reviewUrl?: string } | undefined;
+      console.log("Uploaded a private benchmark draft.");
+      if (benchmark?.reviewUrl ?? benchmark?.reviewPath) {
+        console.log(`Review and publish it at ${benchmark.reviewUrl ?? benchmark?.reviewPath}.`);
+      }
+    }
+  });
+
 contextCommand
   .command("set")
   .description("Opt in to bounded identity and task context for one destination")
@@ -600,6 +880,40 @@ function integerOption(value: unknown, name: string): number | undefined {
   const parsed = numberOption(value);
   if (parsed !== undefined && !Number.isInteger(parsed)) throw new Error(`Invalid ${name}: ${String(value)}.`);
   return parsed;
+}
+
+function requiredIntegerOption(value: unknown, name: string): number {
+  const parsed = integerOption(value, name);
+  if (parsed === undefined) throw new Error(`Missing required option --${name}.`);
+  return parsed;
+}
+
+function benchmarkVariantOption(value: unknown): BenchmarkVariantKey {
+  if (typeof value === "string" && BENCHMARK_VARIANTS.includes(value as BenchmarkVariantKey)) {
+    return value as BenchmarkVariantKey;
+  }
+  throw new Error('Invalid benchmark variant. Expected "baseline" or "candidate".');
+}
+
+function benchmarkStageKindOption(value: unknown): BenchmarkStageKind {
+  if (typeof value === "string" && BENCHMARK_STAGE_KINDS.includes(value as BenchmarkStageKind)) {
+    return value as BenchmarkStageKind;
+  }
+  throw new Error("Invalid benchmark stage kind. Expected setup, refresh, execute, or verify.");
+}
+
+function benchmarkActivityCategoryOption(value: unknown): BenchmarkActivityCategory {
+  if (typeof value === "string" && BENCHMARK_ACTIVITY_CATEGORIES.includes(value as BenchmarkActivityCategory)) {
+    return value as BenchmarkActivityCategory;
+  }
+  throw new Error(`Invalid activity category. Expected ${BENCHMARK_ACTIVITY_CATEGORIES.join(", ")}.`);
+}
+
+function benchmarkActivitySourceOption(value: unknown): BenchmarkActivitySource {
+  if (typeof value === "string" && BENCHMARK_ACTIVITY_SOURCES.includes(value as BenchmarkActivitySource)) {
+    return value as BenchmarkActivitySource;
+  }
+  throw new Error(`Invalid activity source. Expected ${BENCHMARK_ACTIVITY_SOURCES.join(", ")}.`);
 }
 
 function credentialStoreOption(value: unknown): CredentialStoreMode {
@@ -754,6 +1068,30 @@ function formatBackfillResult(
     `Duplicates skipped: ${result.crossModeDuplicatesSkipped}`,
     `Accepted: ${result.accepted}`,
   ].join("\n");
+}
+
+function formatBenchmarkComparison(
+  report: ReturnType<typeof buildBenchmarkReport>,
+  rows: ReturnType<typeof benchmarkComparison>,
+) {
+  const lines = [
+    report.title,
+    `${report.baseline.label} vs ${report.candidate.label}`,
+    `Repository: ${report.repository.url} @ ${report.repository.revision}`,
+    "",
+    "Metric                         Baseline      Candidate      Difference      Difference %",
+  ];
+  for (const row of rows) {
+    lines.push(
+      `${row.key.padEnd(30)}${formatBenchmarkNumber(row.baseline).padStart(12)}${formatBenchmarkNumber(row.candidate).padStart(15)}${formatBenchmarkNumber(row.difference, true).padStart(16)}${(row.differencePercent == null ? "N/A" : `${row.differencePercent > 0 ? "+" : ""}${row.differencePercent.toFixed(1)}%`).padStart(18)}`,
+    );
+  }
+  lines.push("", "Run benchmark upload to create a private review draft. Upload never publishes directly.");
+  return lines.join("\n");
+}
+
+function formatBenchmarkNumber(value: number, signed = false) {
+  return `${signed && value > 0 ? "+" : ""}${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value)}`;
 }
 
 function servicePlatformName(platform: NodeJS.Platform): string {

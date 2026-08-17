@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   loginAndStoreCollectorAuthorization,
+  loginAndStoreBenchmarkAuthorization,
   loginCollectorOAuth,
   logoutCollector,
   parseOAuthCredential,
@@ -52,7 +53,7 @@ describe("collector OAuth", () => {
           refresh_token: "tr_oauth_rt_secret",
           token_type: "Bearer",
           expires_in: 3600,
-          scope: "collector:status internal_usage:dedupe internal_usage:write",
+          scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
           workspace: { id: "workspace-1", name: "Acme" },
           user: { email: "alex@acme.com" },
         }),
@@ -62,7 +63,12 @@ describe("collector OAuth", () => {
     const sleep = vi.fn(async () => {});
 
     const result = await loginCollectorOAuth(
-      { serverUrl: "https://runtraice.com" },
+      {
+        serverUrl: "https://runtraice.com",
+        workspaceHint: "engineering",
+        identityHint: "alex@acme.com",
+        deviceName: "Alex benchmark host",
+      },
       { fetchImpl, report, openBrowser, sleep, now: () => Date.parse("2026-07-23T09:00:00.000Z") },
     );
 
@@ -76,6 +82,9 @@ describe("collector OAuth", () => {
     expect(sleep).toHaveBeenCalledTimes(3);
     const deviceRequest = fetchImpl.mock.calls[0][1];
     expect(String(deviceRequest?.body)).toContain("internal_usage%3Adedupe");
+    expect(String(deviceRequest?.body)).toContain("workspace_hint=engineering");
+    expect(String(deviceRequest?.body)).toContain("identity_hint=alex%40acme.com");
+    expect(String(deviceRequest?.body)).toContain("device_name=Alex+benchmark+host");
   });
 
   it("supports SSH login without attempting to open a browser", async () => {
@@ -96,7 +105,7 @@ describe("collector OAuth", () => {
           access_token: "tr_oauth_at_secret",
           refresh_token: "tr_oauth_rt_secret",
           expires_in: 3600,
-          scope: "collector:status internal_usage:dedupe internal_usage:write",
+          scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
           workspace: { id: "workspace-1", name: "Acme" },
           user: { email: "alex@acme.com" },
         }),
@@ -117,6 +126,41 @@ describe("collector OAuth", () => {
 
     expect(openBrowser).not.toHaveBeenCalled();
     expect(report).toHaveBeenCalledWith("Open https://runtraice.com/device?user_code=ABCD-EFGH");
+  });
+
+  it("prints the complete copy-ready authorization URL during SSH login", async () => {
+    const completeUrl =
+      "https://runtraice.com/device?user_code=ABCD-EFGH&workspace=engineering&identity=alex%40acme.com&device_name=Alex+host";
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          device_code: "device-secret",
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://runtraice.com/device",
+          verification_uri_complete: completeUrl,
+          expires_in: 600,
+          interval: 5,
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: "tr_oauth_at_secret",
+          refresh_token: "tr_oauth_rt_secret",
+          expires_in: 3600,
+          scope: "collector:status internal_usage:write benchmarks:write",
+          workspace: { id: "workspace-1", name: "Acme" },
+          user: { email: "alex@acme.com" },
+        }),
+      );
+    const report = vi.fn();
+
+    await loginCollectorOAuth(
+      { serverUrl: "https://runtraice.com", noBrowser: true },
+      { fetchImpl, report, sleep: async () => {} },
+    );
+
+    expect(report).toHaveBeenCalledWith(`Open ${completeUrl}`);
   });
 
   it("stores the token bundle outside the collector config", async () => {
@@ -145,6 +189,52 @@ describe("collector OAuth", () => {
     const stored = parseOAuthCredential(await readCollectorCredential(result.destinations[0]!.credential));
     expect(stored.accessToken).toBe("tr_oauth_at_secret");
     expect(stored.refreshToken).toBe("tr_oauth_rt_secret");
+  });
+
+  it("authorizes benchmark uploads as an account destination without workspace scopes", async () => {
+    const directory = temporaryDirectory("traice-benchmark-login-");
+    const configPath = join(directory, "config.json");
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          device_code: "device-secret",
+          user_code: "ABCD-EFGH",
+          verification_uri: "https://runtraice.com/device",
+          verification_uri_complete: "https://runtraice.com/device?user_code=ABCD-EFGH",
+          expires_in: 600,
+          interval: 5,
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          access_token: "tr_oauth_at_benchmark",
+          refresh_token: "tr_oauth_rt_benchmark",
+          expires_in: 3600,
+          scope: "benchmarks:write",
+          workspace: { id: "personal", name: "My Benchmarks", slug: "my-benchmarks" },
+          user: { email: "alex@example.com" },
+        }),
+      );
+
+    const result = await loginAndStoreBenchmarkAuthorization(
+      { configPath, serverUrl: "https://runtraice.com", credentialStore: "file", noBrowser: true },
+      { fetchImpl, report: () => {}, sleep: async () => {} },
+    );
+
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).toContain("scope=benchmarks%3Awrite");
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).not.toContain("internal_usage");
+    expect(result.destinations).toHaveLength(1);
+    expect(result.destinations[0]).toMatchObject({
+      name: "benchmarks",
+      authorization: {
+        purpose: "benchmark",
+        workspaceId: "personal",
+        workspaceName: "My Benchmarks",
+        scopes: ["benchmarks:write"],
+      },
+    });
+    expect(loadCollectorConfig(configPath).routes).toBeUndefined();
   });
 
   it("stores named workspace destinations in separate credential entries", async () => {
@@ -219,7 +309,7 @@ describe("collector OAuth", () => {
               access_token: "tr_oauth_at_acme",
               refresh_token: "tr_oauth_rt_acme",
               expires_in: 3600,
-              scope: "collector:status internal_usage:dedupe internal_usage:write",
+              scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
               workspace: { id: "workspace-1", name: "Acme", slug: "acme" },
               user: { email: "alex@acme.com" },
             },
@@ -227,7 +317,7 @@ describe("collector OAuth", () => {
               access_token: "tr_oauth_at_sandbox",
               refresh_token: "tr_oauth_rt_sandbox",
               expires_in: 3600,
-              scope: "collector:status internal_usage:dedupe internal_usage:write",
+              scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
               workspace: { id: "workspace-2", name: "Sandbox", slug: "sandbox" },
               user: { email: "alex@acme.com" },
             },
@@ -303,7 +393,7 @@ describe("collector OAuth", () => {
         access_token: "tr_oauth_at_new",
         refresh_token: "tr_oauth_rt_new",
         expires_in: 3600,
-        scope: "collector:status internal_usage:dedupe internal_usage:write",
+        scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
       });
     });
 
@@ -338,7 +428,7 @@ describe("collector OAuth", () => {
         access_token: "tr_oauth_at_new",
         refresh_token: "tr_oauth_rt_new",
         expires_in: 3600,
-        scope: "collector:status internal_usage:dedupe internal_usage:write",
+        scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
       }),
     );
 
@@ -428,7 +518,7 @@ function successfulLoginFetch() {
         access_token: "tr_oauth_at_secret",
         refresh_token: "tr_oauth_rt_secret",
         expires_in: 3600,
-        scope: "collector:status internal_usage:dedupe internal_usage:write",
+        scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
         workspace: { id: "workspace-1", name: "Acme", slug: "acme" },
         user: { email: "alex@acme.com" },
       }),
@@ -445,7 +535,7 @@ async function oauthConfig(
       version: 1,
       type: "oauth",
       ...tokens,
-      scope: "collector:status internal_usage:dedupe internal_usage:write",
+      scope: "collector:status internal_usage:dedupe internal_usage:write benchmarks:write",
     }),
     "file",
     {},

@@ -11,6 +11,26 @@ Public SDKs and coding-agent collectors for trAIce.
 | `@traice/collector` | Local collector for coding-agent usage signals.  |
 | `@traice/protocol`  | Shared event schemas and normalization helpers.  |
 
+## Agent-assisted setup
+
+Install the public setup skills, then ask your coding agent to run `$setup-traice` in the repository you want to
+instrument:
+
+```sh
+npx skills add runtraice/traice-sdk \
+  --skill setup-traice \
+  --skill setup-traice-sdk \
+  --skill setup-traice-collector \
+  -g -y
+```
+
+`setup-traice` detects whether the repository needs the product SDK, the local Codex and Claude Code collector, or
+both. If no account exists, it opens trAIce sign-in and waits. Product API keys use hidden terminal entry or a
+deployment secret manager and never need to enter agent chat. Interactive collectors use browser authorization and do
+not require an API key.
+
+Read the [agent setup guide](apps/docs/content/docs/agent-setup.md) for the onboarding prompt and security behavior.
+
 ## Install
 
 TypeScript, JavaScript, and Python projects are supported.
@@ -72,6 +92,14 @@ Collectors send internal usage rows to `/api/v1/internal-usage`. Product-runtime
 `/api/v1/events`.
 
 Restart every running coding-agent session after setup so it loads the new telemetry settings.
+
+## Repository benchmarks
+
+Use the open-source [`benchmark-repo` skill](skills/benchmark-repo/SKILL.md) to compare the same coding-agent prompt
+suite with and without Graphify or another Candidate tool. It records tokens, cost, time, quality, setup, required
+refreshes, and privacy-safe activity aggregates. Read the
+[Repository Benchmarks guide](https://runtraice.github.io/traice-sdk/docs/repository-benchmarks) for the exact prompt,
+protocol, upload flow, and public-report privacy boundary.
 
 ## Ask trAIce
 

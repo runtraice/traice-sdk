@@ -1,5 +1,32 @@
 # @traice/collector
 
+## 0.10.0
+
+### Minor Changes
+
+- bf6a051: Add account-scoped benchmark authorization, automatic My Benchmarks login during upload, and a dedicated benchmark
+  login command that does not select or create a workspace.
+
+## 0.9.0
+
+### Minor Changes
+
+- Capture privacy-safe aggregate agent activity for repository benchmarks and expose benchmark observation commands.
+
+## 0.8.1
+
+### Patch Changes
+
+- 98e5690: Print the complete device authorization URL and support prefilled workspace, identity, and device name hints.
+
+## 0.8.0
+
+### Minor Changes
+
+- fc69773: Add local repository benchmark manifests, A/B stage and task recording, comparison output, private draft upload, and
+  the `benchmarks:write` collector authorization scope.
+- 2e6ec88: Add opt-in, destination-scoped employee attribution and bounded manual task context with CLI management. Accept local application usage through the collector's machine-local loopback endpoint so one collector can route it to configured destinations.
+
 ## 0.7.3
 
 ### Patch Changes

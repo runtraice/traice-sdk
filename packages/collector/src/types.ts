@@ -8,6 +8,7 @@ export type CollectorCredential =
 
 export interface CollectorOAuthAuthorization {
   type: "oauth";
+  purpose?: "collector" | "benchmark";
   clientId: "traice-collector";
   workspaceId: string;
   workspaceName: string;

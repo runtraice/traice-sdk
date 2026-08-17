@@ -56,7 +56,30 @@ Add one explicitly named destination:
 npx @traice/collector@latest auth login --destination sandbox --workspace sandbox
 ```
 
+For a remote host, print one copy-ready approval URL with the intended workspace, account, and device name prefilled:
+
+```bash
+npx @traice/collector@latest auth login --no-browser \
+  --destination production \
+  --workspace production-operations \
+  --identity alex@example.com \
+  --device-name "Alex workstation"
+```
+
 New authorization defaults to the production trAIce service and never inherits another destination's deployment.
+
+## Repository benchmarks
+
+Benchmark initialization, recording, activity reduction, and local comparison work without an account. Uploading a
+durable private draft authorizes the signed-in account, not a workspace:
+
+```sh
+npx @traice/collector@latest benchmark upload
+```
+
+Upload opens the browser automatically when a My Benchmarks credential is missing. For a remote host, run
+`benchmark login --no-browser --identity you@example.com --device-name "Build host"` first. The resulting credential
+has only `benchmarks:write`, is not added to live collector routes, and cannot ingest general usage or publish reports.
 
 ## Opt-in task context
 
@@ -143,6 +166,24 @@ npx @traice/collector@latest backfill codex --destination live-demo --since 7d
 Without `--destination`, Codex backfill uses the same folder and agent routing rules as live collection. Backfill uses
 stable source event IDs and paginated live-only reconciliation. Repeated or interrupted uploads are retry-safe.
 Duplicates do not increase stored usage or spend.
+
+## Repository benchmark activity
+
+For the complete Baseline-versus-Candidate workflow, exact agent prompt, upload boundary, and public-report privacy
+model, read the [Repository Benchmarks guide](https://runtraice.github.io/traice-sdk/docs/repository-benchmarks).
+
+Repository benchmarks can capture a privacy-safe summary of Codex tool activity from local OpenTelemetry logs:
+
+```sh
+npx @traice/collector@latest benchmark observe start --variant baseline
+# Run the public benchmark prompts.
+npx @traice/collector@latest benchmark observe stop
+```
+
+Repeat for `--variant candidate`. The collector records only fixed activity categories, counts, aggregate duration,
+and failed counts. Codex tool events can contain commands, arguments, output, and paths. Those raw fields are inspected
+only on the device for classification and are not written to the benchmark manifest or uploaded report. Only one
+activity capture can run on a device at a time, so avoid unrelated Codex work until it is stopped.
 
 ## Credentials
 

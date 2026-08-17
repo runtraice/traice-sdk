@@ -581,6 +581,8 @@ describe("CloudAdapter", () => {
       const provider = jest.fn(async () => chatCompletionResponse());
       await adapter.warmEnforcement();
 
+      expect(receivedHeaders["x-traice-enforcement-version"]).toBe("2");
+
       await adapter.enforceExactCache(request, provider);
       await adapter.enforceExactCache({ temperature: 0, messages: request.messages, model: request.model }, provider);
       await adapter.flush();
@@ -857,6 +859,55 @@ describe("CloudAdapter", () => {
       expect(provider).toHaveBeenCalledTimes(1);
     });
 
+    it("reports authoritative target verification before passing through a shadow model rule", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          {
+            ...activeRule(
+              "DOWNGRADE",
+              { sourceModel: "gpt-4o", targetModel: "gpt-4o-mini" },
+              { requireEquivalencePct: 90, modelAllowlist: ["gpt-4o-mini"] },
+            ),
+            state: "SHADOW",
+          },
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-shadow",
+            feature: "support",
+            sourceModel: "gpt-4o",
+            candidateModel: "gpt-4o-mini",
+            equivalencePct: 96,
+            sampleCount: 40,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async (effectiveRequest: typeof request) => ({ model: effectiveRequest.model }));
+      await adapter.warmEnforcement();
+
+      await adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, { feature: "support" });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o" }));
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          ruleId: "rule-downgrade",
+          mode: "shadow",
+          requestedModel: "gpt-4o",
+          targetModel: "gpt-4o-mini",
+          experimentId: "experiment-shadow",
+          eligibilitySource: "sdk_pre_call",
+          eligibilityOutcome: "matched",
+          protocolVersion: 2,
+        }),
+      );
+    });
+
     it("honors an explicit budget snapshot override", async () => {
       rulesResponse = {
         ttlSeconds: 60,
@@ -1034,6 +1085,211 @@ describe("CloudAdapter", () => {
 
       expect(provider).toHaveBeenCalledWith(sourceRequest);
       expect(receivedBodies.some((body) => body.action === "SWAP")).toBe(false);
+    });
+
+    it("keeps a rollout control request on the source model and records its assignment", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "DOWNGRADE",
+            { sourceModel: "gpt-4o", targetModel: "gpt-4o-mini" },
+            {
+              requireEquivalencePct: 90,
+              modelAllowlist: ["gpt-4o-mini"],
+              rollout: {
+                id: "rollout-control",
+                workspaceId: "workspace-1",
+                status: "RUNNING",
+                allocationBps: 0,
+                revision: 1,
+                assignmentSalt: "control-salt",
+                assignmentUnit: "request",
+                sourceFallbackEnabled: true,
+              },
+            },
+          ),
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-control",
+            feature: "support",
+            sourceModel: "gpt-4o",
+            candidateModel: "gpt-4o-mini",
+            equivalencePct: 96,
+            sampleCount: 40,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async (effectiveRequest: typeof request) => ({
+        model: effectiveRequest.model,
+        usage: { prompt_tokens: 20, completion_tokens: 10 },
+      }));
+      await adapter.warmEnforcement();
+
+      await adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, {
+        feature: "support",
+        provider: "openai",
+        rolloutKey: "tenant-1",
+      });
+      await adapter.flush();
+
+      expect(provider).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-4o" }));
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          rolloutId: "rollout-control",
+          rolloutArm: "control",
+          rolloutOutcome: "succeeded",
+          assignmentUnit: "stable_key",
+          servedModel: "gpt-4o",
+        }),
+      );
+    });
+
+    it("assigns a stable rollout key consistently", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "DOWNGRADE",
+            { sourceModel: "gpt-4o", targetModel: "gpt-4o-mini" },
+            {
+              requireEquivalencePct: 90,
+              modelAllowlist: ["gpt-4o-mini"],
+              rollout: {
+                id: "rollout-stable",
+                workspaceId: "workspace-1",
+                status: "RUNNING",
+                allocationBps: 5000,
+                revision: 3,
+                assignmentSalt: "stable-salt",
+                assignmentUnit: "stable_key",
+                sourceFallbackEnabled: true,
+              },
+            },
+          ),
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-stable",
+            feature: "support",
+            sourceModel: "gpt-4o",
+            candidateModel: "gpt-4o-mini",
+            equivalencePct: 96,
+            sampleCount: 40,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async (effectiveRequest: typeof request) => ({
+        model: effectiveRequest.model,
+        usage: { prompt_tokens: 20, completion_tokens: 10 },
+      }));
+      await adapter.warmEnforcement();
+
+      for (let index = 0; index < 2; index++) {
+        await adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, {
+          feature: "support",
+          provider: "openai",
+          rolloutKey: "tenant-stable",
+        });
+      }
+      await adapter.flush();
+
+      const decisions = receivedBodies.filter((body) => body.rolloutId === "rollout-stable");
+      expect(decisions).toHaveLength(4);
+      const assignments = decisions.filter((body) => body.rolloutOutcome === "assigned");
+      const outcomes = decisions.filter((body) => body.rolloutOutcome === "succeeded");
+      expect(assignments).toHaveLength(2);
+      expect(outcomes).toHaveLength(2);
+      expect(assignments[0]).toMatchObject({
+        rolloutRevision: 3,
+        rolloutBucket: assignments[1].rolloutBucket,
+        rolloutArm: assignments[1].rolloutArm,
+        eligibilitySource: "sdk_pre_call",
+      });
+      expect(outcomes.map((body) => body.rolloutRequestId).sort()).toEqual(
+        assignments.map((body) => body.rolloutRequestId).sort(),
+      );
+      expect(provider.mock.calls[0][0].model).toBe(provider.mock.calls[1][0].model);
+    });
+
+    it("falls back to the source once when a rollout treatment fails", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "DOWNGRADE",
+            { sourceModel: "gpt-4o", targetModel: "gpt-4o-mini" },
+            {
+              requireEquivalencePct: 90,
+              modelAllowlist: ["gpt-4o-mini"],
+              rollout: {
+                id: "rollout-treatment",
+                workspaceId: "workspace-1",
+                status: "RUNNING",
+                allocationBps: 10000,
+                revision: 2,
+                assignmentSalt: "treatment-salt",
+                assignmentUnit: "request",
+                sourceFallbackEnabled: true,
+              },
+            },
+          ),
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-treatment",
+            feature: "support",
+            sourceModel: "gpt-4o",
+            candidateModel: "gpt-4o-mini",
+            equivalencePct: 96,
+            sampleCount: 40,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      const provider = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o-mini") throw new TypeError("candidate unavailable");
+        return { model: effectiveRequest.model, usage: { prompt_tokens: 20, completion_tokens: 10 } };
+      });
+      await adapter.warmEnforcement();
+
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, {
+          feature: "support",
+          provider: "openai",
+          retryCount: 2,
+        }),
+      ).resolves.toMatchObject({ model: "gpt-4o" });
+      await adapter.flush();
+
+      expect(provider.mock.calls.map(([effectiveRequest]) => effectiveRequest.model)).toEqual([
+        "gpt-4o-mini",
+        "gpt-4o",
+      ]);
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          rolloutId: "rollout-treatment",
+          rolloutArm: "treatment",
+          rolloutOutcome: "source_fallback",
+          servedModel: "gpt-4o",
+          errorType: "TypeError",
+          requestedProvider: "openai",
+          servedProvider: "openai",
+          retryCount: 2,
+        }),
+      );
     });
 
     it("routes only to the explicit allowlisted target with current evidence", async () => {

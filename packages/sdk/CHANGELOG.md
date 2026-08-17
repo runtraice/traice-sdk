@@ -1,5 +1,21 @@
 # @traice/sdk Changelog
 
+## 0.10.0
+
+### Minor Changes
+
+- 916a9e3: Add deterministic percentage assignment for model-change rollouts. Report
+  authoritative pre-call eligibility, correlated assignment and attempt outcomes,
+  control, treatment, candidate failure, source fallback, latency, enforcement
+  overhead, bucket, and policy revision telemetry. Advertise enforcement protocol
+  v2 when fetching rules or exporting policy.
+
+## 0.9.0
+
+### Minor Changes
+
+- ad97c2a: Add privacy-safe exact prompt fingerprints and customer-controlled semantic cache opportunity telemetry for shadow guardrails.
+
 ## 0.8.0
 
 ### Minor Changes

@@ -4,6 +4,33 @@ export type RuleAction =
 export type RuleState = "DRAFT" | "SHADOW" | "ACTIVE" | "DISABLED";
 export type BudgetScope = "workspace" | "feature" | "user";
 
+export type EnforcementRollout = {
+  id: string;
+  workspaceId: string;
+  status: "VERIFYING" | "RUNNING" | "PAUSED" | "ROLLED_BACK" | "COMPLETED";
+  allocationBps: number;
+  revision: number;
+  assignmentSalt: string;
+  assignmentUnit: "request" | "stable_key";
+  sourceFallbackEnabled: boolean;
+};
+
+export type RolloutAssignment = { arm: "control" | "treatment"; bucket: number };
+
+export function assignRollout(rollout: EnforcementRollout, assignmentKey: string): RolloutAssignment {
+  const digest = createHash("sha256")
+    .update(`${rollout.workspaceId}:${rollout.id}:${rollout.assignmentSalt}:${assignmentKey}`)
+    .digest("hex");
+  const bucket = Number.parseInt(digest.slice(0, 8), 16) % 10_000;
+  const allocationBps =
+    rollout.status === "VERIFYING" || rollout.status === "ROLLED_BACK"
+      ? 0
+      : rollout.status === "COMPLETED"
+        ? 10_000
+        : rollout.allocationBps;
+  return { bucket, arm: bucket < allocationBps ? "treatment" : "control" };
+}
+
 export type RuleCondition =
   | { type: "always" }
   | { type: "budget"; scope: BudgetScope; thresholdPct: number }
@@ -22,6 +49,7 @@ export interface EnforcementRule {
   requireEquivalencePct: number | null;
   modelAllowlist: string[];
   maxQualityDropPct?: number | null;
+  rollout?: EnforcementRollout;
 }
 
 export interface EnforcementRequest {
@@ -53,6 +81,7 @@ export type EnforcementDecision =
       mode: "active" | "shadow";
       action: RuleAction;
       servedModel: string | null;
+      rollout?: EnforcementRollout;
       reason: Record<string, unknown>;
       evidence?: {
         requiredPct: number;
@@ -131,6 +160,7 @@ export function decide(
       mode: rule.state === "ACTIVE" ? ("active" as const) : ("shadow" as const),
       action: rule.action,
       servedModel: isTargeted ? targetModel : null,
+      ...(rule.rollout ? { rollout: rule.rollout } : {}),
     };
 
     if (requiresEvidence && rule.requireEquivalencePct != null && targetModel) {
@@ -198,3 +228,4 @@ function matchCondition(
       return null;
   }
 }
+import { createHash } from "node:crypto";

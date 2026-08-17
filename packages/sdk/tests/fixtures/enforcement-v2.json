@@ -1,0 +1,254 @@
+{
+  "protocolVersion": 2,
+  "assignmentCases": [
+    {
+      "name": "stable key enters treatment below allocation",
+      "rollout": {
+        "id": "rollout-1",
+        "workspaceId": "workspace-1",
+        "status": "RUNNING",
+        "allocationBps": 500,
+        "revision": 2,
+        "assignmentSalt": "stable-salt",
+        "assignmentUnit": "stable_key",
+        "sourceFallbackEnabled": true
+      },
+      "assignmentKey": "tenant-a",
+      "expected": { "bucket": 494, "arm": "treatment" }
+    },
+    {
+      "name": "stable key remains in source control above allocation",
+      "rollout": {
+        "id": "rollout-1",
+        "workspaceId": "workspace-1",
+        "status": "RUNNING",
+        "allocationBps": 500,
+        "revision": 2,
+        "assignmentSalt": "stable-salt",
+        "assignmentUnit": "stable_key",
+        "sourceFallbackEnabled": true
+      },
+      "assignmentKey": "tenant-b",
+      "expected": { "bucket": 9011, "arm": "control" }
+    },
+    {
+      "name": "verification ignores a low bucket and stays on source",
+      "rollout": {
+        "id": "rollout-1",
+        "workspaceId": "workspace-1",
+        "status": "VERIFYING",
+        "allocationBps": 500,
+        "revision": 2,
+        "assignmentSalt": "stable-salt",
+        "assignmentUnit": "stable_key",
+        "sourceFallbackEnabled": true
+      },
+      "assignmentKey": "tenant-a",
+      "expected": { "bucket": 494, "arm": "control" }
+    },
+    {
+      "name": "paused rollout preserves its existing treatment allocation",
+      "rollout": {
+        "id": "rollout-1",
+        "workspaceId": "workspace-1",
+        "status": "PAUSED",
+        "allocationBps": 500,
+        "revision": 3,
+        "assignmentSalt": "stable-salt",
+        "assignmentUnit": "stable_key",
+        "sourceFallbackEnabled": true
+      },
+      "assignmentKey": "tenant-a",
+      "expected": { "bucket": 494, "arm": "treatment" }
+    },
+    {
+      "name": "rollback restores a low bucket to source control",
+      "rollout": {
+        "id": "rollout-1",
+        "workspaceId": "workspace-1",
+        "status": "ROLLED_BACK",
+        "allocationBps": 0,
+        "revision": 4,
+        "assignmentSalt": "stable-salt",
+        "assignmentUnit": "stable_key",
+        "sourceFallbackEnabled": true
+      },
+      "assignmentKey": "tenant-a",
+      "expected": { "bucket": 494, "arm": "control" }
+    },
+    {
+      "name": "completed rollout sends a high bucket to treatment",
+      "rollout": {
+        "id": "rollout-1",
+        "workspaceId": "workspace-1",
+        "status": "COMPLETED",
+        "allocationBps": 10000,
+        "revision": 7,
+        "assignmentSalt": "stable-salt",
+        "assignmentUnit": "stable_key",
+        "sourceFallbackEnabled": true
+      },
+      "assignmentKey": "tenant-b",
+      "expected": { "bucket": 9011, "arm": "treatment" }
+    }
+  ],
+  "cases": [
+    {
+      "name": "lowest priority number wins without mutating input order",
+      "request": { "model": "gpt-4o" },
+      "rules": [
+        {
+          "id": "later",
+          "name": "Later",
+          "state": "ACTIVE",
+          "priority": 20,
+          "condition": { "type": "always" },
+          "action": "CACHE_EXACT",
+          "actionParams": {},
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "first",
+          "name": "First",
+          "state": "ACTIVE",
+          "priority": 10,
+          "condition": { "type": "always" },
+          "action": "CACHE_EXACT",
+          "actionParams": {},
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "evidence": [],
+      "expected": { "matched": true, "ruleId": "first", "mode": "active", "action": "CACHE_EXACT" }
+    },
+    {
+      "name": "shadow model rule preserves mode and passing evidence",
+      "request": { "model": "gpt-4o", "feature": "support" },
+      "rules": [
+        {
+          "id": "shadow-swap",
+          "name": "Shadow swap",
+          "state": "SHADOW",
+          "priority": 10,
+          "condition": { "type": "feature", "equals": "support" },
+          "action": "DOWNGRADE",
+          "actionParams": { "sourceModel": "gpt-4o", "targetModel": "gpt-4o-mini" },
+          "requireEquivalencePct": 95,
+          "modelAllowlist": ["gpt-4o-mini"]
+        }
+      ],
+      "evidence": [{ "candidateModel": "gpt-4o-mini", "equivalencePct": 97, "experimentId": "experiment-1" }],
+      "expected": {
+        "matched": true,
+        "ruleId": "shadow-swap",
+        "mode": "shadow",
+        "action": "DOWNGRADE",
+        "servedModel": "gpt-4o-mini",
+        "evidence": { "satisfied": true, "experimentId": "experiment-1" }
+      }
+    },
+    {
+      "name": "failed evidence guard continues to a later valid rule",
+      "request": { "model": "gpt-4o", "feature": "support" },
+      "rules": [
+        {
+          "id": "guarded",
+          "name": "Guarded",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": { "type": "always" },
+          "action": "SWAP",
+          "actionParams": { "sourceModel": "gpt-4o", "targetModel": "gpt-4o-mini" },
+          "requireEquivalencePct": 95,
+          "modelAllowlist": ["gpt-4o-mini"]
+        },
+        {
+          "id": "fallback",
+          "name": "Fallback rule",
+          "state": "ACTIVE",
+          "priority": 2,
+          "condition": { "type": "always" },
+          "action": "CACHE_EXACT",
+          "actionParams": {},
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "evidence": [{ "candidateModel": "gpt-4o-mini", "equivalencePct": 90, "experimentId": "experiment-2" }],
+      "expected": { "matched": true, "ruleId": "fallback", "action": "CACHE_EXACT" }
+    },
+    {
+      "name": "route fails open without an evidence experiment identifier",
+      "request": { "model": "gpt-4o", "feature": "support" },
+      "rules": [
+        {
+          "id": "route",
+          "name": "Route",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": { "type": "always" },
+          "action": "ROUTE",
+          "actionParams": { "sourceModel": "gpt-4o", "targetModel": "gpt-4o-mini" },
+          "requireEquivalencePct": 95,
+          "modelAllowlist": ["gpt-4o-mini"]
+        }
+      ],
+      "evidence": [{ "candidateModel": "gpt-4o-mini", "equivalencePct": 97, "experimentId": null }],
+      "expected": { "matched": false, "action": "PASS_THROUGH", "ruleId": null }
+    },
+    {
+      "name": "source-model provenance prevents evidence reuse",
+      "request": { "model": "gpt-4.1", "feature": "support" },
+      "rules": [
+        {
+          "id": "source-scoped",
+          "name": "Source scoped",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": { "type": "always" },
+          "action": "DOWNGRADE",
+          "actionParams": { "sourceModel": "gpt-4o", "targetModel": "gpt-4o-mini" },
+          "requireEquivalencePct": 95,
+          "modelAllowlist": ["gpt-4o-mini"]
+        }
+      ],
+      "evidence": [{ "candidateModel": "gpt-4o-mini", "equivalencePct": 98, "experimentId": "experiment-3" }],
+      "expected": { "matched": false, "action": "PASS_THROUGH", "ruleId": null }
+    },
+    {
+      "name": "rollout policy is preserved on a matching model decision",
+      "request": { "model": "gpt-4o", "feature": "support" },
+      "rules": [
+        {
+          "id": "rollout",
+          "name": "Rollout",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": { "type": "feature", "equals": "support" },
+          "action": "DOWNGRADE",
+          "actionParams": { "sourceModel": "gpt-4o", "targetModel": "gpt-4o-mini" },
+          "requireEquivalencePct": 95,
+          "modelAllowlist": ["gpt-4o-mini"],
+          "rollout": {
+            "id": "rollout-1",
+            "workspaceId": "workspace-1",
+            "status": "RUNNING",
+            "allocationBps": 500,
+            "revision": 2,
+            "assignmentSalt": "stable-salt",
+            "assignmentUnit": "stable_key",
+            "sourceFallbackEnabled": true
+          }
+        }
+      ],
+      "evidence": [{ "candidateModel": "gpt-4o-mini", "equivalencePct": 98, "experimentId": "experiment-4" }],
+      "expected": {
+        "matched": true,
+        "ruleId": "rollout",
+        "rollout": { "id": "rollout-1", "allocationBps": 500, "revision": 2 }
+      }
+    }
+  ]
+}

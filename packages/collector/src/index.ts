@@ -94,5 +94,37 @@ export { runCollector } from "./run";
 export { CollectorSessionFolderResolver, sessionFolderFromFile } from "./session-folders";
 export { checkCollectorUpdate, updateCollector } from "./updates";
 export type { CollectorUpdateStatus } from "./updates";
+export {
+  BENCHMARK_ACTIVITY_CATEGORIES,
+  BENCHMARK_ACTIVITY_SOURCES,
+  BENCHMARK_STAGE_KINDS,
+  BENCHMARK_VARIANTS,
+  DEFAULT_BENCHMARK_PATH,
+  benchmarkComparison,
+  benchmarkActivityFromOtlp,
+  buildBenchmarkReport,
+  captureBenchmarkActivityPayload,
+  initializeBenchmark,
+  readBenchmarkManifest,
+  recordBenchmarkActivity,
+  recordBenchmarkStage,
+  recordBenchmarkTask,
+  startBenchmarkActivityCapture,
+  stopBenchmarkActivityCapture,
+  uploadBenchmarkReport,
+} from "./benchmark";
+export type {
+  BenchmarkActivity,
+  BenchmarkActivityCategory,
+  BenchmarkActivitySource,
+  BenchmarkManifest,
+  BenchmarkMetrics,
+  BenchmarkReportSnapshot,
+  BenchmarkStage,
+  BenchmarkStageKind,
+  BenchmarkTaskResult,
+  BenchmarkVariantKey,
+  BenchmarkVariantResult,
+} from "./benchmark";
 export { normalizeClaudeCodeOtlpLogs, normalizeClaudeCodeOtlpMetrics } from "./adapters/claude-code";
 export { normalizeCodexOtlpLogs } from "./adapters/codex";

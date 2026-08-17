@@ -309,6 +309,24 @@ Route rules require the same current evidence plus a non-empty model allowlist
 that contains the one configured target. The SDK does not select models
 autonomously and does not proxy provider traffic.
 
+Controlled rollouts use deterministic local assignment from the cached policy.
+For conversational or account-level consistency, pass a non-PII `rolloutKey`:
+
+```typescript
+await cloud.enforceRequest(request, providerCall, {
+  feature: "support-summary",
+  provider: "openai",
+  rolloutKey: account.id,
+});
+```
+
+The raw key is hashed locally and is never uploaded. Assignment telemetry
+contains the bucket, arm, policy revision, and a request-scoped correlation ID.
+Successful, failed, and source-fallback outcomes include available provider and
+retry provenance. Without a key, each wrapped request receives a request-scoped
+assignment. A failing treatment call can make one source fallback call when
+enabled by the rollout policy.
+
 ### Opt in to semantic caching
 
 Semantic caching uses a bounded, process-local LRU and a customer-supplied

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up trAIce SDK"
+  short_description: "Instrument a product with the trAIce SDK"
+  default_prompt: "Use $setup-traice-sdk to add trAIce product telemetry to this repository."
