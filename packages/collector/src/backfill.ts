@@ -110,10 +110,26 @@ export async function backfillCodex(options: CodexBackfillOptions): Promise<Code
       ? [normalizeDestinationName(options.destination)]
       : routedDestinationNames(rootConfig, "codex", undefined, event.folder);
     for (const destinationName of destinationNames) {
-      eventsByDestination.set(destinationName, [...(eventsByDestination.get(destinationName) ?? []), event]);
+      const events = eventsByDestination.get(destinationName) ?? [];
+      events.push(event);
+      eventsByDestination.set(destinationName, events);
     }
   }
   if (eventsByDestination.size === 0) {
+    const hasAgentFallback =
+      Boolean(rootConfig.routes?.codex?.length) || Object.keys(rootConfig.destinations).length === 1;
+    if (!options.destination && !hasAgentFallback && rootConfig.folderRoutes?.length) {
+      return {
+        dryRun: false,
+        sendsData: true,
+        ...result.summary,
+        liveEventsInspected: 0,
+        crossModeDuplicatesSkipped: 0,
+        uploadCandidates: 0,
+        accepted: 0,
+        dropped: 0,
+      };
+    }
     const destinationName = normalizeDestinationName(
       options.destination ?? defaultDestinationName(rootConfig, "codex"),
     );

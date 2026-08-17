@@ -97,7 +97,8 @@ Claude Code -> 1 destination
   - live-demo
     Live Demo | you@example.com | www.runtraice.com
 
-Each live event is sent to every destination listed for its agent.
+Precedence: command override, most specific folder route, agent default, single destination.
+Each live event is sent to every destination selected by its winning route.
 ```
 
 The collector uses one local listener and one background service for all enabled agents. Credentials, durable queues,
@@ -114,10 +115,11 @@ npx @traice/collector@latest route set all sandbox --folder "$PWD"
 npx @traice/collector@latest route explain --agent codex --folder "$PWD"
 ```
 
-Folder rules include descendants. A worktree rule therefore overrides its repository rule because the longest
-matching path wins. At the same path, a specific `codex` or `claude-code` rule wins over `all`.
-`route explain` prints the winning rule and the fallback chain. `status` reports counts of resolved and unresolved
-sessions while folder rules are active.
+Folder rules include the selected directory and all descendants, including nested repositories and worktree
+directories. Add a separate rule for a linked worktree outside that directory tree. A more deeply nested rule wins
+because the longest matching path takes priority. At the same path, a specific `codex` or `claude-code` rule wins over
+`all`. `route explain` prints the winning rule and the fallback chain. `route list` marks agents without a default as
+unresolved, and `status` reports counts of resolved and unresolved sessions while folder rules are active.
 
 The complete precedence order is:
 
@@ -192,9 +194,11 @@ npx @traice/collector@latest update
 ```
 
 `status` checks the config, pinned service version, background service, local OTLP listener, and every unique
-destination used by the configured agent routes. Each destination reports its credential and authenticated server
-access separately. Use `status --destination <name>` for a focused check or `--json` for machine-readable results. The
-command exits non-zero when any required check fails and tells you when `update` is required.
+destination used by configured agent and folder routes. Each destination reports its credential and authenticated
+server access separately. Use `status --destination <name>` for a focused check or `--json` for machine-readable
+results. With folder routes active, status also reports how many observed sessions resolved a local folder and how
+many fell back without one. The command exits non-zero when any required check fails and tells you when `update` is
+required.
 
 The service uses an exact installed package version. It checks for a newer stable release once per day and logs an
 update notice. Read-only commands never persist a config migration underneath an older service. Commands that change
@@ -245,9 +249,9 @@ Non-secret device configuration is stored at:
 ~/.traice/collector/config.json
 ```
 
-The config contains destination metadata and credential references, agent routes, employee and team mapping, adapter
-settings, and the local listener address. Before replacing it, the CLI retains bounded backups under
-`~/.traice/collector/backups/`.
+The config contains destination metadata and credential references, agent and local folder routes, employee and team
+mapping, adapter settings, and the local listener address. Folder paths stay in this local config and are never added
+to uploaded events. Before replacing it, the CLI retains bounded backups under `~/.traice/collector/backups/`.
 
 Renewable OAuth credentials are stored separately:
 

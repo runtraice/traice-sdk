@@ -187,7 +187,7 @@ export function allRoutedDestinationNames(config: CollectorConfig, override?: st
     return selected.filter((name, index, names) => names.indexOf(name) === index);
   }
   const selected = [
-    ...config.enabledAgents.flatMap((agent) => routedDestinationNames(config, agent)),
+    ...config.enabledAgents.flatMap((agent) => defaultRouteCandidate(config, agent)?.destinations ?? []),
     ...(config.folderRoutes ?? []).flatMap((route) => validateDestinationSelection(config, route.destinations)),
   ];
   if (selected.length === 0) return [defaultDestinationName(config)];
@@ -310,10 +310,13 @@ export function collectorRouteSummaries(config: CollectorConfig): CollectorRoute
   const destinationByName = new Map(
     collectorDestinationSummaries(config).map((destination) => [destination.name, destination]),
   );
-  return agents.map((agent) => ({
-    agent,
-    destinations: routedDestinationNames(config, agent).map((name) => destinationByName.get(name)!),
-  }));
+  return agents.map((agent) => {
+    const route = defaultRouteCandidate(config, agent);
+    return {
+      agent,
+      destinations: (route?.destinations ?? []).map((name) => destinationByName.get(name)!),
+    };
+  });
 }
 
 export function collectorFolderRouteSummaries(config: CollectorConfig): CollectorFolderRouteSummary[] {
@@ -341,7 +344,11 @@ export function formatCollectorRouteList(config: CollectorConfig): string {
   const lines = ["Collector routes", ""];
   for (const [routeIndex, route] of routes.entries()) {
     const agent = route.agent === "codex" ? "Codex" : "Claude Code";
-    lines.push(`${agent} -> ${route.destinations.length} destination${route.destinations.length === 1 ? "" : "s"}`);
+    lines.push(
+      route.destinations.length
+        ? `${agent} -> ${route.destinations.length} destination${route.destinations.length === 1 ? "" : "s"}`
+        : `${agent} -> unresolved (no per-agent default and multiple destinations)`,
+    );
     for (const destination of route.destinations) {
       const workspace = destination.workspaceName ?? destination.workspaceId ?? "API key workspace";
       const account = destination.userEmail ? ` | ${destination.userEmail}` : "";
@@ -431,18 +438,24 @@ function collectorRouteCandidates(
           destinations: validateDestinationSelection(config, route.destinations),
         }))
     : [];
-  const agentRoute = config.routes?.[agent]?.length
-    ? [
-        {
-          source: "agent" as const,
-          destinations: validateDestinationSelection(config, config.routes[agent]!),
-        },
-      ]
-    : [];
+  return [...folderCandidates, ...defaultRouteCandidates(config, agent)];
+}
+
+function defaultRouteCandidate(config: CollectorConfig, agent: AgentName): CollectorRouteCandidate | undefined {
+  return defaultRouteCandidates(config, agent)[0];
+}
+
+function defaultRouteCandidates(config: CollectorConfig, agent: AgentName): CollectorRouteCandidate[] {
+  const candidates: CollectorRouteCandidate[] = [];
+  if (config.routes?.[agent]?.length) {
+    candidates.push({
+      source: "agent",
+      destinations: validateDestinationSelection(config, config.routes[agent]!),
+    });
+  }
   const names = configuredDestinationNames(config);
-  const singleDestination =
-    names.length === 1 ? [{ source: "single-destination" as const, destinations: [names[0]!] }] : [];
-  return [...folderCandidates, ...agentRoute, ...singleDestination];
+  if (names.length === 1) candidates.push({ source: "single-destination", destinations: [names[0]!] });
+  return candidates;
 }
 
 function noRouteResolution(config: CollectorConfig, agent: AgentName): CollectorRouteResolution {

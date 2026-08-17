@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, type Dirent } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
 import { canonicalFolderPath } from "./destinations";
 import { resolveHome } from "./fs";
@@ -44,6 +44,7 @@ export class CollectorSessionFolderResolver {
       const name = basename(file, extname(file));
       if (agent === "claude-code") {
         files.set(name, file);
+        for (const sessionId of sessionIdsFromFile(agent, file)) files.set(sessionId, file);
         continue;
       }
       const match = name.match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i);
@@ -56,17 +57,9 @@ export class CollectorSessionFolderResolver {
 }
 
 export function sessionFolderFromFile(agent: AgentName, file: string, expectedSessionId?: string): string | undefined {
-  for (const line of readJsonlHeader(file).split("\n")) {
-    if (!line.trim()) continue;
-    let row: Record<string, unknown>;
-    try {
-      row = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
+  for (const row of readJsonlHeaderRows(file)) {
     const payload = asRecord(row.payload);
-    const sessionId =
-      agent === "codex" ? (stringValue(payload?.id) ?? stringValue(payload?.session_id)) : stringValue(row.sessionId);
+    const sessionId = sessionIdFromRow(agent, row, payload);
     const cwd = agent === "codex" ? stringValue(payload?.cwd) : stringValue(row.cwd);
     if (expectedSessionId && sessionId && sessionId !== expectedSessionId) continue;
     if (cwd) return canonicalFolderPath(cwd);
@@ -78,7 +71,13 @@ function jsonlFiles(root: string): string[] {
   if (!existsSync(root)) return [];
   const files: string[] = [];
   const visit = (directory: string) => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) visit(path);
       else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(path);
@@ -86,6 +85,45 @@ function jsonlFiles(root: string): string[] {
   };
   visit(root);
   return files;
+}
+
+function sessionIdsFromFile(agent: AgentName, file: string): string[] {
+  const sessionIds = new Set<string>();
+  for (const row of readJsonlHeaderRows(file)) {
+    const sessionId = sessionIdFromRow(agent, row, asRecord(row.payload));
+    if (sessionId) sessionIds.add(sessionId);
+  }
+  return [...sessionIds];
+}
+
+function sessionIdFromRow(
+  agent: AgentName,
+  row: Record<string, unknown>,
+  payload: Record<string, unknown> | undefined,
+): string | undefined {
+  return agent === "codex"
+    ? (stringValue(payload?.id) ?? stringValue(payload?.session_id))
+    : stringValue(row.sessionId);
+}
+
+function readJsonlHeaderRows(file: string): Record<string, unknown>[] {
+  let header: string;
+  try {
+    header = readJsonlHeader(file);
+  } catch {
+    return [];
+  }
+  const rows: Record<string, unknown>[] = [];
+  for (const line of header.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as unknown;
+      if (row && typeof row === "object" && !Array.isArray(row)) rows.push(row as Record<string, unknown>);
+    } catch {
+      // A live file can end with a partial JSONL record while the agent is writing it.
+    }
+  }
+  return rows;
 }
 
 function readJsonlHeader(file: string): string {

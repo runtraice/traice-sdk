@@ -93,6 +93,17 @@ Collectors send internal usage rows to `/api/v1/internal-usage`. Product-runtime
 
 Restart every running coding-agent session after setup so it loads the new telemetry settings.
 
+Route one repository, nested repository, or worktree directory to a specific authorized destination without changing
+repository files:
+
+```sh
+npx @traice/collector@latest route set codex sandbox --folder "$PWD"
+npx @traice/collector@latest route explain --agent codex --folder "$PWD"
+```
+
+Folder routes include descendants. The most specific folder wins, an agent-specific rule wins over `all` at the same
+folder, and an explicit `--destination` remains the highest-priority override. Local folder paths stay on the device.
+
 ## Repository benchmarks
 
 Use the open-source [`benchmark-repo` skill](skills/benchmark-repo/SKILL.md) to compare the same coding-agent prompt
