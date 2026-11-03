@@ -9,6 +9,7 @@ import {
 } from "../enforcement";
 import * as crypto from "crypto";
 import { DurableCloudOutbox, type DurableQueuedCostEvent } from "./cloud-outbox";
+import type { CapturedRequest } from "../request-capture";
 
 export interface CloudAdapterConfig {
   apiKey: string;
@@ -236,6 +237,7 @@ export interface CloudCostEvent {
   promptHash?: string;
   prompt?: string;
   output?: string;
+  request?: CapturedRequest;
   promptTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -414,7 +416,7 @@ export class CloudAdapter implements CostAdapter {
     const promptHash = event.prompt ? promptFingerprint(event.prompt, this.apiKey) : event.promptHash;
     const queuedEvent = this.captureContent
       ? { ...event, promptHash }
-      : { ...event, promptHash, prompt: undefined, output: undefined };
+      : { ...event, promptHash, prompt: undefined, output: undefined, request: undefined };
     const queued = { event: queuedEvent, enqueuedAt: Date.now() };
     let queueOverflowed = false;
     if (this.buffer.length >= this.maxQueueSize) {
@@ -2064,6 +2066,7 @@ export function toCloudEvent(
         : undefined),
     prompt: options.captureContent ? event.prompt : undefined,
     output: options.captureContent ? event.output : undefined,
+    request: options.captureContent ? event.request : undefined,
     promptTokens: event.inputTokens,
     outputTokens: event.outputTokens,
     totalTokens: event.totalTokens,

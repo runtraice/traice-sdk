@@ -222,6 +222,33 @@ on a local `CostEvent`. Set `captureContent: true` on `CloudAdapter`, or
 `cloudCaptureContent: true` in global configuration, only after the workspace
 has approved content collection.
 
+To let trAIce replay the whole request (system prompt, earlier turns and
+sampling parameters) rather than only the last prompt, pass the provider
+request as `request`:
+
+```ts
+const params = {
+  model: "gpt-5.5",
+  messages: [
+    { role: "system", content: "You are a support agent." },
+    { role: "user", content: question },
+  ],
+  temperature: 0.2,
+};
+const completion = await meter(() => openai.chat.completions.create(params), {
+  feature: "support",
+  request: params,
+});
+```
+
+`request` accepts OpenAI Chat Completions, Anthropic Messages, and Amazon
+Bedrock Converse parameters, or an already reduced `CapturedRequest`.
+`captureRequest()` keeps the system prompt, the user and assistant turns, and
+temperature, top-p, and maximum output tokens. It drops the request (the event
+is still recorded) when it holds tool calls or results, images, documents, or
+other non-text parts, or when it is over 200 messages or 128 KB. Like `prompt`
+and `output`, the request is sent only when content capture is on.
+
 When a local event includes `prompt`, cloud delivery derives a versioned,
 API-key-scoped HMAC for duplicate-spend analysis. The fingerprint is stable
 after conservative whitespace normalization. Raw prompt content remains

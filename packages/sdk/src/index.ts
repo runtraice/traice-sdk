@@ -15,6 +15,7 @@ import { calculateCost, setUnknownModelHandler } from "./pricing";
 import { normalizeCacheTokens } from "./pricing";
 import { resolveAdapters } from "./adapters";
 import { budgetMonitor } from "./budget";
+import { captureRequest } from "./request-capture";
 
 // Re-export types
 export type {
@@ -52,6 +53,13 @@ export {
 // Re-export adapters
 export { ConsoleAdapter, LocalAdapter, WebhookAdapter, OTelAdapter, CloudAdapter, createAdapter } from "./adapters";
 export { TraiceEnforcementError } from "./adapters";
+export {
+  captureRequest,
+  CAPTURED_REQUEST_LIMITS,
+  type CapturedRequest,
+  type CapturedRequestMessage,
+  type CapturedRequestParams,
+} from "./request-capture";
 export type {
   BlockingRuleAction,
   BudgetAdvice,
@@ -439,6 +447,7 @@ function buildEvent(
     env: options.env ?? defaultTags.env,
     prompt: options.prompt,
     output: options.output,
+    request: options.request === undefined ? undefined : captureRequest(options.request),
     metadata: options.metadata,
     tags: Object.keys(mergedTags).length > 0 ? mergedTags : undefined,
   };
@@ -701,6 +710,8 @@ export class CostMeter {
     env?: string;
     prompt?: string;
     output?: string;
+    /** Provider request parameters or a `CapturedRequest`; see `MeterOptions.request`. */
+    request?: unknown;
     metadata?: Record<string, unknown>;
     tags?: Record<string, string>;
     latencyMs?: number;
@@ -745,6 +756,7 @@ export class CostMeter {
       env: data.env,
       prompt: data.prompt,
       output: data.output,
+      request: data.request === undefined ? undefined : captureRequest(data.request),
       metadata: data.metadata,
       tags: Object.keys(mergedTags).length > 0 ? mergedTags : undefined,
     };
