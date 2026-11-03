@@ -24,6 +24,7 @@ export type {
   ExactCacheRequest,
   ExactCacheStats,
   ModelRuleAction,
+  BedrockModelRequest,
   RequestEnforcementContext,
   SemanticCacheConfig,
   SemanticCacheStats,

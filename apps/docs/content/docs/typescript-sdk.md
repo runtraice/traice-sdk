@@ -111,6 +111,46 @@ const result = await meter(() => callVertexModel(), {
 
 Set `provider` to the stable identifier your pricing configuration and trAIce workspace use. `provider` also acts as the provider hint for streaming calls.
 
+## Meter an Amazon Bedrock call
+
+The SDK recognizes a Bedrock Converse response and records it as provider
+`aws-bedrock`. Converse reports cache reads and writes apart from
+`inputTokens`; the SDK adds them to the input count and records them as cache
+tokens. A Converse response does not name its model, so pass the `modelId` you
+called as `model`.
+
+```typescript
+import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
+import { meter } from "@traice/sdk";
+
+const bedrock = new BedrockRuntimeClient({ region: "us-east-1" });
+const input = {
+  modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  messages: [{ role: "user", content: [{ text: "Where is my refund?" }] }],
+};
+
+const response = await meter(() => bedrock.send(new ConverseCommand(input)), {
+  model: input.modelId,
+  feature: "escalation-agent",
+});
+```
+
+The SDK has no Bedrock price table, so the event's local cost is $0 and the
+SDK warns about the unknown model (turn this off with `warnOnMissingModel: false`).
+trAIce prices the call from its Bedrock rate card when the event arrives.
+
+To run Bedrock requests through active rules, use `enforceBedrockRequest()`.
+Rules match on `modelId`, and a swap, downgrade, route, rollout, or fallback
+rewrites `modelId` in the request passed to your call:
+
+```typescript
+const response = await cloud.enforceBedrockRequest(
+  input,
+  (effectiveInput) => bedrock.send(new ConverseCommand(effectiveInput)),
+  { feature: "escalation-agent" },
+);
+```
+
 ## Meter a stream
 
 `meterStream()` returns the async iterable immediately and records usage after the stream completes. Consume the stream fully so its terminal usage information can be observed.

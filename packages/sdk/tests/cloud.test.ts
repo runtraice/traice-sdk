@@ -1292,6 +1292,90 @@ describe("CloudAdapter", () => {
       );
     });
 
+    it("rolls out a Bedrock swap by rewriting modelId and reports the served model's cost basis", async () => {
+      const source = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+      const candidate = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "SWAP",
+            { sourceModel: source, targetModel: candidate },
+            {
+              requireEquivalencePct: 90,
+              modelAllowlist: [candidate],
+              rollout: {
+                id: "rollout-bedrock",
+                workspaceId: "workspace-1",
+                status: "RUNNING",
+                allocationBps: 10000,
+                revision: 1,
+                assignmentSalt: "bedrock-salt",
+                assignmentUnit: "request",
+                sourceFallbackEnabled: true,
+              },
+            },
+          ),
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-bedrock",
+            feature: "support",
+            sourceModel: source,
+            candidateModel: candidate,
+            equivalencePct: 97,
+            sampleCount: 60,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({ apiKey: "workspace-key", endpoint: `http://localhost:${port}/v1/events` });
+      const converse = jest.fn(async (input: { modelId: string; messages: unknown[] }) => ({
+        output: { message: { role: "assistant", content: [{ text: "Refund issued." }] } },
+        stopReason: "end_turn",
+        usage: { inputTokens: 300, outputTokens: 40, totalTokens: 390, cacheReadInputTokens: 50 },
+        metrics: { latencyMs: 410 },
+        echoedModelId: input.modelId,
+      }));
+      await adapter.warmEnforcement();
+
+      const response = await adapter.enforceBedrockRequest(
+        { modelId: source, messages: [{ role: "user", content: [{ text: "Refund my order" }] }] },
+        converse,
+        { feature: "support" },
+      );
+      await adapter.flush();
+
+      expect(response.echoedModelId).toBe(candidate);
+      expect(converse.mock.calls[0][0]).not.toHaveProperty("model");
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          rolloutId: "rollout-bedrock",
+          rolloutArm: "treatment",
+          rolloutOutcome: "succeeded",
+          servedModel: candidate,
+          requestedProvider: "aws-bedrock",
+          servedProvider: "aws-bedrock",
+          provider: "aws-bedrock",
+          inputTokens: 350,
+          outputTokens: 40,
+          cacheReadTokens: 50,
+        }),
+      );
+    });
+
+    it("passes a Bedrock request through unchanged when no rule matches", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [] };
+      const adapter = new CloudAdapter({ apiKey: "workspace-key", endpoint: `http://localhost:${port}/v1/events` });
+      const converse = jest.fn(async (input: { modelId: string }) => ({ modelId: input.modelId }));
+      await adapter.warmEnforcement();
+
+      const request = { modelId: "amazon.nova-pro-v1:0", messages: [], inferenceConfig: { maxTokens: 50 } };
+      await expect(adapter.enforceBedrockRequest(request, converse)).resolves.toEqual({
+        modelId: "amazon.nova-pro-v1:0",
+      });
+      expect(converse.mock.calls[0][0]).toEqual(request);
+    });
+
     it("routes only to the explicit allowlisted target with current evidence", async () => {
       rulesResponse = {
         ttlSeconds: 60,

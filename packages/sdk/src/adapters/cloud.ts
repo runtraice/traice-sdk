@@ -79,6 +79,12 @@ export interface ExactCacheContext {
 
 export type RequestEnforcementContext = ExactCacheContext;
 
+/** A Bedrock request names its model as `modelId` (a model ID, inference profile ID, or ARN). */
+export interface BedrockModelRequest {
+  modelId: string;
+  [parameter: string]: unknown;
+}
+
 export type EnforcementErrorContext = {
   operation: "rules_refresh" | "policy_refresh" | "decision_post";
   status?: number;
@@ -662,7 +668,7 @@ export class CloudAdapter implements CostAdapter {
       }
       const effectiveRequest = { ...request, model: decision.servedModel } as R;
       const response = await providerCall(effectiveRequest);
-      const costBasis = responseCostBasis(response, context.provider);
+      const costBasis = responseCostBasis(response, context.provider, decision.servedModel);
       this.trackDecision(
         this.postModelDecision(
           rule,
@@ -682,6 +688,40 @@ export class CloudAdapter implements CostAdapter {
     }
 
     return providerCall(request);
+  }
+
+  /**
+   * Run an Amazon Bedrock request (Converse, ConverseStream input, or any
+   * request that names its model as `modelId`) through the same rules as
+   * `enforceRequest`.
+   *
+   * Rules match on `modelId`, and a swap, downgrade, route, rollout, or
+   * fallback rewrites `modelId` in the request passed to `providerCall`.
+   * Decisions are reported for provider `aws-bedrock` unless the context
+   * names another.
+   *
+   * ```ts
+   * const response = await adapter.enforceBedrockRequest(
+   *   { modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", messages },
+   *   (input) => bedrock.send(new ConverseCommand(input)),
+   *   { feature: "escalation-agent" },
+   * );
+   * ```
+   */
+  async enforceBedrockRequest<T, R extends BedrockModelRequest>(
+    request: R,
+    providerCall: (effectiveRequest: R) => Promise<T>,
+    context: RequestEnforcementContext = {},
+  ): Promise<T> {
+    const aliased = { ...request, model: request.modelId };
+    return this.enforceRequest(
+      aliased,
+      (effective) => {
+        const { model, ...rest } = effective;
+        return providerCall({ ...rest, modelId: model } as unknown as R);
+      },
+      { provider: "aws-bedrock", ...context },
+    );
   }
 
   /** Process-local metrics for active exact-cache rules. */
@@ -909,7 +949,7 @@ export class CloudAdapter implements CostAdapter {
       this.setExactCache(key, {
         response,
         expiresAt: Date.now() + ttlSeconds * 1000,
-        costBasis: responseCostBasis(response, context.provider),
+        costBasis: responseCostBasis(response, context.provider, request.model),
       });
     } catch {
       // A cache write/costing failure does not affect the provider response.
@@ -962,7 +1002,7 @@ export class CloudAdapter implements CostAdapter {
         vector,
         response,
         expiresAt: Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
-        costBasis: responseCostBasis(response, context.provider),
+        costBasis: responseCostBasis(response, context.provider, request.model),
       });
     } catch {
       // A cache write/costing failure does not affect the provider response.
@@ -981,7 +1021,7 @@ export class CloudAdapter implements CostAdapter {
     const text = semanticCacheText(request, context);
     if (!text) return response;
     try {
-      const costBasis = responseCostBasis(response, context.provider);
+      const costBasis = responseCostBasis(response, context.provider, request.model);
       this.trackDecision(this.observeSemanticOpportunity(rule, request.model, text, costBasis));
     } catch {
       // Shadow discovery is observational and never changes the response.
@@ -1255,7 +1295,10 @@ export class CloudAdapter implements CostAdapter {
     error?: unknown,
   ): void {
     try {
-      const costBasis = response === undefined ? undefined : responseCostBasis(response, context.provider);
+      const costBasis =
+        response === undefined
+          ? undefined
+          : responseCostBasis(response, context.provider, servedModel ?? requestedModel);
       this.trackDecision(
         this.postRolloutModelDecision(
           rule,
@@ -1974,7 +2017,11 @@ function normalizeJson(value: unknown): unknown {
   return value;
 }
 
-function responseCostBasis(response: unknown, providerOverride?: CostEvent["provider"]): ExactCacheCostBasis {
+function responseCostBasis(
+  response: unknown,
+  providerOverride?: CostEvent["provider"],
+  modelHint?: string,
+): ExactCacheCostBasis {
   const value = response as {
     type?: unknown;
     object?: unknown;
@@ -1988,36 +2035,48 @@ function responseCostBasis(response: unknown, providerOverride?: CostEvent["prov
       completion_tokens?: unknown;
       cache_read_input_tokens?: unknown;
       cache_creation_input_tokens?: unknown;
+      cacheReadInputTokens?: unknown;
+      cacheWriteInputTokens?: unknown;
       inputTokenDetails?: { cacheReadTokens?: unknown; cacheWriteTokens?: unknown };
       input_tokens_details?: { cached_tokens?: unknown };
       prompt_tokens_details?: { cached_tokens?: unknown };
     };
   };
-  const model = typeof value?.model === "string" ? value.model : "unknown";
+  // Converse responses do not name the model, so the caller passes the model it served.
+  const model = typeof value?.model === "string" ? value.model : (modelHint ?? "unknown");
+  const converse = isConverseUsage(value);
   const provider =
     providerOverride ??
-    (value?.type === "message"
-      ? "anthropic"
-      : value?.object === "response" || value?.usage?.prompt_tokens !== undefined
-        ? "openai"
-        : "custom");
+    (converse
+      ? "aws-bedrock"
+      : value?.type === "message"
+        ? "anthropic"
+        : value?.object === "response" || value?.usage?.prompt_tokens !== undefined
+          ? "openai"
+          : "custom");
   const anthropic = provider === "anthropic";
   const cacheRead = nonNegativeNumber(
-    anthropic
-      ? value?.usage?.cache_read_input_tokens
-      : (value?.usage?.inputTokenDetails?.cacheReadTokens ??
+    converse
+      ? value?.usage?.cacheReadInputTokens
+      : anthropic
+        ? value?.usage?.cache_read_input_tokens
+        : (value?.usage?.inputTokenDetails?.cacheReadTokens ??
           value?.usage?.input_tokens_details?.cached_tokens ??
           value?.usage?.prompt_tokens_details?.cached_tokens),
   );
   const cacheWrite = nonNegativeNumber(
-    anthropic ? value?.usage?.cache_creation_input_tokens : value?.usage?.inputTokenDetails?.cacheWriteTokens,
+    converse
+      ? value?.usage?.cacheWriteInputTokens
+      : anthropic
+        ? value?.usage?.cache_creation_input_tokens
+        : value?.usage?.inputTokenDetails?.cacheWriteTokens,
   );
   const rawInput = nonNegativeNumber(
     anthropic
       ? value?.usage?.input_tokens
       : (value?.usage?.inputTokens ?? value?.usage?.input_tokens ?? value?.usage?.prompt_tokens),
   );
-  const input = anthropic ? rawInput + cacheRead + cacheWrite : rawInput;
+  const input = anthropic || converse ? rawInput + cacheRead + cacheWrite : rawInput;
   const output = nonNegativeNumber(
     anthropic
       ? value?.usage?.output_tokens
@@ -2033,6 +2092,16 @@ function responseCostBasis(response: unknown, providerOverride?: CostEvent["prov
     cacheWriteTokens: cacheWrite,
     savingsUsdMicros: Math.max(0, Math.round(totalCostUSD * 1_000_000)),
   };
+}
+
+/** Bedrock Converse usage: `output.message` with camel-case input and output token counts. */
+function isConverseUsage(value: unknown): boolean {
+  const response = value as { output?: { message?: unknown }; usage?: { inputTokens?: unknown }; stopReason?: unknown };
+  return (
+    response?.output?.message !== undefined &&
+    response?.usage?.inputTokens !== undefined &&
+    response?.stopReason !== undefined
+  );
 }
 
 function nonNegativeNumber(value: unknown): number {

@@ -74,6 +74,7 @@ export type {
   ExactCacheContext,
   ExactCacheRequest,
   ExactCacheStats,
+  BedrockModelRequest,
   ModelRuleAction,
   RequestEnforcementContext,
   SemanticCacheConfig,
@@ -286,6 +287,9 @@ export function resetBudget(): void {
 // ── Internal helpers ────────────────────────────────────────────
 
 function detectProvider(response: any): string {
+  if (isBedrockConverseResponse(response)) {
+    return "aws-bedrock";
+  }
   if (response?.type === "message" && response?.usage?.input_tokens !== undefined) {
     return "anthropic";
   }
@@ -312,6 +316,9 @@ type TokenUsage = {
 };
 
 function extractTokens(response: any, provider: string): TokenUsage {
+  if (provider === "aws-bedrock" || isBedrockConverseResponse(response)) {
+    return bedrockConverseUsage(response?.usage);
+  }
   const aiSdkUsageValue = response?.totalUsage ?? response?.usage;
   if (aiSdkUsageValue?.inputTokens !== undefined || aiSdkUsageValue?.outputTokens !== undefined) {
     return aiSdkUsage(aiSdkUsageValue);
@@ -337,6 +344,30 @@ function aiSdkUsage(usage: any): TokenUsage {
     outputTokens: nonNegativeInt(usage?.outputTokens),
     cacheReadTokens: cache.cacheReadTokens,
     cacheWriteTokens: cache.cacheWriteTokens,
+  };
+}
+
+/** A Bedrock Converse response: `output.message`, `stopReason`, and camel-case token usage. */
+function isBedrockConverseResponse(response: any): boolean {
+  return (
+    response?.output?.message !== undefined &&
+    response?.usage?.inputTokens !== undefined &&
+    response?.stopReason !== undefined
+  );
+}
+
+/**
+ * Converse reports cache reads and writes apart from `inputTokens`, so the
+ * total input is their sum, as for Anthropic.
+ */
+function bedrockConverseUsage(usage: any): TokenUsage {
+  const cacheReadTokens = nonNegativeInt(usage?.cacheReadInputTokens);
+  const cacheWriteTokens = nonNegativeInt(usage?.cacheWriteInputTokens);
+  return {
+    inputTokens: nonNegativeInt(usage?.inputTokens) + cacheReadTokens + cacheWriteTokens,
+    outputTokens: nonNegativeInt(usage?.outputTokens),
+    cacheReadTokens,
+    cacheWriteTokens,
   };
 }
 
