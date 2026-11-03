@@ -422,6 +422,22 @@ cache health and savings metrics. For a shadow semantic-cache rule, matching
 and the USD floor are evaluated in process. Only the similarity and verified
 token cost basis are reported to trAIce.
 
+### Share exact-cache answers across instances
+
+Each process keeps its own exact cache. When a workspace owner opts in to the
+shared response cache in trAIce and marks an exact-cache rule as shared, the SDK
+also checks trAIce after a local miss, so instances share answers. Nothing to
+configure in the SDK: the setting arrives with the rules.
+
+The request never leaves your process. The SDK sends only a key, an HMAC of the
+rule and the complete request under a per-workspace salt. On a miss it calls
+your provider as usual, then stores the response in the background. Lookups
+wait at most 150 ms and fail open to the provider. Streams, explicit bypasses,
+and responses over 256 KB stay local. If the workspace opts out or the rule
+stops being shared, the SDK goes back to its local cache until the next rules
+refresh. `getExactCacheStats()` reports `sharedHits`, `sharedLookupFailures`,
+and `sharedStores`. Your API key needs the `cache` scope.
+
 ## Privacy and failure behavior
 
 Provider errors are re-thrown. Adapter failures do not replace a successful provider response unless your application explicitly waits for adapter writes. Use `onError` or `verbose` configuration for adapter diagnostics.

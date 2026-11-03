@@ -10,6 +10,7 @@ import {
 import * as crypto from "crypto";
 import { DurableCloudOutbox, type DurableQueuedCostEvent } from "./cloud-outbox";
 import type { CapturedRequest } from "../request-capture";
+import { SHARED_EXACT_CACHE_KEY_VERSION, sharedExactCacheKey } from "../shared-cache";
 
 export interface CloudAdapterConfig {
   apiKey: string;
@@ -86,7 +87,7 @@ export interface BedrockModelRequest {
 }
 
 export type EnforcementErrorContext = {
-  operation: "rules_refresh" | "policy_refresh" | "decision_post";
+  operation: "rules_refresh" | "policy_refresh" | "decision_post" | "shared_cache_lookup" | "shared_cache_store";
   status?: number;
 };
 
@@ -171,7 +172,19 @@ export interface ExactCacheStats {
   size: number;
   hitRate: number;
   savingsUsd: number;
+  /** Hits served from the workspace's shared cache on TrAIce (counted in `hits` too). */
+  sharedHits: number;
+  /** Shared lookups that failed or timed out; each fell back to the provider. */
+  sharedLookupFailures: number;
+  /** Responses stored in the shared cache after a miss. */
+  sharedStores: number;
 }
+
+/** The shared exact cache settings `GET /api/v1/rules` sends while the workspace is opted in. */
+type SharedCacheSettings = { keySalt: string; timeoutMs: number; maxResponseBytes: number };
+
+const SHARED_CACHE_DEFAULT_TIMEOUT_MS = 150;
+const SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES = 262_144;
 
 export interface SemanticCacheStats {
   hits: number;
@@ -352,6 +365,12 @@ export class CloudAdapter implements CostAdapter {
   private exactCacheMisses = 0;
   private exactCacheBypasses = 0;
   private exactCacheSavingsUsdMicros = 0;
+  private sharedCache: SharedCacheSettings | null = null;
+  /** Set when TrAIce says the setting changed (403 or 409); cleared by the next rules poll. */
+  private sharedCacheSuspended = false;
+  private sharedCacheHits = 0;
+  private sharedCacheLookupFailures = 0;
+  private sharedCacheStores = 0;
   private semanticCacheHits = 0;
   private semanticCacheMisses = 0;
   private semanticCacheBypasses = 0;
@@ -734,6 +753,9 @@ export class CloudAdapter implements CostAdapter {
       size: this.exactCache.size,
       hitRate: attempts > 0 ? this.exactCacheHits / attempts : 0,
       savingsUsd: this.exactCacheSavingsUsdMicros / 1_000_000,
+      sharedHits: this.sharedCacheHits,
+      sharedLookupFailures: this.sharedCacheLookupFailures,
+      sharedStores: this.sharedCacheStores,
     };
   }
 
@@ -838,8 +860,11 @@ export class CloudAdapter implements CostAdapter {
         evidence?: unknown;
         budgets?: unknown;
         ttlSeconds?: unknown;
+        sharedCache?: unknown;
       };
       this.enforcementEnabled = json.enabled !== false;
+      this.sharedCache = parseSharedCacheSettings(json.sharedCache);
+      this.sharedCacheSuspended = false;
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
       this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
       this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
@@ -938,6 +963,36 @@ export class CloudAdapter implements CostAdapter {
       this.trackDecision(this.postExactCacheDecision(rule, request.model, cached.costBasis));
       return cached.response as T;
     }
+
+    // Shared exact cache: only for rules marked shared while the workspace is
+    // opted in. The request never leaves the process; TrAIce sees only an HMAC
+    // key. Any failure or timeout falls back to the provider.
+    const shared = this.sharedCacheFor(rule);
+    const sharedKey = shared ? sharedExactCacheKey(shared.keySalt, rule.id, request) : null;
+    if (shared && sharedKey) {
+      const hit = await this.lookupSharedCache(shared, rule.id, sharedKey);
+      if (hit) {
+        try {
+          const costBasis = responseCostBasis(hit.response, context.provider ?? hit.provider, request.model);
+          this.exactCacheHits++;
+          this.sharedCacheHits++;
+          this.exactCacheSavingsUsdMicros += costBasis.savingsUsdMicros;
+          this.setExactCache(key, {
+            response: hit.response,
+            expiresAt: Math.min(
+              Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
+              hit.expiresAt ?? Number.POSITIVE_INFINITY,
+            ),
+            costBasis,
+          });
+          this.trackDecision(this.postExactCacheDecision(rule, request.model, costBasis, "shared"));
+          return hit.response as T;
+        } catch {
+          // A response that cannot be costed is not served from the shared cache.
+        }
+      }
+    }
+
     this.exactCacheMisses++;
     this.trackDecision(this.postExactCacheMiss(rule, request.model));
 
@@ -946,15 +1001,143 @@ export class CloudAdapter implements CostAdapter {
     const response = await providerCall();
     try {
       const ttlSeconds = boundedTtlSeconds(rule.actionParams.cacheTtlSec);
+      const costBasis = responseCostBasis(response, context.provider, request.model);
       this.setExactCache(key, {
         response,
         expiresAt: Date.now() + ttlSeconds * 1000,
-        costBasis: responseCostBasis(response, context.provider, request.model),
+        costBasis,
       });
+      // Re-check: a refused lookup suspends the shared cache for this request too.
+      if (shared && sharedKey && !this.sharedCacheSuspended) {
+        this.trackDecision(this.storeSharedCache(shared, rule.id, sharedKey, response, costBasis, ttlSeconds));
+      }
     } catch {
       // A cache write/costing failure does not affect the provider response.
     }
     return response;
+  }
+
+  private sharedCacheFor(rule: EnforcementRule): SharedCacheSettings | null {
+    if (!this.sharedCache || this.sharedCacheSuspended) return null;
+    return rule.actionParams.shared === true ? this.sharedCache : null;
+  }
+
+  private async lookupSharedCache(
+    shared: SharedCacheSettings,
+    ruleId: string,
+    key: string,
+  ): Promise<{ response: unknown; provider?: CostEvent["provider"]; expiresAt?: number } | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), shared.timeoutMs);
+    try {
+      const response = await fetch(this.siblingEndpoint("cache/lookup"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({ ruleId, key }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        this.handleSharedCacheRefusal(response.status);
+        throw Object.assign(new Error(`Shared cache lookup failed with HTTP ${response.status}`), {
+          status: response.status,
+        });
+      }
+      const body = (await response.json()) as {
+        hit?: unknown;
+        response?: unknown;
+        provider?: unknown;
+        expiresAt?: unknown;
+      };
+      if (body.hit !== true || body.response === undefined || body.response === null) return null;
+      const expiresAt = typeof body.expiresAt === "string" ? Date.parse(body.expiresAt) : NaN;
+      return {
+        response: body.response,
+        ...(typeof body.provider === "string" ? { provider: body.provider as CostEvent["provider"] } : {}),
+        ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+      };
+    } catch (error) {
+      this.sharedCacheLookupFailures++;
+      this.enforcementStats.failOpenRequests++;
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_cache_lookup",
+        ...(status == null ? {} : { status }),
+      });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async storeSharedCache(
+    shared: SharedCacheSettings,
+    ruleId: string,
+    key: string,
+    response: unknown,
+    costBasis: ExactCacheCostBasis,
+    ttlSec: number,
+  ): Promise<void> {
+    let body: string;
+    try {
+      body = JSON.stringify({
+        ruleId,
+        key,
+        response,
+        provider: costBasis.provider,
+        model: costBasis.model,
+        costBasis: {
+          inputTokens: costBasis.inputTokens,
+          outputTokens: costBasis.outputTokens,
+          cacheReadTokens: costBasis.cacheReadTokens,
+          cacheWriteTokens: costBasis.cacheWriteTokens,
+        },
+        ttlSec,
+      });
+    } catch {
+      return;
+    }
+    // Large responses stay in the local cache only; TrAIce would refuse them anyway.
+    if (Buffer.byteLength(body, "utf8") > shared.maxResponseBytes + 4_096) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
+    try {
+      const result = await fetch(this.siblingEndpoint("cache/store"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!result.ok) {
+        this.handleSharedCacheRefusal(result.status);
+        throw Object.assign(new Error(`Shared cache store failed with HTTP ${result.status}`), {
+          status: result.status,
+        });
+      }
+      this.sharedCacheStores++;
+    } catch (error) {
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_cache_store",
+        ...(status == null ? {} : { status }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /** 403 shared_cache_disabled or 409 rule_not_shared: the setting changed, so stop until the next rules poll. */
+  private handleSharedCacheRefusal(status: number): void {
+    if (status === 403 || status === 409) this.sharedCacheSuspended = true;
   }
 
   private async executeSemanticCacheRule<T>(
@@ -1434,10 +1617,12 @@ export class CloudAdapter implements CostAdapter {
     rule: EnforcementRule,
     requestedModel: string,
     costBasis: ExactCacheCostBasis,
+    cacheStore?: "shared",
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
       cacheOutcome: "hit",
+      ...(cacheStore ? { cacheStore } : {}),
       requestedModel,
       provider: costBasis.provider,
       servedModel: costBasis.model,
@@ -1701,7 +1886,7 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
-  private siblingEndpoint(resource: "rules" | "policy" | "decisions"): string {
+  private siblingEndpoint(resource: "rules" | "policy" | "decisions" | "cache/lookup" | "cache/store"): string {
     const url = new URL(this.endpoint);
     url.pathname = url.pathname.replace(/\/events\/?$/, `/${resource}`);
     return url.toString();
@@ -1818,6 +2003,31 @@ export class CloudAdapter implements CostAdapter {
       // Delivery observers cannot affect telemetry.
     }
   }
+}
+
+function parseSharedCacheSettings(value: unknown): SharedCacheSettings | null {
+  if (!value || typeof value !== "object") return null;
+  const settings = value as {
+    enabled?: unknown;
+    version?: unknown;
+    keySalt?: unknown;
+    timeoutMs?: unknown;
+    maxResponseBytes?: unknown;
+  };
+  if (settings.enabled !== true || settings.version !== SHARED_EXACT_CACHE_KEY_VERSION) return null;
+  if (typeof settings.keySalt !== "string" || settings.keySalt.length < 16) return null;
+  const timeoutMs = Number(settings.timeoutMs);
+  const maxResponseBytes = Number(settings.maxResponseBytes);
+  return {
+    keySalt: settings.keySalt,
+    timeoutMs: Number.isFinite(timeoutMs)
+      ? Math.max(25, Math.min(2_000, Math.round(timeoutMs)))
+      : SHARED_CACHE_DEFAULT_TIMEOUT_MS,
+    maxResponseBytes:
+      Number.isFinite(maxResponseBytes) && maxResponseBytes > 0
+        ? Math.min(SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES, Math.round(maxResponseBytes))
+        : SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES,
+  };
 }
 
 function isCacheRule(value: unknown): value is EnforcementRule {

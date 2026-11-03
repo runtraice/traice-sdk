@@ -605,6 +605,9 @@ describe("CloudAdapter", () => {
         size: 1,
         hitRate: 0.5,
         savingsUsd: expect.any(Number),
+        sharedHits: 0,
+        sharedLookupFailures: 0,
+        sharedStores: 0,
       });
       expect(adapter.getExactCacheStats().savingsUsd).toBeGreaterThan(0);
     });
@@ -697,6 +700,9 @@ describe("CloudAdapter", () => {
         size: 0,
         hitRate: 0,
         savingsUsd: 0,
+        sharedHits: 0,
+        sharedLookupFailures: 0,
+        sharedStores: 0,
       });
       expect(receivedBodies.some((body) => body.ruleId)).toBe(false);
     });

@@ -1,0 +1,167 @@
+{
+  "protocol": "shared-exact-v1",
+  "description": "Key = lowercase hex HMAC-SHA256(keySalt, expectedInput). expectedInput = canonical JSON of {v, ruleId, request}: object keys sorted by UTF-16 code unit, undefined members dropped, array order kept.",
+  "cases": [
+    {
+      "name": "a chat request keys on rule and the whole request",
+      "keySalt": "c2hhcmVkLWNhY2hlLWZpeHR1cmUtc2FsdA",
+      "ruleId": "rule_cache_faq",
+      "request": {
+        "model": "gpt-5.5-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is our refund window?"
+          }
+        ],
+        "temperature": 0
+      },
+      "expectedInput": "{\"request\":{\"messages\":[{\"content\":\"What is our refund window?\",\"role\":\"user\"}],\"model\":\"gpt-5.5-mini\",\"temperature\":0},\"ruleId\":\"rule_cache_faq\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "8074bccc170e31b2814d235848379fcc6e372bf29c6986ef54304f9340d97a01"
+    },
+    {
+      "name": "member order and undefined members do not change the key",
+      "keySalt": "c2hhcmVkLWNhY2hlLWZpeHR1cmUtc2FsdA",
+      "ruleId": "rule_cache_faq",
+      "request": {
+        "temperature": 0,
+        "messages": [
+          {
+            "content": "What is our refund window?",
+            "role": "user"
+          }
+        ],
+        "model": "gpt-5.5-mini"
+      },
+      "expectedInput": "{\"request\":{\"messages\":[{\"content\":\"What is our refund window?\",\"role\":\"user\"}],\"model\":\"gpt-5.5-mini\",\"temperature\":0},\"ruleId\":\"rule_cache_faq\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "8074bccc170e31b2814d235848379fcc6e372bf29c6986ef54304f9340d97a01"
+    },
+    {
+      "name": "another rule gets another key",
+      "keySalt": "c2hhcmVkLWNhY2hlLWZpeHR1cmUtc2FsdA",
+      "ruleId": "rule_cache_other",
+      "request": {
+        "model": "gpt-5.5-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is our refund window?"
+          }
+        ],
+        "temperature": 0
+      },
+      "expectedInput": "{\"request\":{\"messages\":[{\"content\":\"What is our refund window?\",\"role\":\"user\"}],\"model\":\"gpt-5.5-mini\",\"temperature\":0},\"ruleId\":\"rule_cache_other\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "a94a9d6c95e645425374a518784e70ad72516cfb10b269a67f318a8af8626861"
+    },
+    {
+      "name": "another salt gets another key",
+      "keySalt": "b3RoZXItd29ya3NwYWNlLXNhbHQ",
+      "ruleId": "rule_cache_faq",
+      "request": {
+        "model": "gpt-5.5-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": "What is our refund window?"
+          }
+        ],
+        "temperature": 0
+      },
+      "expectedInput": "{\"request\":{\"messages\":[{\"content\":\"What is our refund window?\",\"role\":\"user\"}],\"model\":\"gpt-5.5-mini\",\"temperature\":0},\"ruleId\":\"rule_cache_faq\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "79a9b0cfc1f85373fafa84cf45d6d83ddd04923250b3d80a1f597773f66337be"
+    },
+    {
+      "name": "array order is significant",
+      "keySalt": "c2hhcmVkLWNhY2hlLWZpeHR1cmUtc2FsdA",
+      "ruleId": "rule_cache_faq",
+      "request": {
+        "model": "gpt-5.5-mini",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be brief."
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ]
+      },
+      "expectedInput": "{\"request\":{\"messages\":[{\"content\":\"Be brief.\",\"role\":\"system\"},{\"content\":\"Hi\",\"role\":\"user\"}],\"model\":\"gpt-5.5-mini\"},\"ruleId\":\"rule_cache_faq\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "86b7aa376ff3f92ace36db8e0e7d8143f134f2d9180e4c43047485af79fc53b2"
+    },
+    {
+      "name": "array order is significant (reversed)",
+      "keySalt": "c2hhcmVkLWNhY2hlLWZpeHR1cmUtc2FsdA",
+      "ruleId": "rule_cache_faq",
+      "request": {
+        "model": "gpt-5.5-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Hi"
+          },
+          {
+            "role": "system",
+            "content": "Be brief."
+          }
+        ]
+      },
+      "expectedInput": "{\"request\":{\"messages\":[{\"content\":\"Hi\",\"role\":\"user\"},{\"content\":\"Be brief.\",\"role\":\"system\"}],\"model\":\"gpt-5.5-mini\"},\"ruleId\":\"rule_cache_faq\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "c32a8134592996f7153cee6bc44fe882de17e91ab7a59c8055b6ad96417d206a"
+    },
+    {
+      "name": "keys sort by code unit, uppercase before lowercase and ASCII before accented",
+      "keySalt": "c2hhcmVkLWNhY2hlLWZpeHR1cmUtc2FsdA",
+      "ruleId": "rule_cache_faq",
+      "request": {
+        "model": "claude-haiku-4-5",
+        "metadata": {
+          "b": 1,
+          "B": 2,
+          "a": 3,
+          "é": 4,
+          "Z": 5
+        },
+        "max_tokens": 256
+      },
+      "expectedInput": "{\"request\":{\"max_tokens\":256,\"metadata\":{\"B\":2,\"Z\":5,\"a\":3,\"b\":1,\"é\":4},\"model\":\"claude-haiku-4-5\"},\"ruleId\":\"rule_cache_faq\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "87e2e3c8434711bec0a425e9a16e5622961e8b9993b5d2cec52b26f6ae6a5502"
+    },
+    {
+      "name": "tools and response format are part of the key",
+      "keySalt": "c2hhcmVkLWNhY2hlLWZpeHR1cmUtc2FsdA",
+      "ruleId": "rule_cache_faq",
+      "request": {
+        "model": "gpt-5.5-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Order 42?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "lookup_order",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "response_format": {
+          "type": "json_object"
+        }
+      },
+      "expectedInput": "{\"request\":{\"messages\":[{\"content\":\"Order 42?\",\"role\":\"user\"}],\"model\":\"gpt-5.5-mini\",\"response_format\":{\"type\":\"json_object\"},\"tools\":[{\"function\":{\"name\":\"lookup_order\",\"parameters\":{\"properties\":{\"id\":{\"type\":\"string\"}},\"type\":\"object\"}},\"type\":\"function\"}]},\"ruleId\":\"rule_cache_faq\",\"v\":\"shared-exact-v1\"}",
+      "expectedKey": "a2bf613f409478b6483ee31717f846680f2be154e1f4edb57892f073dfda9f0c"
+    }
+  ]
+}
