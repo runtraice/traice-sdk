@@ -26,6 +26,8 @@ export type {
   ModelRuleAction,
   BedrockModelRequest,
   RequestEnforcementContext,
+  FallbackFailure,
+  ProviderCallOptions,
   SemanticCacheConfig,
   SemanticCacheStats,
 } from "./cloud";

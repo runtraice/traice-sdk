@@ -80,6 +80,16 @@ export interface ExactCacheContext {
 
 export type RequestEnforcementContext = ExactCacheContext;
 
+/**
+ * Passed to `providerCall` as an optional second argument. When a fallback
+ * rule sets `timeoutMs`, `signal` aborts at that deadline; forward it to the
+ * provider client (for example `{ signal }` as request options) so the
+ * abandoned call stops instead of finishing in the background.
+ */
+export interface ProviderCallOptions {
+  signal?: AbortSignal;
+}
+
 /** A Bedrock request names its model as `modelId` (a model ID, inference profile ID, or ARN). */
 export interface BedrockModelRequest {
   modelId: string;
@@ -597,7 +607,7 @@ export class CloudAdapter implements CostAdapter {
    */
   async enforceRequest<T, R extends ExactCacheRequest>(
     request: R,
-    providerCall: (effectiveRequest: R) => Promise<T>,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
     context: RequestEnforcementContext = {},
   ): Promise<T> {
     if (context.bypass || !this.enforcementEnabled) return providerCall(request);
@@ -729,15 +739,15 @@ export class CloudAdapter implements CostAdapter {
    */
   async enforceBedrockRequest<T, R extends BedrockModelRequest>(
     request: R,
-    providerCall: (effectiveRequest: R) => Promise<T>,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
     context: RequestEnforcementContext = {},
   ): Promise<T> {
     const aliased = { ...request, model: request.modelId };
     return this.enforceRequest(
       aliased,
-      (effective) => {
+      (effective, options) => {
         const { model, ...rest } = effective;
-        return providerCall({ ...rest, modelId: model } as unknown as R);
+        return providerCall({ ...rest, modelId: model } as unknown as R, options);
       },
       { provider: "aws-bedrock", ...context },
     );
@@ -1255,30 +1265,66 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
+  /**
+   * Calls the requested model, retrying it and then calling the fallback model
+   * as the rule's `actionParams` allow:
+   *
+   * - `timeoutMs`: give up on an attempt after this long (each attempt, and the
+   *   fallback call, gets its own deadline);
+   * - `retryOn`: which failures lead to a retry or the fallback: `timeout`,
+   *   `429`, `5xx`, or `error` for any failure (the default, as before);
+   * - `maxRetries` and `backoffMs`: retry the requested model this many times,
+   *   with jittered exponential backoff, before falling back.
+   *
+   * A failure that `retryOn` does not cover is thrown as is. When the fallback
+   * also fails, the requested model's last error is thrown.
+   */
   private async executeFallbackRule<T, R extends ExactCacheRequest>(
     request: R,
-    providerCall: (effectiveRequest: R) => Promise<T>,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
     context: RequestEnforcementContext,
     rule: EnforcementRule,
     fallbackModel: string,
     reason: Record<string, unknown>,
   ): Promise<T> {
-    try {
-      return await providerCall(request);
-    } catch (primaryError) {
-      const fallbackRequest = { ...request, model: fallbackModel } as R;
+    const policy = fallbackPolicy(rule.actionParams);
+    let primaryError: unknown;
+    let failure: FallbackFailure = "error";
+    let attempts = 0;
+    for (;;) {
+      attempts++;
       try {
-        const response = await providerCall(fallbackRequest);
-        this.trackDecision(
-          this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "success", reason),
-        );
-        return response;
-      } catch {
-        this.trackDecision(
-          this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "failed", reason),
-        );
-        throw primaryError;
+        return await callWithDeadline(providerCall, request, policy.timeoutMs);
+      } catch (error) {
+        primaryError = error;
+        failure = fallbackFailure(error);
+        if (!policy.retryOn.has("error") && !policy.retryOn.has(failure)) throw error;
+        if (attempts > policy.maxRetries) break;
+        await delay(backoffDelayMs(policy.backoffMs, attempts));
       }
+    }
+
+    const fallbackRequest = { ...request, model: fallbackModel } as R;
+    const startedAt = Date.now();
+    try {
+      const response = await callWithDeadline(providerCall, fallbackRequest, policy.timeoutMs);
+      this.trackDecision(
+        this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "success", reason, {
+          errorType: failure,
+          attempts,
+          fallbackLatencyMs: Date.now() - startedAt,
+        }),
+      );
+      return response;
+    } catch {
+      this.trackDecision(
+        this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "failed", reason, {
+          errorType: failure,
+          attempts,
+          fallbackLatencyMs: Date.now() - startedAt,
+        }),
+      );
+      throw primaryError;
     }
   }
 
@@ -1826,6 +1872,7 @@ export class CloudAdapter implements CostAdapter {
     feature: string | undefined,
     fallbackOutcome: "success" | "failed",
     reason: Record<string, unknown>,
+    details: { errorType: FallbackFailure; attempts: number; fallbackLatencyMs: number },
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
@@ -1834,7 +1881,9 @@ export class CloudAdapter implements CostAdapter {
       servedModel,
       feature,
       fallbackOutcome,
-      reason,
+      errorType: details.errorType,
+      fallbackLatencyMs: details.fallbackLatencyMs,
+      reason: { ...reason, attempts: details.attempts },
     });
   }
 
@@ -2110,6 +2159,99 @@ function mergeBudgetPct(
   override?: Partial<Record<"workspace" | "feature" | "user", number>>,
 ): Partial<Record<"workspace" | "feature" | "user", number>> {
   return { ...cached, ...override };
+}
+
+/** How a provider call failed, for a fallback rule's `retryOn`. */
+export type FallbackFailure = "timeout" | "429" | "5xx" | "error";
+
+const FALLBACK_FAILURES: readonly FallbackFailure[] = ["timeout", "429", "5xx", "error"];
+
+interface FallbackPolicy {
+  timeoutMs: number | null;
+  retryOn: ReadonlySet<FallbackFailure>;
+  maxRetries: number;
+  backoffMs: number;
+}
+
+/** Reads a fallback rule's limits. Missing or invalid values keep the old behavior. */
+function fallbackPolicy(params: Record<string, unknown>): FallbackPolicy {
+  const timeoutMs =
+    typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+      ? Math.min(120_000, Math.max(1, Math.round(params.timeoutMs)))
+      : null;
+  const listed = Array.isArray(params.retryOn)
+    ? params.retryOn.filter((value): value is FallbackFailure => FALLBACK_FAILURES.includes(value as FallbackFailure))
+    : [];
+  return {
+    timeoutMs,
+    retryOn: new Set<FallbackFailure>(listed.length > 0 ? listed : ["error"]),
+    maxRetries: boundedPositiveInteger(params.maxRetries, 0, 0, 5),
+    backoffMs: boundedPositiveInteger(params.backoffMs, 250, 0, 10_000),
+  };
+}
+
+class ProviderCallTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Provider call exceeded ${timeoutMs} ms`);
+    this.name = "TimeoutError";
+  }
+}
+
+/** Classifies an error from OpenAI, Anthropic, AWS, fetch, or a deadline. */
+function fallbackFailure(error: unknown): FallbackFailure {
+  if (error instanceof ProviderCallTimeoutError) return "timeout";
+  const record = (typeof error === "object" && error !== null ? error : {}) as Record<string, unknown>;
+  const name = typeof record.name === "string" ? record.name : "";
+  if (name === "TimeoutError" || name === "APIConnectionTimeoutError" || record.code === "ETIMEDOUT") {
+    return "timeout";
+  }
+  const response = record.response as Record<string, unknown> | undefined;
+  const metadata = record.$metadata as Record<string, unknown> | undefined;
+  const status = [record.status, record.statusCode, response?.status, metadata?.httpStatusCode].find(
+    (value): value is number => typeof value === "number",
+  );
+  if (status === 429 || name === "ThrottlingException") return "429";
+  if (status !== undefined && status >= 500 && status <= 599) return "5xx";
+  return "error";
+}
+
+/**
+ * Runs one provider call, with a deadline when the rule sets one. The signal
+ * aborts at the deadline; a caller that ignores it still gets the timeout,
+ * and the abandoned call's result is discarded.
+ */
+async function callWithDeadline<T, R>(
+  providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+  request: R,
+  timeoutMs: number | null,
+): Promise<T> {
+  if (timeoutMs === null) return providerCall(request);
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new ProviderCallTimeoutError(timeoutMs);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  const call = providerCall(request, { signal: controller.signal });
+  call.catch(() => {});
+  try {
+    return await Promise.race([call, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Exponential backoff with full jitter: up to backoffMs * 2^(attempt - 1). */
+function backoffDelayMs(backoffMs: number, attempt: number): number {
+  if (backoffMs <= 0) return 0;
+  return Math.round(Math.random() * backoffMs * 2 ** (attempt - 1));
+}
+
+function delay(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
 function asError(value: unknown): Error {

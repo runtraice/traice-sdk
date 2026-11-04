@@ -207,6 +207,30 @@ A fallback rule calls the original model first. After a provider error it makes
 one call with the configured fallback model. If that call also fails, the SDK
 rethrows the original provider error and does not add another retry.
 
+A fallback rule can also set limits in its action parameters:
+
+- `timeoutMs` (1 to 120000): give up on a call after this long. The original
+  call and the fallback call each get their own deadline.
+- `retryOn`: which failures lead to a retry or the fallback: `timeout`, `429`,
+  `5xx`, or `error` for any failure (the default). A failure the list does not
+  cover is thrown without a fallback.
+- `maxRetries` (0 to 5, default 0) and `backoffMs` (default 250): retry the
+  original model this many times, with jittered exponential backoff, before
+  falling back.
+
+The provider callback receives `{ signal }` as an optional second argument.
+Forward it so a call past its deadline stops instead of finishing in the
+background:
+
+```ts
+await cloud.enforceRequest(request, (effective, { signal } = {}) =>
+  openai.chat.completions.create(effective, { signal }),
+);
+```
+
+Fallback decisions report the failure type, the number of attempts on the
+original model, and the fallback call's latency.
+
 Call `warmEnforcement()` during application startup. Request-path evaluation
 reads only the in-memory rules and evidence cache. A cold or expired cache
 passes the request through immediately and refreshes in the background.

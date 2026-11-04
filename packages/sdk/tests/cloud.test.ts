@@ -1641,5 +1641,123 @@ describe("CloudAdapter", () => {
       expect(provider).toHaveBeenCalledTimes(2);
       expect(receivedBodies).toContainEqual(expect.objectContaining({ action: "FALLBACK", fallbackOutcome: "failed" }));
     });
+
+    it("falls back when the requested model passes the rule's deadline, and aborts it", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini", timeoutMs: 50 })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      let primarySignal: AbortSignal | undefined;
+      const provider = jest.fn(async (effectiveRequest: typeof request, options?: { signal?: AbortSignal }) => {
+        if (effectiveRequest.model === "gpt-4o") {
+          primarySignal = options?.signal;
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          return { ok: true, model: "gpt-4o" };
+        }
+        return { ok: true, model: effectiveRequest.model };
+      });
+      await adapter.warmEnforcement();
+
+      const startedAt = Date.now();
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o-mini" });
+      await adapter.flush();
+
+      expect(Date.now() - startedAt).toBeLessThan(900);
+      expect(primarySignal?.aborted).toBe(true);
+      const decision = receivedBodies.find((body) => body.action === "FALLBACK") as Record<string, unknown>;
+      expect(decision).toMatchObject({ fallbackOutcome: "success", errorType: "timeout" });
+      expect(decision.fallbackLatencyMs).toEqual(expect.any(Number));
+      expect(decision.reason).toMatchObject({ attempts: 1 });
+    });
+
+    it("falls back only on the failures retryOn names", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini", retryOn: ["429"] })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      await adapter.warmEnforcement();
+      const serverError = Object.assign(new Error("server error"), { status: 500 });
+      const notCovered = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o") throw serverError;
+        return { ok: true, model: effectiveRequest.model };
+      });
+
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, notCovered, { feature: "support" }),
+      ).rejects.toBe(serverError);
+      expect(notCovered).toHaveBeenCalledTimes(1);
+
+      // AWS SDK errors carry the status in $metadata.
+      const throttled = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o") {
+          throw Object.assign(new Error("slow down"), {
+            name: "ThrottlingException",
+            $metadata: { httpStatusCode: 429 },
+          });
+        }
+        return { ok: true, model: effectiveRequest.model };
+      });
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, throttled, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o-mini" });
+      await adapter.flush();
+
+      expect(throttled).toHaveBeenCalledTimes(2);
+      const decisions = receivedBodies.filter((body) => body.action === "FALLBACK");
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({ fallbackOutcome: "success", errorType: "429" });
+    });
+
+    it("retries the requested model before falling back", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini", retryOn: ["5xx"], maxRetries: 2, backoffMs: 0 })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      await adapter.warmEnforcement();
+      const unavailable = () => Object.assign(new Error("unavailable"), { status: 503 });
+
+      const recovers = jest
+        .fn<Promise<{ ok: boolean; model: string }>, [typeof request]>()
+        .mockRejectedValueOnce(unavailable())
+        .mockRejectedValueOnce(unavailable())
+        .mockResolvedValueOnce({ ok: true, model: "gpt-4o" });
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, recovers, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o" });
+      expect(recovers).toHaveBeenCalledTimes(3);
+
+      const neverRecovers = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o") throw unavailable();
+        return { ok: true, model: effectiveRequest.model };
+      });
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, neverRecovers, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o-mini" });
+      await adapter.flush();
+
+      expect(neverRecovers.mock.calls.map(([call]) => call.model)).toEqual([
+        "gpt-4o",
+        "gpt-4o",
+        "gpt-4o",
+        "gpt-4o-mini",
+      ]);
+      const decisions = receivedBodies.filter((body) => body.action === "FALLBACK");
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({ errorType: "5xx", reason: expect.objectContaining({ attempts: 3 }) });
+    });
   });
 });

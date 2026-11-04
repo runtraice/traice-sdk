@@ -77,6 +77,8 @@ export type {
   BedrockModelRequest,
   ModelRuleAction,
   RequestEnforcementContext,
+  FallbackFailure,
+  ProviderCallOptions,
   SemanticCacheConfig,
   SemanticCacheStats,
 } from "./adapters";
