@@ -52,6 +52,12 @@ export interface SemanticCacheConfig {
   maxEntries?: number;
   /** Hard embedding latency budget before the request fails open. Default: 1000. */
   timeoutMs?: number;
+  /**
+   * Name of the embedding model `embed` uses, for example `text-embedding-3-small`.
+   * Needed for the shared semantic cache: answers are shared only between
+   * instances that embed with the same model. Without it the cache stays local.
+   */
+  embeddingModel?: string;
 }
 
 export interface ExactCacheRequest {
@@ -97,7 +103,14 @@ export interface BedrockModelRequest {
 }
 
 export type EnforcementErrorContext = {
-  operation: "rules_refresh" | "policy_refresh" | "decision_post" | "shared_cache_lookup" | "shared_cache_store";
+  operation:
+    | "rules_refresh"
+    | "policy_refresh"
+    | "decision_post"
+    | "shared_cache_lookup"
+    | "shared_cache_store"
+    | "shared_semantic_cache_lookup"
+    | "shared_semantic_cache_store";
   status?: number;
 };
 
@@ -204,7 +217,20 @@ export interface SemanticCacheStats {
   size: number;
   hitRate: number;
   savingsUsd: number;
+  /** Hits served from the workspace's shared semantic cache on TrAIce (counted in `hits` too). */
+  sharedHits: number;
+  /** Shared lookups that failed or timed out; each fell back to the provider. */
+  sharedLookupFailures: number;
+  /** Answers stored in the shared semantic cache after a miss. */
+  sharedStores: number;
 }
+
+/** The shared semantic cache settings `GET /api/v1/rules` sends while the workspace is opted in. */
+type SharedSemanticCacheSettings = { timeoutMs: number; maxResponseBytes: number; maxDimensions: number };
+
+const SHARED_SEMANTIC_CACHE_VERSION = "shared-semantic-v1";
+const SHARED_SEMANTIC_CACHE_DEFAULT_TIMEOUT_MS = 300;
+const SHARED_SEMANTIC_CACHE_DEFAULT_MAX_DIMENSIONS = 4_096;
 
 type ExactCacheEntry = {
   response: unknown;
@@ -381,6 +407,12 @@ export class CloudAdapter implements CostAdapter {
   private sharedCacheHits = 0;
   private sharedCacheLookupFailures = 0;
   private sharedCacheStores = 0;
+  private sharedSemanticCache: SharedSemanticCacheSettings | null = null;
+  /** Set by a 403 or 409 from the shared semantic cache; cleared by the next rules poll. */
+  private sharedSemanticCacheSuspended = false;
+  private sharedSemanticCacheHits = 0;
+  private sharedSemanticCacheLookupFailures = 0;
+  private sharedSemanticCacheStores = 0;
   private semanticCacheHits = 0;
   private semanticCacheMisses = 0;
   private semanticCacheBypasses = 0;
@@ -780,6 +812,9 @@ export class CloudAdapter implements CostAdapter {
       size: this.semanticCache.size,
       hitRate: attempts > 0 ? this.semanticCacheHits / attempts : 0,
       savingsUsd: this.semanticCacheSavingsUsdMicros / 1_000_000,
+      sharedHits: this.sharedSemanticCacheHits,
+      sharedLookupFailures: this.sharedSemanticCacheLookupFailures,
+      sharedStores: this.sharedSemanticCacheStores,
     };
   }
 
@@ -871,10 +906,13 @@ export class CloudAdapter implements CostAdapter {
         budgets?: unknown;
         ttlSeconds?: unknown;
         sharedCache?: unknown;
+        sharedSemanticCache?: unknown;
       };
       this.enforcementEnabled = json.enabled !== false;
       this.sharedCache = parseSharedCacheSettings(json.sharedCache);
       this.sharedCacheSuspended = false;
+      this.sharedSemanticCache = parseSharedSemanticCacheSettings(json.sharedSemanticCache);
+      this.sharedSemanticCacheSuspended = false;
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
       this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
       this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
@@ -1184,23 +1222,209 @@ export class CloudAdapter implements CostAdapter {
       return cached.entry.response as T;
     }
 
+    // Shared semantic cache: only for rules marked shared while the workspace is
+    // opted in, and only with a named embedding model. TrAIce receives the
+    // embedding, never the request text. Any failure or timeout falls back to
+    // the provider.
+    const shared = this.sharedSemanticCacheFor(rule, vector);
+    if (shared) {
+      const hit = await this.lookupSharedSemanticCache(shared, rule.id, request.model, vector);
+      if (hit) {
+        try {
+          const costBasis = responseCostBasis(hit.response, context.provider ?? hit.provider, request.model);
+          this.semanticCacheHits++;
+          this.sharedSemanticCacheHits++;
+          this.semanticCacheSavingsUsdMicros += costBasis.savingsUsdMicros;
+          this.setSemanticCache(semanticCacheKey(this.apiKey, rule.id, request.model, text), {
+            ruleId: rule.id,
+            requestedModel: request.model,
+            vector,
+            response: hit.response,
+            expiresAt: Math.min(
+              Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
+              hit.expiresAt ?? Number.POSITIVE_INFINITY,
+            ),
+            costBasis,
+          });
+          this.trackDecision(
+            this.postSemanticCacheDecision(rule, request.model, "hit", hit.similarity, costBasis, "active", "shared"),
+          );
+          return hit.response as T;
+        } catch {
+          // A response that cannot be costed is not served from the shared cache.
+        }
+      }
+    }
+
     this.semanticCacheMisses++;
     this.trackDecision(this.postSemanticCacheDecision(rule, request.model, "miss", cached.similarity));
     const response = await providerCall();
     try {
+      const ttlSeconds = boundedTtlSeconds(rule.actionParams.cacheTtlSec);
+      const costBasis = responseCostBasis(response, context.provider, request.model);
       const key = semanticCacheKey(this.apiKey, rule.id, request.model, text);
       this.setSemanticCache(key, {
         ruleId: rule.id,
         requestedModel: request.model,
         vector,
         response,
-        expiresAt: Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
-        costBasis: responseCostBasis(response, context.provider, request.model),
+        expiresAt: Date.now() + ttlSeconds * 1000,
+        costBasis,
       });
+      // Re-check: a refused lookup suspends the shared semantic cache for this request too.
+      if (shared && !this.sharedSemanticCacheSuspended) {
+        this.trackDecision(
+          this.storeSharedSemanticCache(shared, rule.id, request.model, vector, response, costBasis, ttlSeconds),
+        );
+      }
     } catch {
       // A cache write/costing failure does not affect the provider response.
     }
     return response;
+  }
+
+  private sharedSemanticCacheFor(
+    rule: EnforcementRule,
+    vector: readonly number[],
+  ): (SharedSemanticCacheSettings & { embeddingModel: string }) | null {
+    if (!this.sharedSemanticCache || this.sharedSemanticCacheSuspended) return null;
+    if (rule.actionParams.shared !== true) return null;
+    const embeddingModel = this.semanticCacheConfig?.embeddingModel?.trim();
+    if (!embeddingModel || vector.length > this.sharedSemanticCache.maxDimensions) return null;
+    return { ...this.sharedSemanticCache, embeddingModel: embeddingModel.slice(0, 128) };
+  }
+
+  private async lookupSharedSemanticCache(
+    shared: SharedSemanticCacheSettings & { embeddingModel: string },
+    ruleId: string,
+    requestedModel: string,
+    vector: readonly number[],
+  ): Promise<{
+    response: unknown;
+    similarity: number;
+    provider?: CostEvent["provider"];
+    expiresAt?: number;
+  } | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), shared.timeoutMs);
+    try {
+      const response = await fetch(this.siblingEndpoint("cache/semantic/lookup"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({ ruleId, requestedModel, embeddingModel: shared.embeddingModel, embedding: vector }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        this.handleSharedSemanticCacheRefusal(response.status);
+        throw Object.assign(new Error(`Shared semantic cache lookup failed with HTTP ${response.status}`), {
+          status: response.status,
+        });
+      }
+      const body = (await response.json()) as {
+        hit?: unknown;
+        response?: unknown;
+        similarity?: unknown;
+        provider?: unknown;
+        expiresAt?: unknown;
+      };
+      if (body.hit !== true || body.response === undefined || body.response === null) return null;
+      const similarity = Number(body.similarity);
+      if (!Number.isFinite(similarity)) return null;
+      const expiresAt = typeof body.expiresAt === "string" ? Date.parse(body.expiresAt) : NaN;
+      return {
+        response: body.response,
+        similarity,
+        ...(typeof body.provider === "string" ? { provider: body.provider as CostEvent["provider"] } : {}),
+        ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+      };
+    } catch (error) {
+      this.sharedSemanticCacheLookupFailures++;
+      this.enforcementStats.failOpenRequests++;
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_semantic_cache_lookup",
+        ...(status == null ? {} : { status }),
+      });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async storeSharedSemanticCache(
+    shared: SharedSemanticCacheSettings & { embeddingModel: string },
+    ruleId: string,
+    requestedModel: string,
+    vector: readonly number[],
+    response: unknown,
+    costBasis: ExactCacheCostBasis,
+    ttlSec: number,
+  ): Promise<void> {
+    let serializedResponse: string;
+    let body: string;
+    try {
+      serializedResponse = JSON.stringify(response);
+      body = JSON.stringify({
+        ruleId,
+        requestedModel,
+        embeddingModel: shared.embeddingModel,
+        embedding: vector,
+        response,
+        provider: costBasis.provider,
+        model: costBasis.model,
+        costBasis: {
+          inputTokens: costBasis.inputTokens,
+          outputTokens: costBasis.outputTokens,
+          cacheReadTokens: costBasis.cacheReadTokens,
+          cacheWriteTokens: costBasis.cacheWriteTokens,
+        },
+        ttlSec,
+      });
+    } catch {
+      return;
+    }
+    // Large responses stay in the local cache only; TrAIce would refuse them anyway.
+    if (Buffer.byteLength(serializedResponse, "utf8") > shared.maxResponseBytes) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
+    try {
+      const result = await fetch(this.siblingEndpoint("cache/semantic/store"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!result.ok) {
+        this.handleSharedSemanticCacheRefusal(result.status);
+        throw Object.assign(new Error(`Shared semantic cache store failed with HTTP ${result.status}`), {
+          status: result.status,
+        });
+      }
+      this.sharedSemanticCacheStores++;
+    } catch (error) {
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_semantic_cache_store",
+        ...(status == null ? {} : { status }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /** 403 shared_cache_disabled or 409 rule_not_shared: the setting changed, so stop until the next rules poll. */
+  private handleSharedSemanticCacheRefusal(status: number): void {
+    if (status === 403 || status === 409) this.sharedSemanticCacheSuspended = true;
   }
 
   private async executeSemanticCacheShadow<T>(
@@ -1694,12 +1918,14 @@ export class CloudAdapter implements CostAdapter {
     similarity: number | null,
     costBasis?: ExactCacheCostBasis,
     mode: "active" | "shadow" = "active",
+    cacheStore?: "shared",
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
       action: "CACHE_SEMANTIC",
       cacheOutcome,
       mode,
+      ...(cacheStore ? { cacheStore } : {}),
       requestedModel,
       similarity,
       ...(costBasis
@@ -1935,7 +2161,16 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
-  private siblingEndpoint(resource: "rules" | "policy" | "decisions" | "cache/lookup" | "cache/store"): string {
+  private siblingEndpoint(
+    resource:
+      | "rules"
+      | "policy"
+      | "decisions"
+      | "cache/lookup"
+      | "cache/store"
+      | "cache/semantic/lookup"
+      | "cache/semantic/store",
+  ): string {
     const url = new URL(this.endpoint);
     url.pathname = url.pathname.replace(/\/events\/?$/, `/${resource}`);
     return url.toString();
@@ -2076,6 +2311,34 @@ function parseSharedCacheSettings(value: unknown): SharedCacheSettings | null {
       Number.isFinite(maxResponseBytes) && maxResponseBytes > 0
         ? Math.min(SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES, Math.round(maxResponseBytes))
         : SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES,
+  };
+}
+
+function parseSharedSemanticCacheSettings(value: unknown): SharedSemanticCacheSettings | null {
+  if (!value || typeof value !== "object") return null;
+  const settings = value as {
+    enabled?: unknown;
+    version?: unknown;
+    timeoutMs?: unknown;
+    maxResponseBytes?: unknown;
+    maxDimensions?: unknown;
+  };
+  if (settings.enabled !== true || settings.version !== SHARED_SEMANTIC_CACHE_VERSION) return null;
+  const timeoutMs = Number(settings.timeoutMs);
+  const maxResponseBytes = Number(settings.maxResponseBytes);
+  const maxDimensions = Number(settings.maxDimensions);
+  return {
+    timeoutMs: Number.isFinite(timeoutMs)
+      ? Math.max(25, Math.min(2_000, Math.round(timeoutMs)))
+      : SHARED_SEMANTIC_CACHE_DEFAULT_TIMEOUT_MS,
+    maxResponseBytes:
+      Number.isFinite(maxResponseBytes) && maxResponseBytes > 0
+        ? Math.min(SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES, Math.round(maxResponseBytes))
+        : SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES,
+    maxDimensions:
+      Number.isFinite(maxDimensions) && maxDimensions > 0
+        ? Math.min(8_192, Math.round(maxDimensions))
+        : SHARED_SEMANTIC_CACHE_DEFAULT_MAX_DIMENSIONS,
   };
 }
 

@@ -438,6 +438,34 @@ stops being shared, the SDK goes back to its local cache until the next rules
 refresh. `getExactCacheStats()` reports `sharedHits`, `sharedLookupFailures`,
 and `sharedStores`. Your API key needs the `cache` scope.
 
+### Share semantic-cache answers across instances
+
+The semantic cache can be shared the same way. When a workspace owner opts in
+to the shared semantic cache in trAIce and marks a semantic-cache rule as
+shared, the SDK checks trAIce after a local miss. Name your embedding model so
+only instances that embed the same way share answers:
+
+```typescript
+const cloud = new CloudAdapter({
+  apiKey: process.env.TRAICE_API_KEY!,
+  semanticCache: {
+    embed: async (text) => myEmbeddingClient.embed(text),
+    embeddingModel: "text-embedding-3-small",
+  },
+});
+```
+
+The request text never leaves your process. The SDK sends trAIce the embedding
+your `embed` function returned, the rule, the requested model and the embedding
+model name. trAIce stores the embedding, which similarity search needs, with
+the response encrypted, for at most the rule's cache time. An embedding is
+derived from the request, so the workspace opt-in says so. Without
+`embeddingModel` the semantic cache stays local. Lookups wait at most 300 ms and
+fail open to the provider; streams, explicit bypasses, and responses over
+256 KB stay local. A refused lookup turns sharing off until the next rules
+refresh. `getSemanticCacheStats()` reports `sharedHits`, `sharedLookupFailures`,
+and `sharedStores`. Your API key needs the `cache` scope.
+
 ## Privacy and failure behavior
 
 Provider errors are re-thrown. Adapter failures do not replace a successful provider response unless your application explicitly waits for adapter writes. Use `onError` or `verbose` configuration for adapter diagnostics.
