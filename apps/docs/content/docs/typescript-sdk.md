@@ -466,6 +466,36 @@ fail open to the provider; streams, explicit bypasses, and responses over
 refresh. `getSemanticCacheStats()` reports `sharedHits`, `sharedLookupFailures`,
 and `sharedStores`. Your API key needs the `cache` scope.
 
+### Rate limits
+
+Rate-limit rules cap requests per minute, tokens per minute, or both, for the
+whole workspace, each API key, or each end user. trAIce counts them, so a limit
+holds across every instance of your app. Pass the end user's ID for per-user
+limits:
+
+```typescript
+try {
+  const response = await cloud.enforceRequest(request, (effective) => openai.chat.completions.create(effective), {
+    feature: "support-chat",
+    userId: currentUser.id,
+  });
+} catch (error) {
+  if (error instanceof TraiceEnforcementError && error.action === "RATE_LIMIT") {
+    // Retry later, or tell the user to slow down.
+    console.warn(`Rate limited; retry in ${error.retryAfterMs} ms`);
+  }
+}
+```
+
+Before a call a rate-limit rule matches, the SDK asks trAIce to count it. It
+waits at most 150 ms and lets the call through if trAIce does not answer. After
+a refusal, the SDK refuses calls for that rule locally until `retryAfterMs`
+passes, without asking trAIce again. Tokens are known only when a call returns,
+so the SDK reports them afterwards and calls already in flight can pass a
+tokens-per-minute limit. A rule in target verification never refuses; trAIce
+counts what it would have refused. `getRateLimitStats()` reports the counts.
+Older SDK versions never receive rate-limit rules.
+
 ## Privacy and failure behavior
 
 Provider errors are re-thrown. Adapter failures do not replace a successful provider response unless your application explicitly waits for adapter writes. Use `onError` or `verbose` configuration for adapter diagnostics.

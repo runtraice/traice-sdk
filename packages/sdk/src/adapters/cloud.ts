@@ -3,8 +3,10 @@ import { calculateCost } from "../pricing";
 import {
   assignRollout,
   decide,
+  matchRateLimitRules,
   type EnforcementRollout,
   type EnforcementRule,
+  type RateLimitMatch,
   type RolloutAssignment,
 } from "../enforcement";
 import * as crypto from "crypto";
@@ -110,7 +112,9 @@ export type EnforcementErrorContext = {
     | "shared_cache_lookup"
     | "shared_cache_store"
     | "shared_semantic_cache_lookup"
-    | "shared_semantic_cache_store";
+    | "shared_semantic_cache_store"
+    | "rate_limit_acquire"
+    | "rate_limit_usage";
   status?: number;
 };
 
@@ -148,7 +152,7 @@ export type BudgetAdvice = {
   matches: BudgetPolicyMatch[];
 };
 
-export type BlockingRuleAction = "DENY" | "CAP_RETRIES";
+export type BlockingRuleAction = "DENY" | "CAP_RETRIES" | "RATE_LIMIT";
 export type ModelRuleAction = "SWAP" | "DOWNGRADE" | "FALLBACK" | "ROUTE";
 
 export interface EnforcementEvidence {
@@ -170,8 +174,16 @@ export class TraiceEnforcementError extends Error {
     readonly ruleName: string,
     readonly requestedModel: string,
     readonly reason: Record<string, unknown>,
+    /** Rate-limit refusals only: how long until a request can fit again. */
+    readonly retryAfterMs?: number,
   ) {
-    super(action === "DENY" ? `Request denied by trAIce rule: ${ruleName}` : `Retry cap reached: ${ruleName}`);
+    super(
+      action === "DENY"
+        ? `Request denied by trAIce rule: ${ruleName}`
+        : action === "RATE_LIMIT"
+          ? `Rate limit reached: ${ruleName}`
+          : `Retry cap reached: ${ruleName}`,
+    );
     this.name = "TraiceEnforcementError";
   }
 
@@ -184,9 +196,28 @@ export class TraiceEnforcementError extends Error {
       ruleName: this.ruleName,
       requestedModel: this.requestedModel,
       reason: this.reason,
+      ...(this.retryAfterMs != null ? { retryAfterMs: this.retryAfterMs } : {}),
     };
   }
 }
+
+/** Process-local counts for rate-limit rules (enforcement protocol v3). */
+export interface RateLimitStats {
+  /** Requests trAIce counted against at least one rate-limit rule. */
+  acquired: number;
+  /** Requests refused by trAIce. */
+  refused: number;
+  /** Requests refused locally while waiting out an earlier refusal's retry time. */
+  refusedLocally: number;
+  /** Requests a rule in target verification would have refused. */
+  shadowLimited: number;
+  /** Requests let through because trAIce did not answer in time or failed. */
+  failOpen: number;
+  /** Token usage reports sent after calls. */
+  usageReports: number;
+}
+
+type RateLimitSettings = { version: "rate-limit-v1"; timeoutMs: number };
 
 export interface ExactCacheStats {
   hits: number;
@@ -408,6 +439,20 @@ export class CloudAdapter implements CostAdapter {
   private sharedCacheLookupFailures = 0;
   private sharedCacheStores = 0;
   private sharedSemanticCache: SharedSemanticCacheSettings | null = null;
+  private rateLimit: RateLimitSettings | null = null;
+  /** Local refusals after trAIce refused a request, keyed by rule and counter, until the retry time. */
+  private readonly rateLimitBlockedUntil = new Map<
+    string,
+    { until: number; ruleName: string; reason: Record<string, unknown> }
+  >();
+  private rateLimitStats: RateLimitStats = {
+    acquired: 0,
+    refused: 0,
+    refusedLocally: 0,
+    shadowLimited: 0,
+    failOpen: 0,
+    usageReports: 0,
+  };
   /** Set by a 403 or 409 from the shared semantic cache; cleared by the next rules poll. */
   private sharedSemanticCacheSuspended = false;
   private sharedSemanticCacheHits = 0;
@@ -641,6 +686,183 @@ export class CloudAdapter implements CostAdapter {
     request: R,
     providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
     context: RequestEnforcementContext = {},
+  ): Promise<T> {
+    if (context.bypass || !this.enforcementEnabled || !this.rulesAreFresh()) {
+      return this.enforceRules(request, providerCall, context);
+    }
+    // Rate limits (protocol v3) are counted by trAIce before any other rule runs.
+    let limits: RateLimitMatch[] = [];
+    try {
+      limits = this.rateLimit
+        ? matchRateLimitRules(
+            { model: request.model, feature: context.feature, retryCount: context.retryCount },
+            this.rules,
+          )
+        : [];
+    } catch {
+      limits = [];
+    }
+    if (limits.length > 0) await this.acquireRateLimits(limits, request.model, context);
+    const response = await this.enforceRules(request, providerCall, context);
+    if (limits.some((limit) => limit.tokensPerMinute != null)) {
+      this.reportRateLimitUsage(limits, response, request.model, context);
+    }
+    return response;
+  }
+
+  /** Process-local counts for rate-limit rules. */
+  getRateLimitStats(): RateLimitStats {
+    return { ...this.rateLimitStats };
+  }
+
+  /**
+   * Refuses the request if an active rate-limit rule is over its limit, as
+   * trAIce counts it across instances. Refuses locally, without asking, while
+   * an earlier refusal's retry time runs. Lets the request through when trAIce
+   * does not answer in time or fails.
+   */
+  private async acquireRateLimits(
+    limits: RateLimitMatch[],
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): Promise<void> {
+    const now = Date.now();
+    for (const limit of limits) {
+      if (limit.mode !== "active") continue;
+      const key = this.rateLimitKey(limit, context);
+      const blocked = this.rateLimitBlockedUntil.get(key);
+      if (!blocked) continue;
+      if (blocked.until <= now) {
+        this.rateLimitBlockedUntil.delete(key);
+        continue;
+      }
+      this.rateLimitStats.refusedLocally++;
+      throw new TraiceEnforcementError(
+        "RATE_LIMIT",
+        limit.ruleId,
+        blocked.ruleName,
+        requestedModel,
+        blocked.reason,
+        blocked.until - now,
+      );
+    }
+
+    const settings = this.rateLimit;
+    if (!settings) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), settings.timeoutMs);
+    let result: {
+      allowed?: unknown;
+      ruleId?: unknown;
+      ruleName?: unknown;
+      limit?: unknown;
+      value?: unknown;
+      retryAfterMs?: unknown;
+      shadowLimited?: unknown;
+    };
+    try {
+      const response = await fetch(this.siblingEndpoint("rate-limits/acquire"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({
+          ruleIds: limits.map((limit) => limit.ruleId),
+          ...(context.userId ? { userId: context.userId } : {}),
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        this.rateLimitStats.failOpen++;
+        this.enforcementStats.failOpenRequests++;
+        return;
+      }
+      result = (await response.json()) as typeof result;
+    } catch (error) {
+      this.rateLimitStats.failOpen++;
+      this.enforcementStats.failOpenRequests++;
+      this.reportEnforcementFailure(asError(error), { operation: "rate_limit_acquire" });
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    this.rateLimitStats.acquired++;
+    if (Array.isArray(result.shadowLimited)) this.rateLimitStats.shadowLimited += result.shadowLimited.length;
+    if (result.allowed !== false) return;
+    const refused = limits.find((limit) => limit.ruleId === result.ruleId);
+    if (!refused) return;
+    const retryAfterMs =
+      typeof result.retryAfterMs === "number" && Number.isFinite(result.retryAfterMs)
+        ? Math.min(Math.max(result.retryAfterMs, 0), 120_000)
+        : 1_000;
+    const ruleName = typeof result.ruleName === "string" ? result.ruleName : refused.ruleName;
+    const reason = {
+      type: "rate_limit",
+      limit: result.limit === "tokens" ? "tokens" : "requests",
+      ...(typeof result.value === "number" ? { value: result.value } : {}),
+      per: refused.per,
+    };
+    this.rateLimitBlockedUntil.set(this.rateLimitKey(refused, context), {
+      until: Date.now() + retryAfterMs,
+      ruleName,
+      reason,
+    });
+    this.rateLimitStats.refused++;
+    throw new TraiceEnforcementError("RATE_LIMIT", refused.ruleId, ruleName, requestedModel, reason, retryAfterMs);
+  }
+
+  /** Reports a finished call's tokens for rules that limit tokens per minute, in the background. */
+  private reportRateLimitUsage(
+    limits: RateLimitMatch[],
+    response: unknown,
+    model: string,
+    context: RequestEnforcementContext,
+  ): void {
+    let tokens = 0;
+    try {
+      const basis = responseCostBasis(response, context.provider, model);
+      tokens = basis.inputTokens + basis.outputTokens + basis.cacheReadTokens + basis.cacheWriteTokens;
+    } catch {
+      return;
+    }
+    if (!Number.isFinite(tokens) || tokens <= 0) return;
+    const ruleIds = limits.filter((limit) => limit.tokensPerMinute != null).map((limit) => limit.ruleId);
+    this.trackDecision(
+      fetch(this.siblingEndpoint("rate-limits/usage"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({
+          ruleIds,
+          ...(context.userId ? { userId: context.userId } : {}),
+          tokens: Math.min(Math.round(tokens), 10_000_000),
+        }),
+      })
+        .then(() => {
+          this.rateLimitStats.usageReports++;
+        })
+        .catch((error: unknown) => {
+          this.reportEnforcementFailure(asError(error), { operation: "rate_limit_usage" });
+        }),
+    );
+  }
+
+  /** The counter a request shares for a rule, as trAIce keys it for this API key. */
+  private rateLimitKey(limit: RateLimitMatch, context: RequestEnforcementContext): string {
+    if (limit.per === "user") return `${limit.ruleId}|user:${context.userId ?? ""}`;
+    return `${limit.ruleId}|${limit.per}`;
+  }
+
+  private async enforceRules<T, R extends ExactCacheRequest>(
+    request: R,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    context: RequestEnforcementContext,
   ): Promise<T> {
     if (context.bypass || !this.enforcementEnabled) return providerCall(request);
     if (!this.rulesAreFresh()) {
@@ -888,7 +1110,7 @@ export class CloudAdapter implements CostAdapter {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           "X-Source": "traice-sdk",
-          "X-Traice-Enforcement-Version": "2",
+          "X-Traice-Enforcement-Version": "3",
         },
         signal: controller.signal,
       });
@@ -907,12 +1129,14 @@ export class CloudAdapter implements CostAdapter {
         ttlSeconds?: unknown;
         sharedCache?: unknown;
         sharedSemanticCache?: unknown;
+        rateLimit?: unknown;
       };
       this.enforcementEnabled = json.enabled !== false;
       this.sharedCache = parseSharedCacheSettings(json.sharedCache);
       this.sharedCacheSuspended = false;
       this.sharedSemanticCache = parseSharedSemanticCacheSettings(json.sharedSemanticCache);
       this.sharedSemanticCacheSuspended = false;
+      this.rateLimit = parseRateLimitSettings(json.rateLimit);
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
       this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
       this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
@@ -2169,7 +2393,9 @@ export class CloudAdapter implements CostAdapter {
       | "cache/lookup"
       | "cache/store"
       | "cache/semantic/lookup"
-      | "cache/semantic/store",
+      | "cache/semantic/store"
+      | "rate-limits/acquire"
+      | "rate-limits/usage",
   ): string {
     const url = new URL(this.endpoint);
     url.pathname = url.pathname.replace(/\/events\/?$/, `/${resource}`);
@@ -2340,6 +2566,15 @@ function parseSharedSemanticCacheSettings(value: unknown): SharedSemanticCacheSe
         ? Math.min(8_192, Math.round(maxDimensions))
         : SHARED_SEMANTIC_CACHE_DEFAULT_MAX_DIMENSIONS,
   };
+}
+
+function parseRateLimitSettings(value: unknown): RateLimitSettings | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  const settings = value as { version?: unknown; timeoutMs?: unknown };
+  if (settings.version !== "rate-limit-v1") return null;
+  const timeoutMs =
+    typeof settings.timeoutMs === "number" && Number.isFinite(settings.timeoutMs) ? settings.timeoutMs : 150;
+  return { version: "rate-limit-v1", timeoutMs: Math.min(Math.max(timeoutMs, 25), 1_000) };
 }
 
 function isCacheRule(value: unknown): value is EnforcementRule {

@@ -1,5 +1,13 @@
 export type RuleAction =
-  "SWAP" | "DOWNGRADE" | "CACHE_EXACT" | "CACHE_SEMANTIC" | "DENY" | "CAP_RETRIES" | "FALLBACK" | "ROUTE";
+  | "SWAP"
+  | "DOWNGRADE"
+  | "CACHE_EXACT"
+  | "CACHE_SEMANTIC"
+  | "DENY"
+  | "CAP_RETRIES"
+  | "FALLBACK"
+  | "ROUTE"
+  | "RATE_LIMIT";
 
 export type RuleState = "DRAFT" | "SHADOW" | "ACTIVE" | "DISABLED";
 export type BudgetScope = "workspace" | "feature" | "user";
@@ -122,6 +130,9 @@ export function decide(
     .sort((a, b) => a.priority - b.priority);
 
   for (const rule of ordered) {
+    // Rate limits are counted by trAIce (matchRateLimitRules) and never stop
+    // evaluation, so a limit under its ceiling cannot hide a later rule.
+    if (rule.action === "RATE_LIMIT") continue;
     const match = matchCondition(rule.condition, request, context);
     if (!match) continue;
 
@@ -193,6 +204,57 @@ export function decide(
   }
 
   return PASS_THROUGH;
+}
+
+/** Who shares one rate-limit counter: the whole workspace, each API key, or each end user. */
+export type RateLimitPer = "workspace" | "api_key" | "user";
+const RATE_LIMIT_PER: readonly RateLimitPer[] = ["workspace", "api_key", "user"];
+
+export interface RateLimitMatch {
+  ruleId: string;
+  ruleName: string;
+  mode: "active" | "shadow";
+  requestsPerMinute: number | null;
+  tokensPerMinute: number | null;
+  per: RateLimitPer;
+}
+
+/**
+ * Rate-limit rules that apply to a request, by ascending priority. Every
+ * matching rule is returned: trAIce counts the request against each one, so a
+ * limit holds across instances, and only an active rule over its limit
+ * refuses it. Only `always`, `model` and `feature` conditions apply; a rule
+ * without a valid limit or with an unknown `per` is ignored.
+ */
+export function matchRateLimitRules(req: EnforcementRequest, rules: EnforcementRule[]): RateLimitMatch[] {
+  return rules
+    .filter((rule) => rule.action === "RATE_LIMIT" && (rule.state === "ACTIVE" || rule.state === "SHADOW"))
+    .sort((a, b) => a.priority - b.priority)
+    .flatMap((rule): RateLimitMatch[] => {
+      const type = rule.condition?.type;
+      if (type !== "always" && type !== "model" && type !== "feature") return [];
+      if (!matchCondition(rule.condition, req, {})) return [];
+      const requestsPerMinute = positiveInteger(rule.actionParams.requestsPerMinute);
+      const tokensPerMinute = positiveInteger(rule.actionParams.tokensPerMinute);
+      if (requestsPerMinute == null && tokensPerMinute == null) return [];
+      const per = rule.actionParams.per ?? "workspace";
+      if (!RATE_LIMIT_PER.includes(per as RateLimitPer)) return [];
+      return [
+        {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          mode: rule.state === "ACTIVE" ? "active" : "shadow",
+          requestsPerMinute,
+          tokensPerMinute,
+          per: per as RateLimitPer,
+        },
+      ];
+    });
+}
+
+function positiveInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
+  return value;
 }
 
 function nonNegativeInteger(value: unknown): number | null {

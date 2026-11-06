@@ -1,0 +1,364 @@
+{
+  "protocolVersion": 3,
+  "cases": [
+    {
+      "name": "a rate limit never stops a later rule from deciding",
+      "request": {
+        "model": "gpt-4o",
+        "feature": "chat"
+      },
+      "rules": [
+        {
+          "id": "limit",
+          "name": "limit",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 600,
+            "per": "api_key"
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "cache",
+          "name": "cache",
+          "state": "ACTIVE",
+          "priority": 10,
+          "condition": {
+            "type": "always"
+          },
+          "action": "CACHE_EXACT",
+          "actionParams": {
+            "cacheTtlSec": 300
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedLimits": [
+        {
+          "ruleId": "limit",
+          "ruleName": "limit",
+          "mode": "active",
+          "requestsPerMinute": 600,
+          "tokensPerMinute": null,
+          "per": "api_key"
+        }
+      ],
+      "expectedDecision": {
+        "matched": true,
+        "ruleId": "cache",
+        "action": "CACHE_EXACT"
+      }
+    },
+    {
+      "name": "only rate limits match: decide passes through",
+      "request": {
+        "model": "gpt-4o"
+      },
+      "rules": [
+        {
+          "id": "limit",
+          "name": "limit",
+          "state": "ACTIVE",
+          "priority": 5,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "tokensPerMinute": 200000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedLimits": [
+        {
+          "ruleId": "limit",
+          "ruleName": "limit",
+          "mode": "active",
+          "requestsPerMinute": null,
+          "tokensPerMinute": 200000,
+          "per": "workspace"
+        }
+      ],
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH"
+      }
+    },
+    {
+      "name": "every matching active and shadow limit, by priority; drafts and disabled rules ignored",
+      "request": {
+        "model": "gpt-4o",
+        "feature": "chat"
+      },
+      "rules": [
+        {
+          "id": "later",
+          "name": "later",
+          "state": "SHADOW",
+          "priority": 20,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 100
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "draft",
+          "name": "draft",
+          "state": "DRAFT",
+          "priority": 1,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 1
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "off",
+          "name": "off",
+          "state": "DISABLED",
+          "priority": 2,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 1
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "first",
+          "name": "first",
+          "state": "ACTIVE",
+          "priority": 10,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 50,
+            "tokensPerMinute": 9000,
+            "per": "user"
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedLimits": [
+        {
+          "ruleId": "first",
+          "ruleName": "first",
+          "mode": "active",
+          "requestsPerMinute": 50,
+          "tokensPerMinute": 9000,
+          "per": "user"
+        },
+        {
+          "ruleId": "later",
+          "ruleName": "later",
+          "mode": "shadow",
+          "requestsPerMinute": 100,
+          "tokensPerMinute": null,
+          "per": "workspace"
+        }
+      ],
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH"
+      }
+    },
+    {
+      "name": "feature and model conditions",
+      "request": {
+        "model": "gpt-4o-mini",
+        "feature": "summaries"
+      },
+      "rules": [
+        {
+          "id": "summaries",
+          "name": "summaries",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": {
+            "type": "feature",
+            "equals": "summaries"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 10
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "chat",
+          "name": "chat",
+          "state": "ACTIVE",
+          "priority": 2,
+          "condition": {
+            "type": "feature",
+            "equals": "chat"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 10
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "mini",
+          "name": "mini",
+          "state": "ACTIVE",
+          "priority": 3,
+          "condition": {
+            "type": "model",
+            "equals": "gpt-4o-mini"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 10
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "full",
+          "name": "full",
+          "state": "ACTIVE",
+          "priority": 4,
+          "condition": {
+            "type": "model",
+            "equals": "gpt-4o"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 10
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedLimits": [
+        {
+          "ruleId": "summaries",
+          "ruleName": "summaries",
+          "mode": "active",
+          "requestsPerMinute": 10,
+          "tokensPerMinute": null,
+          "per": "workspace"
+        },
+        {
+          "ruleId": "mini",
+          "ruleName": "mini",
+          "mode": "active",
+          "requestsPerMinute": 10,
+          "tokensPerMinute": null,
+          "per": "workspace"
+        }
+      ],
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH"
+      }
+    },
+    {
+      "name": "budget and retry conditions, missing limits and unknown scopes are ignored",
+      "request": {
+        "model": "gpt-4o",
+        "retryCount": 5
+      },
+      "rules": [
+        {
+          "id": "budget",
+          "name": "budget",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": {
+            "type": "budget",
+            "scope": "workspace",
+            "thresholdPct": 0
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 10
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "retry",
+          "name": "retry",
+          "state": "ACTIVE",
+          "priority": 2,
+          "condition": {
+            "type": "retry",
+            "gte": 1
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 10
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "nolimit",
+          "name": "nolimit",
+          "state": "ACTIVE",
+          "priority": 3,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 0,
+            "tokensPerMinute": 2.5
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "team",
+          "name": "team",
+          "state": "ACTIVE",
+          "priority": 4,
+          "condition": {
+            "type": "always"
+          },
+          "action": "RATE_LIMIT",
+          "actionParams": {
+            "requestsPerMinute": 10,
+            "per": "team"
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedLimits": [],
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH"
+      }
+    }
+  ]
+}
