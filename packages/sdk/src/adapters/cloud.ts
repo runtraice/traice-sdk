@@ -4,10 +4,13 @@ import {
   assignRollout,
   decide,
   matchRateLimitRules,
+  matchStrictCaps,
   type EnforcementRollout,
   type EnforcementRule,
   type RateLimitMatch,
   type RolloutAssignment,
+  type StrictCapEntry,
+  type StrictCapMatch,
 } from "../enforcement";
 import * as crypto from "crypto";
 import { DurableCloudOutbox, type DurableQueuedCostEvent } from "./cloud-outbox";
@@ -114,7 +117,8 @@ export type EnforcementErrorContext = {
     | "shared_semantic_cache_lookup"
     | "shared_semantic_cache_store"
     | "rate_limit_acquire"
-    | "rate_limit_usage";
+    | "rate_limit_usage"
+    | "strict_cap_check";
   status?: number;
 };
 
@@ -176,13 +180,15 @@ export class TraiceEnforcementError extends Error {
     readonly reason: Record<string, unknown>,
     /** Rate-limit refusals only: how long until a request can fit again. */
     readonly retryAfterMs?: number,
+    message?: string,
   ) {
     super(
-      action === "DENY"
-        ? `Request denied by trAIce rule: ${ruleName}`
-        : action === "RATE_LIMIT"
-          ? `Rate limit reached: ${ruleName}`
-          : `Retry cap reached: ${ruleName}`,
+      message ??
+        (action === "DENY"
+          ? `Request denied by trAIce rule: ${ruleName}`
+          : action === "RATE_LIMIT"
+            ? `Rate limit reached: ${ruleName}`
+            : `Retry cap reached: ${ruleName}`),
     );
     this.name = "TraiceEnforcementError";
   }
@@ -218,6 +224,34 @@ export interface RateLimitStats {
 }
 
 type RateLimitSettings = { version: "rate-limit-v1"; timeoutMs: number };
+
+/** Process-local counts for strict budget caps (enforcement protocol v4). */
+export interface StrictCapStats {
+  /** Calls trAIce checked against at least one strict cap. */
+  checked: number;
+  /** Calls trAIce refused because their estimated cost would pass an active strict cap. */
+  refused: number;
+  /** Checks trAIce did not answer in time, failed, or answered with an error. */
+  unavailable: number;
+  /** Calls blocked while trAIce was unavailable, because a matching active cap says `onUnavailable: "block"`. */
+  blockedUnavailable: number;
+  /** Strict caps in preview that would have refused a call. */
+  shadowRefused: number;
+}
+
+type StrictCapSettings = { version: "strict-cap-v1"; timeoutMs: number; caps: StrictCapEntry[] };
+
+/** `POST /api/v1/budget-caps/acquire` answers every check with 200 and `allowed`. */
+type StrictCapCheckResult = { allowed: boolean; reservationIds?: unknown; refused?: unknown; shadowRefused?: unknown };
+
+/** Reservation ids of calls trAIce let through under a strict cap, until the call's event is written. */
+type PendingCapReservation = { keys: string[]; ids: string[]; at: number };
+
+const STRICT_CAP_DEFAULT_TIMEOUT_MS = 300;
+/** trAIce expires a reservation after 10 minutes, so older ids are not sent back. */
+const STRICT_CAP_RESERVATION_MAX_AGE_MS = 10 * 60 * 1000;
+const STRICT_CAP_MAX_PENDING_RESERVATIONS = 1_000;
+const STRICT_CAP_MAX_RESERVATIONS_PER_EVENT = 10;
 
 export interface ExactCacheStats {
   hits: number;
@@ -333,6 +367,8 @@ export interface CloudCostEvent {
   latencyMs?: number;
   status?: CostEvent["status"];
   metadata: CloudEventMetadata;
+  /** Strict caps: reservation ids trAIce returned when it let this call through. */
+  capReservationIds?: string[];
 }
 
 export type CloudEventMetadata = EventMetadata & {
@@ -453,6 +489,16 @@ export class CloudAdapter implements CostAdapter {
     failOpen: 0,
     usageReports: 0,
   };
+  private strictCaps: StrictCapSettings | null = null;
+  /** Oldest first, so an event takes the reservation of the earliest call that matches it. */
+  private pendingCapReservations: PendingCapReservation[] = [];
+  private strictCapStats: StrictCapStats = {
+    checked: 0,
+    refused: 0,
+    unavailable: 0,
+    blockedUnavailable: 0,
+    shadowRefused: 0,
+  };
   /** Set by a 403 or 409 from the shared semantic cache; cleared by the next rules poll. */
   private sharedSemanticCacheSuspended = false;
   private sharedSemanticCacheHits = 0;
@@ -526,9 +572,14 @@ export class CloudAdapter implements CostAdapter {
 
   async write(event: CostEvent): Promise<void> {
     const promptHash = event.prompt ? promptFingerprint(event.prompt, this.apiKey) : event.promptHash;
+    // Strict caps: the event of a call trAIce let through settles that call's reservations.
+    const capReservationIds =
+      event.capReservationIds ??
+      (event.status === "error" ? undefined : this.takeCapReservations(event.model, event.feature));
+    const reservations = capReservationIds ? { capReservationIds } : {};
     const queuedEvent = this.captureContent
-      ? { ...event, promptHash }
-      : { ...event, promptHash, prompt: undefined, output: undefined, request: undefined };
+      ? { ...event, ...reservations, promptHash }
+      : { ...event, ...reservations, promptHash, prompt: undefined, output: undefined, request: undefined };
     const queued = { event: queuedEvent, enqueuedAt: Date.now() };
     let queueOverflowed = false;
     if (this.buffer.length >= this.maxQueueSize) {
@@ -703,7 +754,18 @@ export class CloudAdapter implements CostAdapter {
       limits = [];
     }
     if (limits.length > 0) await this.acquireRateLimits(limits, request.model, context);
-    const response = await this.enforceRules(request, providerCall, context);
+    // Strict caps (protocol v4) are checked by trAIce right before each call that reaches the provider.
+    let strictCaps: StrictCapMatch[] = [];
+    try {
+      strictCaps = this.strictCaps
+        ? matchStrictCaps({ feature: context.feature, userId: context.userId }, this.strictCaps.caps)
+        : [];
+    } catch {
+      strictCaps = [];
+    }
+    const call =
+      strictCaps.length > 0 ? this.withStrictCaps(providerCall, strictCaps, request.model, context) : providerCall;
+    const response = await this.enforceRules(request, call, context);
     if (limits.some((limit) => limit.tokensPerMinute != null)) {
       this.reportRateLimitUsage(limits, response, request.model, context);
     }
@@ -713,6 +775,186 @@ export class CloudAdapter implements CostAdapter {
   /** Process-local counts for rate-limit rules. */
   getRateLimitStats(): RateLimitStats {
     return { ...this.rateLimitStats };
+  }
+
+  /** Process-local counts for strict budget caps. */
+  getStrictCapStats(): StrictCapStats {
+    return { ...this.strictCapStats };
+  }
+
+  /**
+   * Wraps the provider call so that trAIce checks the matching strict caps
+   * immediately before each call that reaches the provider. Cache hits never
+   * reach it, so they make no check. The reservation ids of an allowed call
+   * are kept for its event once the provider call succeeds.
+   */
+  private withStrictCaps<T, R extends ExactCacheRequest>(
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    caps: StrictCapMatch[],
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T> {
+    return async (effectiveRequest, options) => {
+      const reservationIds = await this.checkStrictCaps(caps, effectiveRequest, requestedModel, context);
+      // A fallback deadline that passed during the check: the call was already abandoned.
+      options?.signal?.throwIfAborted();
+      const response =
+        options === undefined ? await providerCall(effectiveRequest) : await providerCall(effectiveRequest, options);
+      if (reservationIds.length > 0) {
+        this.rememberCapReservations(reservationIds, effectiveRequest.model, response, context.feature);
+      }
+      return response;
+    };
+  }
+
+  /**
+   * Asks trAIce whether a call fits the strict caps it matches, waiting at most
+   * the advertised timeout. Returns the reservation ids of an allowed call.
+   * Throws a DENY TraiceEnforcementError when trAIce refuses the call, or when
+   * trAIce does not answer and a matching active cap blocks calls while trAIce
+   * is unavailable; otherwise lets the call through.
+   */
+  private async checkStrictCaps(
+    caps: StrictCapMatch[],
+    request: ExactCacheRequest,
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): Promise<string[]> {
+    const settings = this.strictCaps;
+    if (!settings) return [];
+    const inputTokens = estimateInputTokens(request);
+    const maxOutputTokens = requestMaxOutputTokens(request);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), settings.timeoutMs);
+    let result: StrictCapCheckResult | null = null;
+    try {
+      const response = await fetch(this.siblingEndpoint("budget-caps/acquire"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({
+          ruleIds: caps.map((cap) => cap.ruleId),
+          ...(context.feature ? { feature: context.feature } : {}),
+          ...(context.userId ? { userId: context.userId } : {}),
+          ...(request.model ? { model: request.model } : {}),
+          ...(context.provider ? { provider: context.provider } : {}),
+          ...(inputTokens != null ? { inputTokens } : {}),
+          ...(maxOutputTokens != null ? { maxOutputTokens } : {}),
+        }),
+        signal: controller.signal,
+      });
+      // trAIce answers every check with 200; anything else is its own error.
+      if (response.status !== 200) {
+        throw Object.assign(new Error(`Strict cap check failed with HTTP ${response.status}`), {
+          status: response.status,
+        });
+      }
+      const body = (await response.json()) as { allowed?: unknown } | null;
+      if (body == null || typeof body !== "object" || typeof body.allowed !== "boolean") {
+        throw new Error("Strict cap check returned an unexpected response");
+      }
+      result = body as StrictCapCheckResult;
+    } catch (error) {
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "strict_cap_check",
+        ...(status == null ? {} : { status }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!result) return this.strictCapsUnavailable(caps, requestedModel, context);
+
+    this.strictCapStats.checked++;
+    if (Array.isArray(result.shadowRefused)) this.strictCapStats.shadowRefused += result.shadowRefused.length;
+    if (result.allowed) {
+      return Array.isArray(result.reservationIds)
+        ? result.reservationIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [];
+    }
+
+    const refused = (result.refused ?? {}) as Record<string, unknown>;
+    const cap = caps.find((candidate) => candidate.ruleId === refused.ruleId);
+    if (!cap) return [];
+    const ruleName = typeof refused.ruleName === "string" ? refused.ruleName : this.ruleNameFor(cap.ruleId);
+    const reason: Record<string, unknown> = { type: "budget_cap", strictCap: true };
+    for (const field of ["budgetId", "budgetName"] as const) {
+      if (typeof refused[field] === "string") reason[field] = refused[field];
+    }
+    for (const field of ["limitUsd", "spentUsd", "reservedUsd", "estimateUsd"] as const) {
+      const value = refused[field];
+      if (typeof value === "number" && Number.isFinite(value)) reason[field] = value;
+    }
+    this.strictCapStats.refused++;
+    this.trackDecision(this.postBlockingDecision(cap.ruleId, requestedModel, "DENY", context.retryCount, reason));
+    throw new TraiceEnforcementError("DENY", cap.ruleId, ruleName, requestedModel, reason);
+  }
+
+  /**
+   * trAIce could not check the call: block it if a matching active cap says
+   * `onUnavailable: "block"`, otherwise let it through. Caps in preview never block.
+   */
+  private strictCapsUnavailable(
+    caps: StrictCapMatch[],
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): string[] {
+    this.strictCapStats.unavailable++;
+    const blocking = caps.find((cap) => cap.mode === "active" && cap.onUnavailable === "block");
+    if (!blocking) {
+      this.enforcementStats.failOpenRequests++;
+      return [];
+    }
+    this.strictCapStats.blockedUnavailable++;
+    const ruleName = this.ruleNameFor(blocking.ruleId);
+    const reason = { type: "budget_cap", strictCap: true, unavailable: true };
+    this.trackDecision(this.postBlockingDecision(blocking.ruleId, requestedModel, "DENY", context.retryCount, reason));
+    throw new TraiceEnforcementError(
+      "DENY",
+      blocking.ruleId,
+      ruleName,
+      requestedModel,
+      reason,
+      undefined,
+      `Request blocked: trAIce could not confirm the budget for ${ruleName}, and this strict cap blocks calls when trAIce is unavailable`,
+    );
+  }
+
+  private ruleNameFor(ruleId: string): string {
+    return this.rules.find((rule) => rule.id === ruleId)?.name ?? ruleId;
+  }
+
+  /** Keeps an allowed call's reservation ids until its event is written, by model and feature. */
+  private rememberCapReservations(ids: string[], model: string, response: unknown, feature?: string): void {
+    const keys = [capReservationKey(model, feature)];
+    // The event names the model the provider reports, which can differ from the requested one.
+    const reported = (response as { model?: unknown } | null | undefined)?.model;
+    if (typeof reported === "string" && reported !== model) keys.push(capReservationKey(reported, feature));
+    this.dropExpiredCapReservations();
+    this.pendingCapReservations.push({ keys, ids, at: Date.now() });
+    if (this.pendingCapReservations.length > STRICT_CAP_MAX_PENDING_RESERVATIONS) this.pendingCapReservations.shift();
+  }
+
+  /** The oldest pending reservation ids for an event's model and feature, removed from the queue. */
+  private takeCapReservations(model: string, feature?: string): string[] | undefined {
+    if (this.pendingCapReservations.length === 0) return undefined;
+    this.dropExpiredCapReservations();
+    const key = capReservationKey(model, feature);
+    const index = this.pendingCapReservations.findIndex((entry) => entry.keys.includes(key));
+    if (index < 0) return undefined;
+    const [entry] = this.pendingCapReservations.splice(index, 1);
+    return entry.ids.slice(0, STRICT_CAP_MAX_RESERVATIONS_PER_EVENT);
+  }
+
+  private dropExpiredCapReservations(): void {
+    const cutoff = Date.now() - STRICT_CAP_RESERVATION_MAX_AGE_MS;
+    while (this.pendingCapReservations.length > 0 && this.pendingCapReservations[0].at <= cutoff) {
+      this.pendingCapReservations.shift();
+    }
   }
 
   /**
@@ -922,7 +1164,7 @@ export class CloudAdapter implements CostAdapter {
 
     if (decision.action === "DENY" || decision.action === "CAP_RETRIES") {
       this.trackDecision(
-        this.postBlockingDecision(rule, request.model, decision.action, context.retryCount, decision.reason),
+        this.postBlockingDecision(rule.id, request.model, decision.action, context.retryCount, decision.reason),
       );
       throw new TraiceEnforcementError(
         decision.action,
@@ -1110,7 +1352,7 @@ export class CloudAdapter implements CostAdapter {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           "X-Source": "traice-sdk",
-          "X-Traice-Enforcement-Version": "3",
+          "X-Traice-Enforcement-Version": "4",
         },
         signal: controller.signal,
       });
@@ -1130,6 +1372,7 @@ export class CloudAdapter implements CostAdapter {
         sharedCache?: unknown;
         sharedSemanticCache?: unknown;
         rateLimit?: unknown;
+        strictCaps?: unknown;
       };
       this.enforcementEnabled = json.enabled !== false;
       this.sharedCache = parseSharedCacheSettings(json.sharedCache);
@@ -1137,6 +1380,7 @@ export class CloudAdapter implements CostAdapter {
       this.sharedSemanticCache = parseSharedSemanticCacheSettings(json.sharedSemanticCache);
       this.sharedSemanticCacheSuspended = false;
       this.rateLimit = parseRateLimitSettings(json.rateLimit);
+      this.strictCaps = parseStrictCapSettings(json.strictCaps);
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
       this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
       this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
@@ -1744,6 +1988,8 @@ export class CloudAdapter implements CostAdapter {
       try {
         return await callWithDeadline(providerCall, request, policy.timeoutMs);
       } catch (error) {
+        // A refusal by trAIce (a strict cap) is not a provider failure: never retried or sent to the fallback.
+        if (error instanceof TraiceEnforcementError) throw error;
         primaryError = error;
         failure = fallbackFailure(error);
         if (!policy.retryOn.has("error") && !policy.retryOn.has(failure)) throw error;
@@ -1880,7 +2126,8 @@ export class CloudAdapter implements CostAdapter {
       return response;
     } catch (candidateError) {
       const candidateLatencyMs = Date.now() - candidateStartedAt;
-      if (!rollout.sourceFallbackEnabled) {
+      // A refusal by trAIce (a strict cap) is not a provider failure, so it makes no source fallback call.
+      if (!rollout.sourceFallbackEnabled || candidateError instanceof TraiceEnforcementError) {
         this.trackRolloutDecision(
           rule,
           action,
@@ -2166,14 +2413,14 @@ export class CloudAdapter implements CostAdapter {
   }
 
   private postBlockingDecision(
-    rule: EnforcementRule,
+    ruleId: string,
     requestedModel: string,
     action: BlockingRuleAction,
     retryCount: number | undefined,
     reason: Record<string, unknown>,
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
-      ruleId: rule.id,
+      ruleId,
       action,
       requestedModel,
       retryCount: retryCount ?? 0,
@@ -2395,7 +2642,8 @@ export class CloudAdapter implements CostAdapter {
       | "cache/semantic/lookup"
       | "cache/semantic/store"
       | "rate-limits/acquire"
-      | "rate-limits/usage",
+      | "rate-limits/usage"
+      | "budget-caps/acquire",
   ): string {
     const url = new URL(this.endpoint);
     url.pathname = url.pathname.replace(/\/events\/?$/, `/${resource}`);
@@ -2575,6 +2823,84 @@ function parseRateLimitSettings(value: unknown): RateLimitSettings | null {
   const timeoutMs =
     typeof settings.timeoutMs === "number" && Number.isFinite(settings.timeoutMs) ? settings.timeoutMs : 150;
   return { version: "rate-limit-v1", timeoutMs: Math.min(Math.max(timeoutMs, 25), 1_000) };
+}
+
+function parseStrictCapSettings(value: unknown): StrictCapSettings | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  const settings = value as { version?: unknown; timeoutMs?: unknown; caps?: unknown };
+  if (settings.version !== "strict-cap-v1" || !Array.isArray(settings.caps)) return null;
+  const timeoutMs =
+    typeof settings.timeoutMs === "number" && Number.isFinite(settings.timeoutMs)
+      ? settings.timeoutMs
+      : STRICT_CAP_DEFAULT_TIMEOUT_MS;
+  return {
+    version: "strict-cap-v1",
+    timeoutMs: Math.min(Math.max(timeoutMs, 25), 2_000),
+    caps: settings.caps.filter(isStrictCapEntry),
+  };
+}
+
+function isStrictCapEntry(value: unknown): value is StrictCapEntry {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as Partial<Record<keyof StrictCapEntry, unknown>>;
+  return (
+    typeof entry.ruleId === "string" &&
+    entry.ruleId.length > 0 &&
+    (entry.mode === "active" || entry.mode === "shadow") &&
+    typeof entry.scope === "string" &&
+    (entry.value === null || typeof entry.value === "string") &&
+    (entry.onUnavailable === "allow" || entry.onUnavailable === "block")
+  );
+}
+
+function capReservationKey(model: string, feature?: string): string {
+  return `${model}|${feature ?? ""}`;
+}
+
+const PROMPT_TEXT_FIELDS = ["messages", "system", "prompt", "input", "instructions", "contents"] as const;
+
+/**
+ * A rough input token count for a strict cap estimate: the characters of the
+ * request's message and prompt text divided by 4, rounded up. Undefined when
+ * the request has no text the SDK recognizes.
+ */
+function estimateInputTokens(request: ExactCacheRequest): number | undefined {
+  let characters = 0;
+  const visit = (value: unknown, depth: number): void => {
+    if (value == null || depth > 8) return;
+    if (typeof value === "string") {
+      characters += value.length;
+    } else if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+    } else if (typeof value === "object") {
+      const part = value as { text?: unknown; content?: unknown; parts?: unknown };
+      visit(part.text, depth + 1);
+      visit(part.content, depth + 1);
+      visit(part.parts, depth + 1);
+    }
+  };
+  try {
+    for (const field of PROMPT_TEXT_FIELDS) visit(request[field], 0);
+  } catch {
+    return undefined;
+  }
+  return characters > 0 ? Math.min(Math.ceil(characters / 4), 10_000_000) : undefined;
+}
+
+/** The request's output token limit, when it sets a positive one. */
+function requestMaxOutputTokens(request: ExactCacheRequest): number | undefined {
+  const inferenceConfig = request.inferenceConfig as { maxTokens?: unknown } | null | undefined;
+  const candidates = [
+    request.max_tokens,
+    request.max_completion_tokens,
+    request.maxTokens,
+    request.max_output_tokens,
+    inferenceConfig?.maxTokens,
+  ];
+  const limit = candidates.find(
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
+  );
+  return limit == null ? undefined : Math.min(Math.floor(limit), 10_000_000) || undefined;
 }
 
 function isCacheRule(value: unknown): value is EnforcementRule {
@@ -2995,6 +3321,9 @@ export function toCloudEvent(
     latencyMs: event.latencyMs,
     status: event.status,
     metadata: toCloudMetadata(event),
+    capReservationIds: event.capReservationIds?.length
+      ? event.capReservationIds.slice(0, STRICT_CAP_MAX_RESERVATIONS_PER_EVENT)
+      : undefined,
   });
 }
 

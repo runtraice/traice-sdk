@@ -252,6 +252,57 @@ export function matchRateLimitRules(req: EnforcementRequest, rules: EnforcementR
     });
 }
 
+/**
+ * Strict budget caps (enforcement protocol v4). `GET /api/v1/rules` lists the
+ * strictly capped budget scopes that are close to their limit for this key.
+ * Before a call, the SDK finds the entries that apply to the request and asks
+ * trAIce to check them; it never decides a strict cap on its own.
+ */
+export const STRICT_CAP_SCOPES = ["workspace", "feature", "user", "api_key", "team"] as const;
+export type StrictCapScope = (typeof STRICT_CAP_SCOPES)[number];
+export type StrictCapOnUnavailable = "allow" | "block";
+
+export type StrictCapEntry = {
+  ruleId: string;
+  mode: "active" | "shadow";
+  /** workspace, api_key and team apply to every call from this key; feature and user to matching calls. */
+  scope: StrictCapScope;
+  value: string | null;
+  onUnavailable: StrictCapOnUnavailable;
+};
+
+export type StrictCapRequest = { feature?: string | null; userId?: string | null };
+
+export type StrictCapMatch = {
+  ruleId: string;
+  mode: "active" | "shadow";
+  /** What to do when trAIce does not answer: block if any matching active entry says so. */
+  onUnavailable: StrictCapOnUnavailable;
+};
+
+function strictCapEntryApplies(entry: StrictCapEntry, req: StrictCapRequest): boolean {
+  if (entry.scope === "feature") return entry.value != null && req.feature === entry.value;
+  if (entry.scope === "user") return entry.value != null && req.userId === entry.value;
+  return STRICT_CAP_SCOPES.includes(entry.scope);
+}
+
+/** The strict caps a request must be checked against, one per rule, in the order received. */
+export function matchStrictCaps(req: StrictCapRequest, entries: readonly StrictCapEntry[]): StrictCapMatch[] {
+  const byRule = new Map<string, StrictCapMatch>();
+  for (const entry of entries) {
+    if (!entry || typeof entry.ruleId !== "string" || !strictCapEntryApplies(entry, req)) continue;
+    const mode = entry.mode === "active" ? "active" : "shadow";
+    const onUnavailable = mode === "active" && entry.onUnavailable === "block" ? "block" : "allow";
+    const existing = byRule.get(entry.ruleId);
+    if (!existing) {
+      byRule.set(entry.ruleId, { ruleId: entry.ruleId, mode, onUnavailable });
+    } else if (onUnavailable === "block") {
+      existing.onUnavailable = "block";
+    }
+  }
+  return Array.from(byRule.values());
+}
+
 function positiveInteger(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
   return value;

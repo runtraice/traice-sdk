@@ -496,6 +496,51 @@ tokens-per-minute limit. A rule in target verification never refuses; trAIce
 counts what it would have refused. `getRateLimitStats()` reports the counts.
 Older SDK versions never receive rate-limit rules.
 
+### Strict budget caps
+
+A budget cap blocks calls once the budget's spend, as of the last rules
+refresh, reaches its limit, so calls in flight and calls between refreshes can
+pass it. A strict cap closes that gap near the limit. Once a strictly capped
+budget passes 90% of its limit, the rules refresh lists it, and before each call
+the cap applies to, the SDK asks trAIce to check the call. trAIce adds the
+call's estimated cost to the period's spend and to the estimates of calls it
+already let through, and refuses the call if the total would pass the limit.
+Nothing to configure in the SDK. Pass `feature` and `userId` for feature and
+user caps, and `provider` for a better estimate:
+
+```typescript
+try {
+  const response = await cloud.enforceRequest(request, (effective) => openai.chat.completions.create(effective), {
+    feature: "support-chat",
+    userId: currentUser.id,
+    provider: "openai",
+  });
+} catch (error) {
+  if (error instanceof TraiceEnforcementError && error.action === "DENY" && error.reason.strictCap) {
+    // The budget cannot fit this call: error.reason names the budget, its limit, and its spend.
+  }
+}
+```
+
+The SDK sends the cap's rule, the feature, the user, the model the call goes to,
+the provider, a rough input token count (the characters of the message text
+divided by 4), and the request's output token limit (`max_tokens`), never the
+request text. The check runs right before the provider call, after rate limits,
+and only when the call reaches the provider: cache hits make no check. A refusal throws
+`TraiceEnforcementError` with action `DENY` and the cap's rule, without calling
+the provider. The SDK waits at most 300 ms. If trAIce does not answer in time or
+fails, the SDK lets the call through, unless the cap is set to block calls when
+trAIce is unavailable. A cap in preview never refuses; trAIce counts what it
+would have refused.
+
+An allowed call holds its estimate until its cost is recorded. When the call's
+cost event goes through the same `CloudAdapter`, the SDK sends the hold back with
+the next event of the same model and feature (`capReservationIds`), and trAIce
+releases it. Holds that never come back expire after 10 minutes.
+`getStrictCapStats()` reports `checked`, `refused`, `unavailable`,
+`blockedUnavailable`, and `shadowRefused`. Older SDK versions are never asked to
+check and keep blocking once their last refresh shows the budget spent.
+
 ## Privacy and failure behavior
 
 Provider errors are re-thrown. Adapter failures do not replace a successful provider response unless your application explicitly waits for adapter writes. Use `onError` or `verbose` configuration for adapter diagnostics.

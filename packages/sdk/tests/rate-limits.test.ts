@@ -97,11 +97,11 @@ describe("CloudAdapter rate limits", () => {
   }
   const acquires = () => calls.filter((call) => call.path === "/v1/rate-limits/acquire");
 
-  it("asks for protocol v3 and counts each matching request on trAIce", async () => {
+  it("asks for a protocol with rate limits and counts each matching request on trAIce", async () => {
     const instance = await adapter();
     const provider = jest.fn(async () => providerResponse);
     await expect(instance.enforceRequest(request, provider, { userId: "u-1" })).resolves.toBe(providerResponse);
-    expect(ruleHeaders[0]["x-traice-enforcement-version"]).toBe("3");
+    expect(Number(ruleHeaders[0]["x-traice-enforcement-version"])).toBeGreaterThanOrEqual(3);
     expect(acquires()).toHaveLength(1);
     expect(acquires()[0].body).toEqual({ ruleIds: ["rule_rpm"], userId: "u-1" });
     expect(acquires()[0].headers.authorization).toBe("Bearer workspace-key");

@@ -60,6 +60,12 @@ export interface CostEvent {
   metadata?: EventMetadata;
   /** Legacy string key/value metadata. Preserved for backward compatibility. */
   tags?: Record<string, string>;
+  /**
+   * Strict budget caps: reservation ids trAIce returned when it let this call
+   * through. `CloudAdapter` attaches them, and sends them so trAIce settles the
+   * call's estimate once its cost is recorded.
+   */
+  capReservationIds?: string[];
 }
 
 export type ErrorHandler = (error: Error, event?: CostEvent) => void;
