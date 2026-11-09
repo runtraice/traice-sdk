@@ -581,7 +581,7 @@ describe("CloudAdapter", () => {
       const provider = jest.fn(async () => chatCompletionResponse());
       await adapter.warmEnforcement();
 
-      expect(receivedHeaders["x-traice-enforcement-version"]).toBe("4");
+      expect(receivedHeaders["x-traice-enforcement-version"]).toBe("5");
 
       await adapter.enforceExactCache(request, provider);
       await adapter.enforceExactCache({ temperature: 0, messages: request.messages, model: request.model }, provider);

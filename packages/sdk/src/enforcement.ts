@@ -7,7 +7,8 @@ export type RuleAction =
   | "CAP_RETRIES"
   | "FALLBACK"
   | "ROUTE"
-  | "RATE_LIMIT";
+  | "RATE_LIMIT"
+  | "LOAD_BALANCE";
 
 export type RuleState = "DRAFT" | "SHADOW" | "ACTIVE" | "DISABLED";
 export type BudgetScope = "workspace" | "feature" | "user";
@@ -133,6 +134,9 @@ export function decide(
     // Rate limits are counted by trAIce (matchRateLimitRules) and never stop
     // evaluation, so a limit under its ceiling cannot hide a later rule.
     if (rule.action === "RATE_LIMIT") continue;
+    // Load balancing picks a provider key for whatever model the other rules
+    // choose (matchLoadBalanceRule), so it never stops evaluation either.
+    if (rule.action === "LOAD_BALANCE") continue;
     const match = matchCondition(rule.condition, request, context);
     if (!match) continue;
 
@@ -301,6 +305,138 @@ export function matchStrictCaps(req: StrictCapRequest, entries: readonly StrictC
     }
   }
   return Array.from(byRule.values());
+}
+
+/**
+ * Load balancing across provider keys (LOAD_BALANCE rules, enforcement
+ * protocol v5).
+ *
+ * Pure and deterministic: the caller supplies the random number and the clock.
+ * Provider keys never reach trAIce. A rule names key aliases the customer
+ * chose; the SDK picks one per call and hands it to the customer's provider
+ * callback, which maps the alias to a real client or key.
+ */
+export const LOAD_BALANCE_ALIAS_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
+export const LOAD_BALANCE_MIN_KEYS = 2;
+export const LOAD_BALANCE_MAX_KEYS = 10;
+export const LOAD_BALANCE_MAX_WEIGHT = 100;
+export const LOAD_BALANCE_MIN_COOLDOWN_MS = 1_000;
+export const LOAD_BALANCE_MAX_COOLDOWN_MS = 600_000;
+export const LOAD_BALANCE_DEFAULT_COOLDOWN_MS = 60_000;
+
+/** What to do when the provider rate-limits (HTTP 429) the key a call used. */
+export type LoadBalanceOnRateLimit = "next_key" | "none";
+export const LOAD_BALANCE_ON_RATE_LIMIT: readonly LoadBalanceOnRateLimit[] = ["next_key", "none"];
+
+export type LoadBalanceKey = { alias: string; weight: number };
+
+export type LoadBalanceParams = {
+  keys: LoadBalanceKey[];
+  onRateLimit: LoadBalanceOnRateLimit;
+  cooldownMs: number;
+};
+
+/**
+ * A stored rule's keys and settings, or null when they are not usable: fewer
+ * than two keys, more than ten, an alias outside the pattern, a repeated
+ * alias, or a weight outside 1 to 100. Unknown settings fall back to defaults.
+ */
+export function loadBalanceParams(actionParams: unknown): LoadBalanceParams | null {
+  if (!actionParams || typeof actionParams !== "object" || Array.isArray(actionParams)) return null;
+  const params = actionParams as Record<string, unknown>;
+  if (!Array.isArray(params.keys)) return null;
+  const keys: LoadBalanceKey[] = [];
+  const seen = new Set<string>();
+  for (const entry of params.keys) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const { alias, weight } = entry as Record<string, unknown>;
+    if (typeof alias !== "string" || !LOAD_BALANCE_ALIAS_PATTERN.test(alias) || seen.has(alias)) return null;
+    if (typeof weight !== "number" || !Number.isInteger(weight) || weight < 1 || weight > LOAD_BALANCE_MAX_WEIGHT) {
+      return null;
+    }
+    seen.add(alias);
+    keys.push({ alias, weight });
+  }
+  if (keys.length < LOAD_BALANCE_MIN_KEYS || keys.length > LOAD_BALANCE_MAX_KEYS) return null;
+  const onRateLimit = LOAD_BALANCE_ON_RATE_LIMIT.includes(params.onRateLimit as LoadBalanceOnRateLimit)
+    ? (params.onRateLimit as LoadBalanceOnRateLimit)
+    : "next_key";
+  const cooldown = params.cooldownMs;
+  const cooldownMs =
+    typeof cooldown === "number" &&
+    Number.isInteger(cooldown) &&
+    cooldown >= LOAD_BALANCE_MIN_COOLDOWN_MS &&
+    cooldown <= LOAD_BALANCE_MAX_COOLDOWN_MS
+      ? cooldown
+      : LOAD_BALANCE_DEFAULT_COOLDOWN_MS;
+  return { keys, onRateLimit, cooldownMs };
+}
+
+export type LoadBalancePickInput = {
+  /** A number in [0, 1); the SDK passes Math.random(). */
+  random: number;
+  /** Epoch milliseconds. */
+  now: number;
+  /** When each alias may be used again after a provider rate limit (epoch ms). */
+  coolingUntil?: Record<string, number>;
+  /** Aliases already tried for this call. */
+  exclude?: readonly string[];
+};
+
+/**
+ * The key alias for one call: a weighted pick among keys that are not cooling
+ * down after a rate limit, in the rule's order. When every remaining key is
+ * cooling down, the one that becomes available first (earliest in the rule on
+ * a tie). Null when every key was already tried.
+ */
+export function pickLoadBalanceKey(keys: readonly LoadBalanceKey[], input: LoadBalancePickInput): string | null {
+  const excluded = new Set(input.exclude ?? []);
+  const candidates = keys.filter((key) => !excluded.has(key.alias));
+  if (candidates.length === 0) return null;
+  const coolingUntil = input.coolingUntil ?? {};
+  const available = candidates.filter((key) => (coolingUntil[key.alias] ?? 0) <= input.now);
+  if (available.length === 0) {
+    let soonest = candidates[0]!;
+    for (const key of candidates) {
+      if ((coolingUntil[key.alias] ?? 0) < (coolingUntil[soonest.alias] ?? 0)) soonest = key;
+    }
+    return soonest.alias;
+  }
+  const total = available.reduce((sum, key) => sum + key.weight, 0);
+  const random = Number.isFinite(input.random) ? Math.min(Math.max(input.random, 0), 1 - Number.EPSILON) : 0;
+  let target = random * total;
+  for (const key of available) {
+    if (target < key.weight) return key.alias;
+    target -= key.weight;
+  }
+  return available[available.length - 1]!.alias;
+}
+
+export type LoadBalanceMatch = LoadBalanceParams & {
+  ruleId: string;
+  ruleName: string;
+  mode: "active" | "shadow";
+};
+
+/**
+ * The load-balancing rule that applies to a request: the first matching
+ * ACTIVE or SHADOW rule by ascending priority, or null. Only `always`, `model`
+ * and `feature` conditions apply. A rule whose keys are not usable is skipped,
+ * so the next matching rule (or none) applies.
+ */
+export function matchLoadBalanceRule(req: EnforcementRequest, rules: EnforcementRule[]): LoadBalanceMatch | null {
+  const ordered = rules
+    .filter((rule) => rule.action === "LOAD_BALANCE" && (rule.state === "ACTIVE" || rule.state === "SHADOW"))
+    .sort((a, b) => a.priority - b.priority);
+  for (const rule of ordered) {
+    const type = rule.condition?.type;
+    if (type !== "always" && type !== "model" && type !== "feature") continue;
+    if (!matchCondition(rule.condition, req, {})) continue;
+    const params = loadBalanceParams(rule.actionParams);
+    if (!params) continue;
+    return { ruleId: rule.id, ruleName: rule.name, mode: rule.state === "ACTIVE" ? "active" : "shadow", ...params };
+  }
+  return null;
 }
 
 function positiveInteger(value: unknown): number | null {

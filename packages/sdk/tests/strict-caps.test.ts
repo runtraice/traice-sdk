@@ -141,9 +141,9 @@ describe("CloudAdapter strict budget caps", () => {
   const sentEvents = () =>
     calls.filter((call) => call.path === "/v1/events").flatMap((call) => call.body.events as any[]);
 
-  it("asks for protocol v4 and ignores a missing or malformed strict cap block", async () => {
+  it("asks for a protocol with strict caps and ignores a missing or malformed strict cap block", async () => {
     const instance = await adapter();
-    expect(ruleHeaders[0]["x-traice-enforcement-version"]).toBe("4");
+    expect(Number(ruleHeaders[0]["x-traice-enforcement-version"])).toBeGreaterThanOrEqual(4);
     await instance.enforceRequest(request, async () => providerResponse);
     expect(acquires()).toHaveLength(1);
 

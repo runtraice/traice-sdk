@@ -184,6 +184,12 @@ trAIce does not answer, unless a strict cap is set to block calls when trAIce is
 unavailable. Pass `userId` in the context for per-user limits and caps.
 `getRateLimitStats()` and `getStrictCapStats()` report the counts.
 
+Load-balancing rules spread calls across your own provider keys: the SDK passes
+the alias of the key to use to your provider callback as `options.keyAlias`,
+your callback maps it to a client (trAIce never sees keys), and a key the
+provider rate-limits rests while the call moves to the next key.
+`getLoadBalanceStats()` reports the counts.
+
 Swap and downgrade rules execute only when the cached rules response includes a
 current experiment for the exact feature, source model, and target model. The
 experiment must meet the required equivalence and maximum quality-drop limits. The SDK passes

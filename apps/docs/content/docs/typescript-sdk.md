@@ -541,6 +541,51 @@ releases it. Holds that never come back expire after 10 minutes.
 `blockedUnavailable`, and `shadowRefused`. Older SDK versions are never asked to
 check and keep blocking once their last refresh shows the budget spent.
 
+### Load balancing across keys
+
+A load-balancing rule spreads calls across several provider API keys of your
+own, for example to stay under each key's rate limit. The rule names each key
+by an alias you choose, with a weight. For each call the rule applies to, the
+SDK picks an alias by weight and passes it to your provider callback as
+`options.keyAlias`. Your callback maps the alias to its own client. trAIce
+never sees your keys, only the aliases:
+
+```typescript
+import OpenAI from "openai";
+
+const clients: Record<string, OpenAI> = {
+  primary: new OpenAI({ apiKey: process.env.OPENAI_KEY_PRIMARY }),
+  secondary: new OpenAI({ apiKey: process.env.OPENAI_KEY_SECONDARY }),
+};
+
+const response = await cloud.enforceRequest(request, (effective, options) => {
+  // No keyAlias when no load-balancing rule applies: use your default key.
+  const client = clients[options?.keyAlias ?? "primary"] ?? clients.primary;
+  return client.chat.completions.create(effective, { signal: options?.signal });
+});
+```
+
+The rule matches the request that actually goes to the provider, after any
+swap, rollout, or fallback, and the call's `feature`. When the provider
+rate-limits a key (HTTP 429), the SDK rests that key for the provider's
+`Retry-After` (held between 1 second and 10 minutes), or for the rule's cooldown
+when there is none. If the rule moves to the next key on a rate limit, the SDK
+retries the call on a key it has not tried yet, at most once per key; otherwise
+it throws the provider error. Other errors never switch keys (fallback rules
+handle them), and neither does a refusal from trAIce. Each attempt on another
+key is a new provider call, so strict caps check it too; a rate-limit rule
+counts the call once. When every key is rate-limited, the last provider error
+is thrown. Rest times are kept per `CloudAdapter` and start over when the rule's
+keys change.
+
+A rule in preview never changes the call: your callback gets no `keyAlias`,
+and trAIce records the key the rule would have used. The SDK reports one
+decision per call: the key it ended on, the number of provider calls, and the
+keys it left after a rate limit. If load balancing itself fails, the call goes
+to the provider as if no rule applied. `getLoadBalanceStats()` reports `calls`,
+`switches`, `exhausted`, and `byAlias`. Older SDK versions never receive
+load-balancing rules.
+
 ## Privacy and failure behavior
 
 Provider errors are re-thrown. Adapter failures do not replace a successful provider response unless your application explicitly waits for adapter writes. Use `onError` or `verbose` configuration for adapter diagnostics.

@@ -1,12 +1,20 @@
 import { CostAdapter, CostEvent, EventMetadata } from "../types";
 import { calculateCost } from "../pricing";
 import {
+  LOAD_BALANCE_MAX_COOLDOWN_MS,
+  LOAD_BALANCE_MAX_KEYS,
+  LOAD_BALANCE_MIN_COOLDOWN_MS,
   assignRollout,
   decide,
+  loadBalanceParams,
+  matchLoadBalanceRule,
   matchRateLimitRules,
   matchStrictCaps,
+  pickLoadBalanceKey,
   type EnforcementRollout,
   type EnforcementRule,
+  type LoadBalanceKey,
+  type LoadBalanceMatch,
   type RateLimitMatch,
   type RolloutAssignment,
   type StrictCapEntry,
@@ -99,6 +107,14 @@ export type RequestEnforcementContext = ExactCacheContext;
  */
 export interface ProviderCallOptions {
   signal?: AbortSignal;
+  /**
+   * Set when an active load-balancing rule applies: the alias of the provider
+   * key to use for this call, one of the aliases the rule names. Your callback
+   * maps the alias to its own client or API key; trAIce never sees keys. It is
+   * undefined when no load-balancing rule applies, including a rule in
+   * preview, so keep a default client.
+   */
+  keyAlias?: string;
 }
 
 /** A Bedrock request names its model as `modelId` (a model ID, inference profile ID, or ARN). */
@@ -118,7 +134,8 @@ export type EnforcementErrorContext = {
     | "shared_semantic_cache_store"
     | "rate_limit_acquire"
     | "rate_limit_usage"
-    | "strict_cap_check";
+    | "strict_cap_check"
+    | "load_balance";
   status?: number;
 };
 
@@ -246,6 +263,33 @@ type StrictCapCheckResult = { allowed: boolean; reservationIds?: unknown; refuse
 
 /** Reservation ids of calls trAIce let through under a strict cap, until the call's event is written. */
 type PendingCapReservation = { keys: string[]; ids: string[]; at: number };
+
+/** Process-local counts for load-balancing rules (enforcement protocol v5). Rules in preview are not counted. */
+export interface LoadBalanceStats {
+  /** Calls an active load-balancing rule sent to its keys, each counted once however many keys it tried. */
+  calls: number;
+  /** Times a call moved to another key after the provider rate-limited the key it used. */
+  switches: number;
+  /** Calls the provider rate-limited on every key of the rule. */
+  exhausted: number;
+  /** Calls by the key alias each one ended on. */
+  byAlias: Record<string, number>;
+}
+
+type LoadBalanceSettings = { version: "load-balance-v1" };
+
+/** When each key of a load-balancing rule may be used again after a provider rate limit. */
+type LoadBalanceCooling = { aliases: string; until: Record<string, number> };
+
+/** What one load-balanced call reports, as `POST /api/v1/decisions` takes it. */
+type LoadBalanceResult = {
+  keyAlias: string;
+  attempts: number;
+  switchedFrom: string[];
+  outcome?: "success" | "failed";
+  errorType?: FallbackFailure;
+  exhausted?: boolean;
+};
 
 const STRICT_CAP_DEFAULT_TIMEOUT_MS = 300;
 /** trAIce expires a reservation after 10 minutes, so older ids are not sent back. */
@@ -499,6 +543,11 @@ export class CloudAdapter implements CostAdapter {
     blockedUnavailable: 0,
     shadowRefused: 0,
   };
+  private loadBalance: LoadBalanceSettings | null = null;
+  /** Per load-balancing rule; reset when a rules refresh changes the rule's keys. */
+  private readonly loadBalanceCooling = new Map<string, LoadBalanceCooling>();
+  private readonly loadBalanceByAlias = new Map<string, number>();
+  private loadBalanceStats = { calls: 0, switches: 0, exhausted: 0 };
   /** Set by a 403 or 409 from the shared semantic cache; cleared by the next rules poll. */
   private sharedSemanticCacheSuspended = false;
   private sharedSemanticCacheHits = 0;
@@ -729,9 +778,11 @@ export class CloudAdapter implements CostAdapter {
    * deny and retry-cap rules throw a structured TraiceEnforcementError. Active
    * swap, downgrade, and route rules rewrite the model only with passing
    * experiment evidence. Active fallback rules make at most one configured
-   * fallback call after a provider error. Shadow rules pass through; semantic
-   * cache shadow rules may report scored opportunities after the provider
-   * response. Unsupported, unavailable, or malformed rules pass through.
+   * fallback call after a provider error. Active load-balancing rules pass the
+   * provider key alias to use to `providerCall` as `options.keyAlias`. Shadow
+   * rules pass through; semantic cache shadow rules may report scored
+   * opportunities after the provider response. Unsupported, unavailable, or
+   * malformed rules pass through.
    */
   async enforceRequest<T, R extends ExactCacheRequest>(
     request: R,
@@ -763,8 +814,11 @@ export class CloudAdapter implements CostAdapter {
     } catch {
       strictCaps = [];
     }
-    const call =
+    const capped =
       strictCaps.length > 0 ? this.withStrictCaps(providerCall, strictCaps, request.model, context) : providerCall;
+    // Load balancing (protocol v5) picks a provider key for each call that reaches the provider. It sits
+    // outside the strict-cap check, so a retry on another key is checked like any other provider call.
+    const call = this.hasLoadBalanceRules() ? this.withLoadBalancing(capped, context) : capped;
     const response = await this.enforceRules(request, call, context);
     if (limits.some((limit) => limit.tokensPerMinute != null)) {
       this.reportRateLimitUsage(limits, response, request.model, context);
@@ -780,6 +834,195 @@ export class CloudAdapter implements CostAdapter {
   /** Process-local counts for strict budget caps. */
   getStrictCapStats(): StrictCapStats {
     return { ...this.strictCapStats };
+  }
+
+  /** Process-local counts for load-balancing rules. */
+  getLoadBalanceStats(): LoadBalanceStats {
+    return { ...this.loadBalanceStats, byAlias: Object.fromEntries(this.loadBalanceByAlias) };
+  }
+
+  private hasLoadBalanceRules(): boolean {
+    return this.loadBalance !== null && this.rules.some((rule) => rule.action === "LOAD_BALANCE");
+  }
+
+  /**
+   * Wraps the provider call so that a call an active load-balancing rule
+   * matches goes to one of the rule's provider keys, passed to the callback as
+   * `keyAlias`; a rule in preview only reports the key it would use. Rules
+   * match the request each call actually sends (after any swap, rollout, or
+   * fallback model change), so every path that reaches the provider goes
+   * through here. If the load-balancing code itself fails, the call goes to
+   * the provider as if no rule matched.
+   */
+  private withLoadBalancing<T, R extends ExactCacheRequest>(
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    context: RequestEnforcementContext,
+  ): (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T> {
+    return async (effectiveRequest, options) => {
+      const plainCall = () =>
+        options === undefined ? providerCall(effectiveRequest) : providerCall(effectiveRequest, options);
+      let match: LoadBalanceMatch | null;
+      let alias: string | null;
+      try {
+        match = this.loadBalance
+          ? matchLoadBalanceRule(
+              { model: effectiveRequest.model, feature: context.feature, retryCount: context.retryCount },
+              this.rules,
+            )
+          : null;
+        alias = match ? this.pickLoadBalanceAlias(match, []) : null;
+      } catch (error) {
+        this.loadBalanceFailedOpen(error);
+        return plainCall();
+      }
+      if (!match || !alias) return plainCall();
+      if (match.mode === "shadow") {
+        return this.executeLoadBalanceShadow(match, alias, effectiveRequest.model, plainCall);
+      }
+      return this.executeLoadBalance(match, alias, effectiveRequest, providerCall, options);
+    };
+  }
+
+  /**
+   * Calls the provider with the picked key. After a provider rate limit the key
+   * rests until the provider's Retry-After or the rule's cooldown, and with
+   * `onRateLimit: "next_key"` the call moves to a key it has not tried, at most
+   * once per key. Any other failure, including a refusal by trAIce, is thrown
+   * as is. Reports one decision for the call, whatever the number of attempts.
+   */
+  private async executeLoadBalance<T, R extends ExactCacheRequest>(
+    match: LoadBalanceMatch,
+    firstAlias: string,
+    request: R,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    options: ProviderCallOptions | undefined,
+  ): Promise<T> {
+    const tried: string[] = [];
+    const switchedFrom: string[] = [];
+    let alias = firstAlias;
+    for (;;) {
+      tried.push(alias);
+      try {
+        const response = await providerCall(request, { ...options, keyAlias: alias });
+        this.recordLoadBalance(match, request.model, {
+          keyAlias: alias,
+          attempts: tried.length,
+          switchedFrom,
+          outcome: "success",
+        });
+        return response;
+      } catch (error) {
+        // A refusal by trAIce (a strict cap) is not a provider rate limit and stops before the provider call.
+        const refusedByTraice = error instanceof TraiceEnforcementError;
+        const rateLimited = !refusedByTraice && fallbackFailure(error) === "429";
+        let next: string | null = null;
+        try {
+          if (rateLimited) {
+            this.coolLoadBalanceKey(match, alias, error);
+            // A call past its deadline was already abandoned: no other attempt.
+            if (match.onRateLimit === "next_key" && !options?.signal?.aborted) {
+              next = this.pickLoadBalanceAlias(match, tried);
+            }
+          }
+        } catch (failure) {
+          this.loadBalanceFailedOpen(failure);
+          next = null;
+        }
+        if (next !== null) {
+          switchedFrom.push(alias);
+          alias = next;
+          continue;
+        }
+        const attempts = refusedByTraice ? tried.length - 1 : tried.length;
+        if (attempts > 0) {
+          let errorType = fallbackFailure(error);
+          if (errorType === "error" && options?.signal?.aborted) errorType = fallbackFailure(options.signal.reason);
+          this.recordLoadBalance(match, request.model, {
+            keyAlias: alias,
+            attempts,
+            switchedFrom,
+            outcome: "failed",
+            errorType,
+            exhausted: rateLimited && match.onRateLimit === "next_key" && tried.length >= match.keys.length,
+          });
+        }
+        throw error;
+      }
+    }
+  }
+
+  /** A rule in preview: the call goes to the provider as without the rule, and trAIce learns which key it would use. */
+  private async executeLoadBalanceShadow<T>(
+    match: LoadBalanceMatch,
+    alias: string,
+    requestedModel: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    let refusedByTraice = false;
+    try {
+      return await call();
+    } catch (error) {
+      refusedByTraice = error instanceof TraiceEnforcementError;
+      throw error;
+    } finally {
+      if (!refusedByTraice) {
+        this.recordLoadBalance(match, requestedModel, { keyAlias: alias, attempts: 1, switchedFrom: [] });
+      }
+    }
+  }
+
+  private pickLoadBalanceAlias(match: LoadBalanceMatch, tried: readonly string[]): string | null {
+    return pickLoadBalanceKey(match.keys, {
+      random: Math.random(),
+      now: Date.now(),
+      coolingUntil: this.loadBalanceCooling.get(match.ruleId)?.until,
+      exclude: tried,
+    });
+  }
+
+  /** Rests a key the provider rate-limited until its Retry-After, or the rule's cooldown without one. */
+  private coolLoadBalanceKey(match: LoadBalanceMatch, alias: string, error: unknown): void {
+    const now = Date.now();
+    let cooling = this.loadBalanceCooling.get(match.ruleId);
+    if (!cooling) {
+      // No prototype, so an alias such as "constructor" reads as not cooling.
+      cooling = { aliases: loadBalanceAliases(match.keys), until: Object.create(null) as Record<string, number> };
+      this.loadBalanceCooling.set(match.ruleId, cooling);
+    }
+    cooling.until[alias] = now + (retryAfterMs(error, now) ?? match.cooldownMs);
+  }
+
+  /** Forgets the rest times of rules that are gone or name other keys after a rules refresh. */
+  private resetLoadBalanceCooling(): void {
+    if (!this.loadBalance) {
+      this.loadBalanceCooling.clear();
+      return;
+    }
+    for (const [ruleId, cooling] of this.loadBalanceCooling) {
+      const rule = this.rules.find((candidate) => candidate.id === ruleId && candidate.action === "LOAD_BALANCE");
+      const params = rule ? loadBalanceParams(rule.actionParams) : null;
+      if (!params || loadBalanceAliases(params.keys) !== cooling.aliases) this.loadBalanceCooling.delete(ruleId);
+    }
+  }
+
+  /** Counts a load-balanced call and posts its decision in the background. */
+  private recordLoadBalance(match: LoadBalanceMatch, requestedModel: string, result: LoadBalanceResult): void {
+    try {
+      if (match.mode === "active") {
+        this.loadBalanceStats.calls++;
+        this.loadBalanceStats.switches += result.switchedFrom.length;
+        if (result.exhausted) this.loadBalanceStats.exhausted++;
+        this.loadBalanceByAlias.set(result.keyAlias, (this.loadBalanceByAlias.get(result.keyAlias) ?? 0) + 1);
+      }
+      this.trackDecision(this.postLoadBalanceDecision(match, requestedModel, result));
+    } catch (error) {
+      this.reportEnforcementFailure(asError(error), { operation: "load_balance" });
+    }
+  }
+
+  private loadBalanceFailedOpen(error: unknown): void {
+    this.enforcementStats.failOpenRequests++;
+    this.reportEnforcementFailure(asError(error), { operation: "load_balance" });
   }
 
   /**
@@ -1352,7 +1595,7 @@ export class CloudAdapter implements CostAdapter {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           "X-Source": "traice-sdk",
-          "X-Traice-Enforcement-Version": "4",
+          "X-Traice-Enforcement-Version": "5",
         },
         signal: controller.signal,
       });
@@ -1373,6 +1616,7 @@ export class CloudAdapter implements CostAdapter {
         sharedSemanticCache?: unknown;
         rateLimit?: unknown;
         strictCaps?: unknown;
+        loadBalance?: unknown;
       };
       this.enforcementEnabled = json.enabled !== false;
       this.sharedCache = parseSharedCacheSettings(json.sharedCache);
@@ -1381,7 +1625,9 @@ export class CloudAdapter implements CostAdapter {
       this.sharedSemanticCacheSuspended = false;
       this.rateLimit = parseRateLimitSettings(json.rateLimit);
       this.strictCaps = parseStrictCapSettings(json.strictCaps);
+      this.loadBalance = parseLoadBalanceSettings(json.loadBalance);
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
+      this.resetLoadBalanceCooling();
       this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
       this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
       const ttlSeconds = Number(json.ttlSeconds ?? 60);
@@ -2584,6 +2830,28 @@ export class CloudAdapter implements CostAdapter {
     });
   }
 
+  /** One decision per load-balanced call, whatever the number of attempts. */
+  private postLoadBalanceDecision(
+    match: LoadBalanceMatch,
+    requestedModel: string,
+    result: LoadBalanceResult,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: match.ruleId,
+      action: "LOAD_BALANCE",
+      mode: match.mode,
+      requestedModel,
+      keyAlias: result.keyAlias,
+      attempts: Math.min(Math.max(result.attempts, 1), LOAD_BALANCE_MAX_KEYS),
+      switchedFrom: [...result.switchedFrom],
+      ...(match.mode === "active" && result.outcome ? { loadBalanceOutcome: result.outcome } : {}),
+      ...(match.mode === "active" && result.outcome === "failed" && result.errorType
+        ? { errorType: result.errorType }
+        : {}),
+      protocolVersion: 5,
+    });
+  }
+
   private trackDecision(promise: Promise<void>): void {
     this.pendingDecisions.add(promise);
     promise.finally(() => this.pendingDecisions.delete(promise)).catch(() => {});
@@ -2838,6 +3106,58 @@ function parseStrictCapSettings(value: unknown): StrictCapSettings | null {
     timeoutMs: Math.min(Math.max(timeoutMs, 25), 2_000),
     caps: settings.caps.filter(isStrictCapEntry),
   };
+}
+
+function parseLoadBalanceSettings(value: unknown): LoadBalanceSettings | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  return (value as { version?: unknown }).version === "load-balance-v1" ? { version: "load-balance-v1" } : null;
+}
+
+/** The keys a load-balancing rule names, ignoring order and weights. */
+function loadBalanceAliases(keys: readonly LoadBalanceKey[]): string {
+  return keys
+    .map((key) => key.alias)
+    .sort()
+    .join(",");
+}
+
+/**
+ * How long a provider asked to wait after a rate limit, from the error's
+ * Retry-After header (seconds or an HTTP date), clamped to 1 s..600 s.
+ * Undefined when the error carries no usable header.
+ */
+function retryAfterMs(error: unknown, now: number): number | undefined {
+  const record = (typeof error === "object" && error !== null ? error : {}) as Record<string, unknown>;
+  const response = record.response as Record<string, unknown> | undefined;
+  const rawResponse = record.$response as Record<string, unknown> | undefined;
+  for (const headers of [record.headers, response?.headers, rawResponse?.headers]) {
+    const value = headerValue(headers, "retry-after")?.trim();
+    if (!value) continue;
+    const waitMs = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : Date.parse(value) - now;
+    if (!Number.isFinite(waitMs)) continue;
+    return Math.min(Math.max(waitMs, LOAD_BALANCE_MIN_COOLDOWN_MS), LOAD_BALANCE_MAX_COOLDOWN_MS);
+  }
+  return undefined;
+}
+
+/** A header from a `Headers`-like object (with `get`) or a plain record, by lowercase name. */
+function headerValue(headers: unknown, name: string): string | undefined {
+  if (headers == null || typeof headers !== "object") return undefined;
+  try {
+    const get = (headers as { get?: unknown }).get;
+    if (typeof get === "function") {
+      const value: unknown = get.call(headers, name);
+      if (typeof value === "string" || typeof value === "number") return String(value);
+    }
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== name) continue;
+      const first: unknown = Array.isArray(value) ? value[0] : value;
+      if (typeof first === "string" || typeof first === "number") return String(first);
+    }
+  } catch {
+    // An unreadable header is no header.
+  }
+  return undefined;
 }
 
 function isStrictCapEntry(value: unknown): value is StrictCapEntry {
