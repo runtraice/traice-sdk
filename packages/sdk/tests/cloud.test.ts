@@ -581,7 +581,7 @@ describe("CloudAdapter", () => {
       const provider = jest.fn(async () => chatCompletionResponse());
       await adapter.warmEnforcement();
 
-      expect(receivedHeaders["x-traice-enforcement-version"]).toBe("2");
+      expect(receivedHeaders["x-traice-enforcement-version"]).toBe("5");
 
       await adapter.enforceExactCache(request, provider);
       await adapter.enforceExactCache({ temperature: 0, messages: request.messages, model: request.model }, provider);
@@ -605,6 +605,9 @@ describe("CloudAdapter", () => {
         size: 1,
         hitRate: 0.5,
         savingsUsd: expect.any(Number),
+        sharedHits: 0,
+        sharedLookupFailures: 0,
+        sharedStores: 0,
       });
       expect(adapter.getExactCacheStats().savingsUsd).toBeGreaterThan(0);
     });
@@ -697,6 +700,9 @@ describe("CloudAdapter", () => {
         size: 0,
         hitRate: 0,
         savingsUsd: 0,
+        sharedHits: 0,
+        sharedLookupFailures: 0,
+        sharedStores: 0,
       });
       expect(receivedBodies.some((body) => body.ruleId)).toBe(false);
     });
@@ -1292,6 +1298,90 @@ describe("CloudAdapter", () => {
       );
     });
 
+    it("rolls out a Bedrock swap by rewriting modelId and reports the served model's cost basis", async () => {
+      const source = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+      const candidate = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [
+          activeRule(
+            "SWAP",
+            { sourceModel: source, targetModel: candidate },
+            {
+              requireEquivalencePct: 90,
+              modelAllowlist: [candidate],
+              rollout: {
+                id: "rollout-bedrock",
+                workspaceId: "workspace-1",
+                status: "RUNNING",
+                allocationBps: 10000,
+                revision: 1,
+                assignmentSalt: "bedrock-salt",
+                assignmentUnit: "request",
+                sourceFallbackEnabled: true,
+              },
+            },
+          ),
+        ],
+        evidence: [
+          {
+            experimentId: "experiment-bedrock",
+            feature: "support",
+            sourceModel: source,
+            candidateModel: candidate,
+            equivalencePct: 97,
+            sampleCount: 60,
+          },
+        ],
+      };
+      const adapter = new CloudAdapter({ apiKey: "workspace-key", endpoint: `http://localhost:${port}/v1/events` });
+      const converse = jest.fn(async (input: { modelId: string; messages: unknown[] }) => ({
+        output: { message: { role: "assistant", content: [{ text: "Refund issued." }] } },
+        stopReason: "end_turn",
+        usage: { inputTokens: 300, outputTokens: 40, totalTokens: 390, cacheReadInputTokens: 50 },
+        metrics: { latencyMs: 410 },
+        echoedModelId: input.modelId,
+      }));
+      await adapter.warmEnforcement();
+
+      const response = await adapter.enforceBedrockRequest(
+        { modelId: source, messages: [{ role: "user", content: [{ text: "Refund my order" }] }] },
+        converse,
+        { feature: "support" },
+      );
+      await adapter.flush();
+
+      expect(response.echoedModelId).toBe(candidate);
+      expect(converse.mock.calls[0][0]).not.toHaveProperty("model");
+      expect(receivedBodies).toContainEqual(
+        expect.objectContaining({
+          rolloutId: "rollout-bedrock",
+          rolloutArm: "treatment",
+          rolloutOutcome: "succeeded",
+          servedModel: candidate,
+          requestedProvider: "aws-bedrock",
+          servedProvider: "aws-bedrock",
+          provider: "aws-bedrock",
+          inputTokens: 350,
+          outputTokens: 40,
+          cacheReadTokens: 50,
+        }),
+      );
+    });
+
+    it("passes a Bedrock request through unchanged when no rule matches", async () => {
+      rulesResponse = { ttlSeconds: 60, rules: [] };
+      const adapter = new CloudAdapter({ apiKey: "workspace-key", endpoint: `http://localhost:${port}/v1/events` });
+      const converse = jest.fn(async (input: { modelId: string }) => ({ modelId: input.modelId }));
+      await adapter.warmEnforcement();
+
+      const request = { modelId: "amazon.nova-pro-v1:0", messages: [], inferenceConfig: { maxTokens: 50 } };
+      await expect(adapter.enforceBedrockRequest(request, converse)).resolves.toEqual({
+        modelId: "amazon.nova-pro-v1:0",
+      });
+      expect(converse.mock.calls[0][0]).toEqual(request);
+    });
+
     it("routes only to the explicit allowlisted target with current evidence", async () => {
       rulesResponse = {
         ttlSeconds: 60,
@@ -1550,6 +1640,124 @@ describe("CloudAdapter", () => {
 
       expect(provider).toHaveBeenCalledTimes(2);
       expect(receivedBodies).toContainEqual(expect.objectContaining({ action: "FALLBACK", fallbackOutcome: "failed" }));
+    });
+
+    it("falls back when the requested model passes the rule's deadline, and aborts it", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini", timeoutMs: 50 })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      let primarySignal: AbortSignal | undefined;
+      const provider = jest.fn(async (effectiveRequest: typeof request, options?: { signal?: AbortSignal }) => {
+        if (effectiveRequest.model === "gpt-4o") {
+          primarySignal = options?.signal;
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          return { ok: true, model: "gpt-4o" };
+        }
+        return { ok: true, model: effectiveRequest.model };
+      });
+      await adapter.warmEnforcement();
+
+      const startedAt = Date.now();
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, provider, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o-mini" });
+      await adapter.flush();
+
+      expect(Date.now() - startedAt).toBeLessThan(900);
+      expect(primarySignal?.aborted).toBe(true);
+      const decision = receivedBodies.find((body) => body.action === "FALLBACK") as Record<string, unknown>;
+      expect(decision).toMatchObject({ fallbackOutcome: "success", errorType: "timeout" });
+      expect(decision.fallbackLatencyMs).toEqual(expect.any(Number));
+      expect(decision.reason).toMatchObject({ attempts: 1 });
+    });
+
+    it("falls back only on the failures retryOn names", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini", retryOn: ["429"] })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      await adapter.warmEnforcement();
+      const serverError = Object.assign(new Error("server error"), { status: 500 });
+      const notCovered = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o") throw serverError;
+        return { ok: true, model: effectiveRequest.model };
+      });
+
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, notCovered, { feature: "support" }),
+      ).rejects.toBe(serverError);
+      expect(notCovered).toHaveBeenCalledTimes(1);
+
+      // AWS SDK errors carry the status in $metadata.
+      const throttled = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o") {
+          throw Object.assign(new Error("slow down"), {
+            name: "ThrottlingException",
+            $metadata: { httpStatusCode: 429 },
+          });
+        }
+        return { ok: true, model: effectiveRequest.model };
+      });
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, throttled, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o-mini" });
+      await adapter.flush();
+
+      expect(throttled).toHaveBeenCalledTimes(2);
+      const decisions = receivedBodies.filter((body) => body.action === "FALLBACK");
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({ fallbackOutcome: "success", errorType: "429" });
+    });
+
+    it("retries the requested model before falling back", async () => {
+      rulesResponse = {
+        ttlSeconds: 60,
+        rules: [activeRule("FALLBACK", { targetModel: "gpt-4o-mini", retryOn: ["5xx"], maxRetries: 2, backoffMs: 0 })],
+      };
+      const adapter = new CloudAdapter({
+        apiKey: "workspace-key",
+        endpoint: `http://localhost:${port}/v1/events`,
+      });
+      await adapter.warmEnforcement();
+      const unavailable = () => Object.assign(new Error("unavailable"), { status: 503 });
+
+      const recovers = jest
+        .fn<Promise<{ ok: boolean; model: string }>, [typeof request]>()
+        .mockRejectedValueOnce(unavailable())
+        .mockRejectedValueOnce(unavailable())
+        .mockResolvedValueOnce({ ok: true, model: "gpt-4o" });
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, recovers, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o" });
+      expect(recovers).toHaveBeenCalledTimes(3);
+
+      const neverRecovers = jest.fn(async (effectiveRequest: typeof request) => {
+        if (effectiveRequest.model === "gpt-4o") throw unavailable();
+        return { ok: true, model: effectiveRequest.model };
+      });
+      await expect(
+        adapter.enforceRequest({ ...request, model: "gpt-4o" }, neverRecovers, { feature: "support" }),
+      ).resolves.toMatchObject({ model: "gpt-4o-mini" });
+      await adapter.flush();
+
+      expect(neverRecovers.mock.calls.map(([call]) => call.model)).toEqual([
+        "gpt-4o",
+        "gpt-4o",
+        "gpt-4o",
+        "gpt-4o-mini",
+      ]);
+      const decisions = receivedBodies.filter((body) => body.action === "FALLBACK");
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({ errorType: "5xx", reason: expect.objectContaining({ attempts: 3 }) });
     });
   });
 });

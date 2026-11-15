@@ -1,14 +1,29 @@
 import { CostAdapter, CostEvent, EventMetadata } from "../types";
 import { calculateCost } from "../pricing";
 import {
+  LOAD_BALANCE_MAX_COOLDOWN_MS,
+  LOAD_BALANCE_MAX_KEYS,
+  LOAD_BALANCE_MIN_COOLDOWN_MS,
   assignRollout,
   decide,
+  loadBalanceParams,
+  matchLoadBalanceRule,
+  matchRateLimitRules,
+  matchStrictCaps,
+  pickLoadBalanceKey,
   type EnforcementRollout,
   type EnforcementRule,
+  type LoadBalanceKey,
+  type LoadBalanceMatch,
+  type RateLimitMatch,
   type RolloutAssignment,
+  type StrictCapEntry,
+  type StrictCapMatch,
 } from "../enforcement";
 import * as crypto from "crypto";
 import { DurableCloudOutbox, type DurableQueuedCostEvent } from "./cloud-outbox";
+import type { CapturedRequest } from "../request-capture";
+import { SHARED_EXACT_CACHE_KEY_VERSION, sharedExactCacheKey } from "../shared-cache";
 
 export interface CloudAdapterConfig {
   apiKey: string;
@@ -50,6 +65,12 @@ export interface SemanticCacheConfig {
   maxEntries?: number;
   /** Hard embedding latency budget before the request fails open. Default: 1000. */
   timeoutMs?: number;
+  /**
+   * Name of the embedding model `embed` uses, for example `text-embedding-3-small`.
+   * Needed for the shared semantic cache: answers are shared only between
+   * instances that embed with the same model. Without it the cache stays local.
+   */
+  embeddingModel?: string;
 }
 
 export interface ExactCacheRequest {
@@ -78,8 +99,43 @@ export interface ExactCacheContext {
 
 export type RequestEnforcementContext = ExactCacheContext;
 
+/**
+ * Passed to `providerCall` as an optional second argument. When a fallback
+ * rule sets `timeoutMs`, `signal` aborts at that deadline; forward it to the
+ * provider client (for example `{ signal }` as request options) so the
+ * abandoned call stops instead of finishing in the background.
+ */
+export interface ProviderCallOptions {
+  signal?: AbortSignal;
+  /**
+   * Set when an active load-balancing rule applies: the alias of the provider
+   * key to use for this call, one of the aliases the rule names. Your callback
+   * maps the alias to its own client or API key; trAIce never sees keys. It is
+   * undefined when no load-balancing rule applies, including a rule in
+   * preview, so keep a default client.
+   */
+  keyAlias?: string;
+}
+
+/** A Bedrock request names its model as `modelId` (a model ID, inference profile ID, or ARN). */
+export interface BedrockModelRequest {
+  modelId: string;
+  [parameter: string]: unknown;
+}
+
 export type EnforcementErrorContext = {
-  operation: "rules_refresh" | "policy_refresh" | "decision_post";
+  operation:
+    | "rules_refresh"
+    | "policy_refresh"
+    | "decision_post"
+    | "shared_cache_lookup"
+    | "shared_cache_store"
+    | "shared_semantic_cache_lookup"
+    | "shared_semantic_cache_store"
+    | "rate_limit_acquire"
+    | "rate_limit_usage"
+    | "strict_cap_check"
+    | "load_balance";
   status?: number;
 };
 
@@ -117,7 +173,7 @@ export type BudgetAdvice = {
   matches: BudgetPolicyMatch[];
 };
 
-export type BlockingRuleAction = "DENY" | "CAP_RETRIES";
+export type BlockingRuleAction = "DENY" | "CAP_RETRIES" | "RATE_LIMIT";
 export type ModelRuleAction = "SWAP" | "DOWNGRADE" | "FALLBACK" | "ROUTE";
 
 export interface EnforcementEvidence {
@@ -139,8 +195,18 @@ export class TraiceEnforcementError extends Error {
     readonly ruleName: string,
     readonly requestedModel: string,
     readonly reason: Record<string, unknown>,
+    /** Rate-limit refusals only: how long until a request can fit again. */
+    readonly retryAfterMs?: number,
+    message?: string,
   ) {
-    super(action === "DENY" ? `Request denied by trAIce rule: ${ruleName}` : `Retry cap reached: ${ruleName}`);
+    super(
+      message ??
+        (action === "DENY"
+          ? `Request denied by trAIce rule: ${ruleName}`
+          : action === "RATE_LIMIT"
+            ? `Rate limit reached: ${ruleName}`
+            : `Retry cap reached: ${ruleName}`),
+    );
     this.name = "TraiceEnforcementError";
   }
 
@@ -153,9 +219,83 @@ export class TraiceEnforcementError extends Error {
       ruleName: this.ruleName,
       requestedModel: this.requestedModel,
       reason: this.reason,
+      ...(this.retryAfterMs != null ? { retryAfterMs: this.retryAfterMs } : {}),
     };
   }
 }
+
+/** Process-local counts for rate-limit rules (enforcement protocol v3). */
+export interface RateLimitStats {
+  /** Requests trAIce counted against at least one rate-limit rule. */
+  acquired: number;
+  /** Requests refused by trAIce. */
+  refused: number;
+  /** Requests refused locally while waiting out an earlier refusal's retry time. */
+  refusedLocally: number;
+  /** Requests a rule in target verification would have refused. */
+  shadowLimited: number;
+  /** Requests let through because trAIce did not answer in time or failed. */
+  failOpen: number;
+  /** Token usage reports sent after calls. */
+  usageReports: number;
+}
+
+type RateLimitSettings = { version: "rate-limit-v1"; timeoutMs: number };
+
+/** Process-local counts for strict budget caps (enforcement protocol v4). */
+export interface StrictCapStats {
+  /** Calls trAIce checked against at least one strict cap. */
+  checked: number;
+  /** Calls trAIce refused because their estimated cost would pass an active strict cap. */
+  refused: number;
+  /** Checks trAIce did not answer in time, failed, or answered with an error. */
+  unavailable: number;
+  /** Calls blocked while trAIce was unavailable, because a matching active cap says `onUnavailable: "block"`. */
+  blockedUnavailable: number;
+  /** Strict caps in preview that would have refused a call. */
+  shadowRefused: number;
+}
+
+type StrictCapSettings = { version: "strict-cap-v1"; timeoutMs: number; caps: StrictCapEntry[] };
+
+/** `POST /api/v1/budget-caps/acquire` answers every check with 200 and `allowed`. */
+type StrictCapCheckResult = { allowed: boolean; reservationIds?: unknown; refused?: unknown; shadowRefused?: unknown };
+
+/** Reservation ids of calls trAIce let through under a strict cap, until the call's event is written. */
+type PendingCapReservation = { keys: string[]; ids: string[]; at: number };
+
+/** Process-local counts for load-balancing rules (enforcement protocol v5). Rules in preview are not counted. */
+export interface LoadBalanceStats {
+  /** Calls an active load-balancing rule sent to its keys, each counted once however many keys it tried. */
+  calls: number;
+  /** Times a call moved to another key after the provider rate-limited the key it used. */
+  switches: number;
+  /** Calls the provider rate-limited on every key of the rule. */
+  exhausted: number;
+  /** Calls by the key alias each one ended on. */
+  byAlias: Record<string, number>;
+}
+
+type LoadBalanceSettings = { version: "load-balance-v1" };
+
+/** When each key of a load-balancing rule may be used again after a provider rate limit. */
+type LoadBalanceCooling = { aliases: string; until: Record<string, number> };
+
+/** What one load-balanced call reports, as `POST /api/v1/decisions` takes it. */
+type LoadBalanceResult = {
+  keyAlias: string;
+  attempts: number;
+  switchedFrom: string[];
+  outcome?: "success" | "failed";
+  errorType?: FallbackFailure;
+  exhausted?: boolean;
+};
+
+const STRICT_CAP_DEFAULT_TIMEOUT_MS = 300;
+/** trAIce expires a reservation after 10 minutes, so older ids are not sent back. */
+const STRICT_CAP_RESERVATION_MAX_AGE_MS = 10 * 60 * 1000;
+const STRICT_CAP_MAX_PENDING_RESERVATIONS = 1_000;
+const STRICT_CAP_MAX_RESERVATIONS_PER_EVENT = 10;
 
 export interface ExactCacheStats {
   hits: number;
@@ -164,7 +304,19 @@ export interface ExactCacheStats {
   size: number;
   hitRate: number;
   savingsUsd: number;
+  /** Hits served from the workspace's shared cache on TrAIce (counted in `hits` too). */
+  sharedHits: number;
+  /** Shared lookups that failed or timed out; each fell back to the provider. */
+  sharedLookupFailures: number;
+  /** Responses stored in the shared cache after a miss. */
+  sharedStores: number;
 }
+
+/** The shared exact cache settings `GET /api/v1/rules` sends while the workspace is opted in. */
+type SharedCacheSettings = { keySalt: string; timeoutMs: number; maxResponseBytes: number };
+
+const SHARED_CACHE_DEFAULT_TIMEOUT_MS = 150;
+const SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES = 262_144;
 
 export interface SemanticCacheStats {
   hits: number;
@@ -174,7 +326,20 @@ export interface SemanticCacheStats {
   size: number;
   hitRate: number;
   savingsUsd: number;
+  /** Hits served from the workspace's shared semantic cache on TrAIce (counted in `hits` too). */
+  sharedHits: number;
+  /** Shared lookups that failed or timed out; each fell back to the provider. */
+  sharedLookupFailures: number;
+  /** Answers stored in the shared semantic cache after a miss. */
+  sharedStores: number;
 }
+
+/** The shared semantic cache settings `GET /api/v1/rules` sends while the workspace is opted in. */
+type SharedSemanticCacheSettings = { timeoutMs: number; maxResponseBytes: number; maxDimensions: number };
+
+const SHARED_SEMANTIC_CACHE_VERSION = "shared-semantic-v1";
+const SHARED_SEMANTIC_CACHE_DEFAULT_TIMEOUT_MS = 300;
+const SHARED_SEMANTIC_CACHE_DEFAULT_MAX_DIMENSIONS = 4_096;
 
 type ExactCacheEntry = {
   response: unknown;
@@ -236,6 +401,7 @@ export interface CloudCostEvent {
   promptHash?: string;
   prompt?: string;
   output?: string;
+  request?: CapturedRequest;
   promptTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -245,6 +411,8 @@ export interface CloudCostEvent {
   latencyMs?: number;
   status?: CostEvent["status"];
   metadata: CloudEventMetadata;
+  /** Strict caps: reservation ids trAIce returned when it let this call through. */
+  capReservationIds?: string[];
 }
 
 export type CloudEventMetadata = EventMetadata & {
@@ -344,6 +512,47 @@ export class CloudAdapter implements CostAdapter {
   private exactCacheMisses = 0;
   private exactCacheBypasses = 0;
   private exactCacheSavingsUsdMicros = 0;
+  private sharedCache: SharedCacheSettings | null = null;
+  /** Set when TrAIce says the setting changed (403 or 409); cleared by the next rules poll. */
+  private sharedCacheSuspended = false;
+  private sharedCacheHits = 0;
+  private sharedCacheLookupFailures = 0;
+  private sharedCacheStores = 0;
+  private sharedSemanticCache: SharedSemanticCacheSettings | null = null;
+  private rateLimit: RateLimitSettings | null = null;
+  /** Local refusals after trAIce refused a request, keyed by rule and counter, until the retry time. */
+  private readonly rateLimitBlockedUntil = new Map<
+    string,
+    { until: number; ruleName: string; reason: Record<string, unknown> }
+  >();
+  private rateLimitStats: RateLimitStats = {
+    acquired: 0,
+    refused: 0,
+    refusedLocally: 0,
+    shadowLimited: 0,
+    failOpen: 0,
+    usageReports: 0,
+  };
+  private strictCaps: StrictCapSettings | null = null;
+  /** Oldest first, so an event takes the reservation of the earliest call that matches it. */
+  private pendingCapReservations: PendingCapReservation[] = [];
+  private strictCapStats: StrictCapStats = {
+    checked: 0,
+    refused: 0,
+    unavailable: 0,
+    blockedUnavailable: 0,
+    shadowRefused: 0,
+  };
+  private loadBalance: LoadBalanceSettings | null = null;
+  /** Per load-balancing rule; reset when a rules refresh changes the rule's keys. */
+  private readonly loadBalanceCooling = new Map<string, LoadBalanceCooling>();
+  private readonly loadBalanceByAlias = new Map<string, number>();
+  private loadBalanceStats = { calls: 0, switches: 0, exhausted: 0 };
+  /** Set by a 403 or 409 from the shared semantic cache; cleared by the next rules poll. */
+  private sharedSemanticCacheSuspended = false;
+  private sharedSemanticCacheHits = 0;
+  private sharedSemanticCacheLookupFailures = 0;
+  private sharedSemanticCacheStores = 0;
   private semanticCacheHits = 0;
   private semanticCacheMisses = 0;
   private semanticCacheBypasses = 0;
@@ -412,9 +621,14 @@ export class CloudAdapter implements CostAdapter {
 
   async write(event: CostEvent): Promise<void> {
     const promptHash = event.prompt ? promptFingerprint(event.prompt, this.apiKey) : event.promptHash;
+    // Strict caps: the event of a call trAIce let through settles that call's reservations.
+    const capReservationIds =
+      event.capReservationIds ??
+      (event.status === "error" ? undefined : this.takeCapReservations(event.model, event.feature));
+    const reservations = capReservationIds ? { capReservationIds } : {};
     const queuedEvent = this.captureContent
-      ? { ...event, promptHash }
-      : { ...event, promptHash, prompt: undefined, output: undefined };
+      ? { ...event, ...reservations, promptHash }
+      : { ...event, ...reservations, promptHash, prompt: undefined, output: undefined, request: undefined };
     const queued = { event: queuedEvent, enqueuedAt: Date.now() };
     let queueOverflowed = false;
     if (this.buffer.length >= this.maxQueueSize) {
@@ -564,14 +778,576 @@ export class CloudAdapter implements CostAdapter {
    * deny and retry-cap rules throw a structured TraiceEnforcementError. Active
    * swap, downgrade, and route rules rewrite the model only with passing
    * experiment evidence. Active fallback rules make at most one configured
-   * fallback call after a provider error. Shadow rules pass through; semantic
-   * cache shadow rules may report scored opportunities after the provider
-   * response. Unsupported, unavailable, or malformed rules pass through.
+   * fallback call after a provider error. Active load-balancing rules pass the
+   * provider key alias to use to `providerCall` as `options.keyAlias`. Shadow
+   * rules pass through; semantic cache shadow rules may report scored
+   * opportunities after the provider response. Unsupported, unavailable, or
+   * malformed rules pass through.
    */
   async enforceRequest<T, R extends ExactCacheRequest>(
     request: R,
-    providerCall: (effectiveRequest: R) => Promise<T>,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
     context: RequestEnforcementContext = {},
+  ): Promise<T> {
+    if (context.bypass || !this.enforcementEnabled || !this.rulesAreFresh()) {
+      return this.enforceRules(request, providerCall, context);
+    }
+    // Rate limits (protocol v3) are counted by trAIce before any other rule runs.
+    let limits: RateLimitMatch[] = [];
+    try {
+      limits = this.rateLimit
+        ? matchRateLimitRules(
+            { model: request.model, feature: context.feature, retryCount: context.retryCount },
+            this.rules,
+          )
+        : [];
+    } catch {
+      limits = [];
+    }
+    if (limits.length > 0) await this.acquireRateLimits(limits, request.model, context);
+    // Strict caps (protocol v4) are checked by trAIce right before each call that reaches the provider.
+    let strictCaps: StrictCapMatch[] = [];
+    try {
+      strictCaps = this.strictCaps
+        ? matchStrictCaps({ feature: context.feature, userId: context.userId }, this.strictCaps.caps)
+        : [];
+    } catch {
+      strictCaps = [];
+    }
+    const capped =
+      strictCaps.length > 0 ? this.withStrictCaps(providerCall, strictCaps, request.model, context) : providerCall;
+    // Load balancing (protocol v5) picks a provider key for each call that reaches the provider. It sits
+    // outside the strict-cap check, so a retry on another key is checked like any other provider call.
+    const call = this.hasLoadBalanceRules() ? this.withLoadBalancing(capped, context) : capped;
+    const response = await this.enforceRules(request, call, context);
+    if (limits.some((limit) => limit.tokensPerMinute != null)) {
+      this.reportRateLimitUsage(limits, response, request.model, context);
+    }
+    return response;
+  }
+
+  /** Process-local counts for rate-limit rules. */
+  getRateLimitStats(): RateLimitStats {
+    return { ...this.rateLimitStats };
+  }
+
+  /** Process-local counts for strict budget caps. */
+  getStrictCapStats(): StrictCapStats {
+    return { ...this.strictCapStats };
+  }
+
+  /** Process-local counts for load-balancing rules. */
+  getLoadBalanceStats(): LoadBalanceStats {
+    return { ...this.loadBalanceStats, byAlias: Object.fromEntries(this.loadBalanceByAlias) };
+  }
+
+  private hasLoadBalanceRules(): boolean {
+    return this.loadBalance !== null && this.rules.some((rule) => rule.action === "LOAD_BALANCE");
+  }
+
+  /**
+   * Wraps the provider call so that a call an active load-balancing rule
+   * matches goes to one of the rule's provider keys, passed to the callback as
+   * `keyAlias`; a rule in preview only reports the key it would use. Rules
+   * match the request each call actually sends (after any swap, rollout, or
+   * fallback model change), so every path that reaches the provider goes
+   * through here. If the load-balancing code itself fails, the call goes to
+   * the provider as if no rule matched.
+   */
+  private withLoadBalancing<T, R extends ExactCacheRequest>(
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    context: RequestEnforcementContext,
+  ): (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T> {
+    return async (effectiveRequest, options) => {
+      const plainCall = () =>
+        options === undefined ? providerCall(effectiveRequest) : providerCall(effectiveRequest, options);
+      let match: LoadBalanceMatch | null;
+      let alias: string | null;
+      try {
+        match = this.loadBalance
+          ? matchLoadBalanceRule(
+              { model: effectiveRequest.model, feature: context.feature, retryCount: context.retryCount },
+              this.rules,
+            )
+          : null;
+        alias = match ? this.pickLoadBalanceAlias(match, []) : null;
+      } catch (error) {
+        this.loadBalanceFailedOpen(error);
+        return plainCall();
+      }
+      if (!match || !alias) return plainCall();
+      if (match.mode === "shadow") {
+        return this.executeLoadBalanceShadow(match, alias, effectiveRequest.model, plainCall);
+      }
+      return this.executeLoadBalance(match, alias, effectiveRequest, providerCall, options);
+    };
+  }
+
+  /**
+   * Calls the provider with the picked key. After a provider rate limit the key
+   * rests until the provider's Retry-After or the rule's cooldown, and with
+   * `onRateLimit: "next_key"` the call moves to a key it has not tried, at most
+   * once per key. Any other failure, including a refusal by trAIce, is thrown
+   * as is. Reports one decision for the call, whatever the number of attempts.
+   */
+  private async executeLoadBalance<T, R extends ExactCacheRequest>(
+    match: LoadBalanceMatch,
+    firstAlias: string,
+    request: R,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    options: ProviderCallOptions | undefined,
+  ): Promise<T> {
+    const tried: string[] = [];
+    const switchedFrom: string[] = [];
+    let alias = firstAlias;
+    for (;;) {
+      tried.push(alias);
+      try {
+        const response = await providerCall(request, { ...options, keyAlias: alias });
+        this.recordLoadBalance(match, request.model, {
+          keyAlias: alias,
+          attempts: tried.length,
+          switchedFrom,
+          outcome: "success",
+        });
+        return response;
+      } catch (error) {
+        // A refusal by trAIce (a strict cap) is not a provider rate limit and stops before the provider call.
+        const refusedByTraice = error instanceof TraiceEnforcementError;
+        const rateLimited = !refusedByTraice && fallbackFailure(error) === "429";
+        let next: string | null = null;
+        try {
+          if (rateLimited) {
+            this.coolLoadBalanceKey(match, alias, error);
+            // A call past its deadline was already abandoned: no other attempt.
+            if (match.onRateLimit === "next_key" && !options?.signal?.aborted) {
+              next = this.pickLoadBalanceAlias(match, tried);
+            }
+          }
+        } catch (failure) {
+          this.loadBalanceFailedOpen(failure);
+          next = null;
+        }
+        if (next !== null) {
+          switchedFrom.push(alias);
+          alias = next;
+          continue;
+        }
+        const attempts = refusedByTraice ? tried.length - 1 : tried.length;
+        if (attempts > 0) {
+          let errorType = fallbackFailure(error);
+          if (errorType === "error" && options?.signal?.aborted) errorType = fallbackFailure(options.signal.reason);
+          this.recordLoadBalance(match, request.model, {
+            keyAlias: alias,
+            attempts,
+            switchedFrom,
+            outcome: "failed",
+            errorType,
+            exhausted: rateLimited && match.onRateLimit === "next_key" && tried.length >= match.keys.length,
+          });
+        }
+        throw error;
+      }
+    }
+  }
+
+  /** A rule in preview: the call goes to the provider as without the rule, and trAIce learns which key it would use. */
+  private async executeLoadBalanceShadow<T>(
+    match: LoadBalanceMatch,
+    alias: string,
+    requestedModel: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    let refusedByTraice = false;
+    try {
+      return await call();
+    } catch (error) {
+      refusedByTraice = error instanceof TraiceEnforcementError;
+      throw error;
+    } finally {
+      if (!refusedByTraice) {
+        this.recordLoadBalance(match, requestedModel, { keyAlias: alias, attempts: 1, switchedFrom: [] });
+      }
+    }
+  }
+
+  private pickLoadBalanceAlias(match: LoadBalanceMatch, tried: readonly string[]): string | null {
+    return pickLoadBalanceKey(match.keys, {
+      random: Math.random(),
+      now: Date.now(),
+      coolingUntil: this.loadBalanceCooling.get(match.ruleId)?.until,
+      exclude: tried,
+    });
+  }
+
+  /** Rests a key the provider rate-limited until its Retry-After, or the rule's cooldown without one. */
+  private coolLoadBalanceKey(match: LoadBalanceMatch, alias: string, error: unknown): void {
+    const now = Date.now();
+    let cooling = this.loadBalanceCooling.get(match.ruleId);
+    if (!cooling) {
+      // No prototype, so an alias such as "constructor" reads as not cooling.
+      cooling = { aliases: loadBalanceAliases(match.keys), until: Object.create(null) as Record<string, number> };
+      this.loadBalanceCooling.set(match.ruleId, cooling);
+    }
+    cooling.until[alias] = now + (retryAfterMs(error, now) ?? match.cooldownMs);
+  }
+
+  /** Forgets the rest times of rules that are gone or name other keys after a rules refresh. */
+  private resetLoadBalanceCooling(): void {
+    if (!this.loadBalance) {
+      this.loadBalanceCooling.clear();
+      return;
+    }
+    for (const [ruleId, cooling] of this.loadBalanceCooling) {
+      const rule = this.rules.find((candidate) => candidate.id === ruleId && candidate.action === "LOAD_BALANCE");
+      const params = rule ? loadBalanceParams(rule.actionParams) : null;
+      if (!params || loadBalanceAliases(params.keys) !== cooling.aliases) this.loadBalanceCooling.delete(ruleId);
+    }
+  }
+
+  /** Counts a load-balanced call and posts its decision in the background. */
+  private recordLoadBalance(match: LoadBalanceMatch, requestedModel: string, result: LoadBalanceResult): void {
+    try {
+      if (match.mode === "active") {
+        this.loadBalanceStats.calls++;
+        this.loadBalanceStats.switches += result.switchedFrom.length;
+        if (result.exhausted) this.loadBalanceStats.exhausted++;
+        this.loadBalanceByAlias.set(result.keyAlias, (this.loadBalanceByAlias.get(result.keyAlias) ?? 0) + 1);
+      }
+      this.trackDecision(this.postLoadBalanceDecision(match, requestedModel, result));
+    } catch (error) {
+      this.reportEnforcementFailure(asError(error), { operation: "load_balance" });
+    }
+  }
+
+  private loadBalanceFailedOpen(error: unknown): void {
+    this.enforcementStats.failOpenRequests++;
+    this.reportEnforcementFailure(asError(error), { operation: "load_balance" });
+  }
+
+  /**
+   * Wraps the provider call so that trAIce checks the matching strict caps
+   * immediately before each call that reaches the provider. Cache hits never
+   * reach it, so they make no check. The reservation ids of an allowed call
+   * are kept for its event once the provider call succeeds.
+   */
+  private withStrictCaps<T, R extends ExactCacheRequest>(
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    caps: StrictCapMatch[],
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T> {
+    return async (effectiveRequest, options) => {
+      const reservationIds = await this.checkStrictCaps(caps, effectiveRequest, requestedModel, context);
+      // A fallback deadline that passed during the check: the call was already abandoned.
+      options?.signal?.throwIfAborted();
+      const response =
+        options === undefined ? await providerCall(effectiveRequest) : await providerCall(effectiveRequest, options);
+      if (reservationIds.length > 0) {
+        this.rememberCapReservations(reservationIds, effectiveRequest.model, response, context.feature);
+      }
+      return response;
+    };
+  }
+
+  /**
+   * Asks trAIce whether a call fits the strict caps it matches, waiting at most
+   * the advertised timeout. Returns the reservation ids of an allowed call.
+   * Throws a DENY TraiceEnforcementError when trAIce refuses the call, or when
+   * trAIce does not answer and a matching active cap blocks calls while trAIce
+   * is unavailable; otherwise lets the call through.
+   */
+  private async checkStrictCaps(
+    caps: StrictCapMatch[],
+    request: ExactCacheRequest,
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): Promise<string[]> {
+    const settings = this.strictCaps;
+    if (!settings) return [];
+    const inputTokens = estimateInputTokens(request);
+    const maxOutputTokens = requestMaxOutputTokens(request);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), settings.timeoutMs);
+    let result: StrictCapCheckResult | null = null;
+    try {
+      const response = await fetch(this.siblingEndpoint("budget-caps/acquire"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({
+          ruleIds: caps.map((cap) => cap.ruleId),
+          ...(context.feature ? { feature: context.feature } : {}),
+          ...(context.userId ? { userId: context.userId } : {}),
+          ...(request.model ? { model: request.model } : {}),
+          ...(context.provider ? { provider: context.provider } : {}),
+          ...(inputTokens != null ? { inputTokens } : {}),
+          ...(maxOutputTokens != null ? { maxOutputTokens } : {}),
+        }),
+        signal: controller.signal,
+      });
+      // trAIce answers every check with 200; anything else is its own error.
+      if (response.status !== 200) {
+        throw Object.assign(new Error(`Strict cap check failed with HTTP ${response.status}`), {
+          status: response.status,
+        });
+      }
+      const body = (await response.json()) as { allowed?: unknown } | null;
+      if (body == null || typeof body !== "object" || typeof body.allowed !== "boolean") {
+        throw new Error("Strict cap check returned an unexpected response");
+      }
+      result = body as StrictCapCheckResult;
+    } catch (error) {
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "strict_cap_check",
+        ...(status == null ? {} : { status }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!result) return this.strictCapsUnavailable(caps, requestedModel, context);
+
+    this.strictCapStats.checked++;
+    if (Array.isArray(result.shadowRefused)) this.strictCapStats.shadowRefused += result.shadowRefused.length;
+    if (result.allowed) {
+      return Array.isArray(result.reservationIds)
+        ? result.reservationIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [];
+    }
+
+    const refused = (result.refused ?? {}) as Record<string, unknown>;
+    const cap = caps.find((candidate) => candidate.ruleId === refused.ruleId);
+    if (!cap) return [];
+    const ruleName = typeof refused.ruleName === "string" ? refused.ruleName : this.ruleNameFor(cap.ruleId);
+    const reason: Record<string, unknown> = { type: "budget_cap", strictCap: true };
+    for (const field of ["budgetId", "budgetName"] as const) {
+      if (typeof refused[field] === "string") reason[field] = refused[field];
+    }
+    for (const field of ["limitUsd", "spentUsd", "reservedUsd", "estimateUsd"] as const) {
+      const value = refused[field];
+      if (typeof value === "number" && Number.isFinite(value)) reason[field] = value;
+    }
+    this.strictCapStats.refused++;
+    this.trackDecision(this.postBlockingDecision(cap.ruleId, requestedModel, "DENY", context.retryCount, reason));
+    throw new TraiceEnforcementError("DENY", cap.ruleId, ruleName, requestedModel, reason);
+  }
+
+  /**
+   * trAIce could not check the call: block it if a matching active cap says
+   * `onUnavailable: "block"`, otherwise let it through. Caps in preview never block.
+   */
+  private strictCapsUnavailable(
+    caps: StrictCapMatch[],
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): string[] {
+    this.strictCapStats.unavailable++;
+    const blocking = caps.find((cap) => cap.mode === "active" && cap.onUnavailable === "block");
+    if (!blocking) {
+      this.enforcementStats.failOpenRequests++;
+      return [];
+    }
+    this.strictCapStats.blockedUnavailable++;
+    const ruleName = this.ruleNameFor(blocking.ruleId);
+    const reason = { type: "budget_cap", strictCap: true, unavailable: true };
+    this.trackDecision(this.postBlockingDecision(blocking.ruleId, requestedModel, "DENY", context.retryCount, reason));
+    throw new TraiceEnforcementError(
+      "DENY",
+      blocking.ruleId,
+      ruleName,
+      requestedModel,
+      reason,
+      undefined,
+      `Request blocked: trAIce could not confirm the budget for ${ruleName}, and this strict cap blocks calls when trAIce is unavailable`,
+    );
+  }
+
+  private ruleNameFor(ruleId: string): string {
+    return this.rules.find((rule) => rule.id === ruleId)?.name ?? ruleId;
+  }
+
+  /** Keeps an allowed call's reservation ids until its event is written, by model and feature. */
+  private rememberCapReservations(ids: string[], model: string, response: unknown, feature?: string): void {
+    const keys = [capReservationKey(model, feature)];
+    // The event names the model the provider reports, which can differ from the requested one.
+    const reported = (response as { model?: unknown } | null | undefined)?.model;
+    if (typeof reported === "string" && reported !== model) keys.push(capReservationKey(reported, feature));
+    this.dropExpiredCapReservations();
+    this.pendingCapReservations.push({ keys, ids, at: Date.now() });
+    if (this.pendingCapReservations.length > STRICT_CAP_MAX_PENDING_RESERVATIONS) this.pendingCapReservations.shift();
+  }
+
+  /** The oldest pending reservation ids for an event's model and feature, removed from the queue. */
+  private takeCapReservations(model: string, feature?: string): string[] | undefined {
+    if (this.pendingCapReservations.length === 0) return undefined;
+    this.dropExpiredCapReservations();
+    const key = capReservationKey(model, feature);
+    const index = this.pendingCapReservations.findIndex((entry) => entry.keys.includes(key));
+    if (index < 0) return undefined;
+    const [entry] = this.pendingCapReservations.splice(index, 1);
+    return entry.ids.slice(0, STRICT_CAP_MAX_RESERVATIONS_PER_EVENT);
+  }
+
+  private dropExpiredCapReservations(): void {
+    const cutoff = Date.now() - STRICT_CAP_RESERVATION_MAX_AGE_MS;
+    while (this.pendingCapReservations.length > 0 && this.pendingCapReservations[0].at <= cutoff) {
+      this.pendingCapReservations.shift();
+    }
+  }
+
+  /**
+   * Refuses the request if an active rate-limit rule is over its limit, as
+   * trAIce counts it across instances. Refuses locally, without asking, while
+   * an earlier refusal's retry time runs. Lets the request through when trAIce
+   * does not answer in time or fails.
+   */
+  private async acquireRateLimits(
+    limits: RateLimitMatch[],
+    requestedModel: string,
+    context: RequestEnforcementContext,
+  ): Promise<void> {
+    const now = Date.now();
+    for (const limit of limits) {
+      if (limit.mode !== "active") continue;
+      const key = this.rateLimitKey(limit, context);
+      const blocked = this.rateLimitBlockedUntil.get(key);
+      if (!blocked) continue;
+      if (blocked.until <= now) {
+        this.rateLimitBlockedUntil.delete(key);
+        continue;
+      }
+      this.rateLimitStats.refusedLocally++;
+      throw new TraiceEnforcementError(
+        "RATE_LIMIT",
+        limit.ruleId,
+        blocked.ruleName,
+        requestedModel,
+        blocked.reason,
+        blocked.until - now,
+      );
+    }
+
+    const settings = this.rateLimit;
+    if (!settings) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), settings.timeoutMs);
+    let result: {
+      allowed?: unknown;
+      ruleId?: unknown;
+      ruleName?: unknown;
+      limit?: unknown;
+      value?: unknown;
+      retryAfterMs?: unknown;
+      shadowLimited?: unknown;
+    };
+    try {
+      const response = await fetch(this.siblingEndpoint("rate-limits/acquire"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({
+          ruleIds: limits.map((limit) => limit.ruleId),
+          ...(context.userId ? { userId: context.userId } : {}),
+        }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        this.rateLimitStats.failOpen++;
+        this.enforcementStats.failOpenRequests++;
+        return;
+      }
+      result = (await response.json()) as typeof result;
+    } catch (error) {
+      this.rateLimitStats.failOpen++;
+      this.enforcementStats.failOpenRequests++;
+      this.reportEnforcementFailure(asError(error), { operation: "rate_limit_acquire" });
+      return;
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    this.rateLimitStats.acquired++;
+    if (Array.isArray(result.shadowLimited)) this.rateLimitStats.shadowLimited += result.shadowLimited.length;
+    if (result.allowed !== false) return;
+    const refused = limits.find((limit) => limit.ruleId === result.ruleId);
+    if (!refused) return;
+    const retryAfterMs =
+      typeof result.retryAfterMs === "number" && Number.isFinite(result.retryAfterMs)
+        ? Math.min(Math.max(result.retryAfterMs, 0), 120_000)
+        : 1_000;
+    const ruleName = typeof result.ruleName === "string" ? result.ruleName : refused.ruleName;
+    const reason = {
+      type: "rate_limit",
+      limit: result.limit === "tokens" ? "tokens" : "requests",
+      ...(typeof result.value === "number" ? { value: result.value } : {}),
+      per: refused.per,
+    };
+    this.rateLimitBlockedUntil.set(this.rateLimitKey(refused, context), {
+      until: Date.now() + retryAfterMs,
+      ruleName,
+      reason,
+    });
+    this.rateLimitStats.refused++;
+    throw new TraiceEnforcementError("RATE_LIMIT", refused.ruleId, ruleName, requestedModel, reason, retryAfterMs);
+  }
+
+  /** Reports a finished call's tokens for rules that limit tokens per minute, in the background. */
+  private reportRateLimitUsage(
+    limits: RateLimitMatch[],
+    response: unknown,
+    model: string,
+    context: RequestEnforcementContext,
+  ): void {
+    let tokens = 0;
+    try {
+      const basis = responseCostBasis(response, context.provider, model);
+      tokens = basis.inputTokens + basis.outputTokens + basis.cacheReadTokens + basis.cacheWriteTokens;
+    } catch {
+      return;
+    }
+    if (!Number.isFinite(tokens) || tokens <= 0) return;
+    const ruleIds = limits.filter((limit) => limit.tokensPerMinute != null).map((limit) => limit.ruleId);
+    this.trackDecision(
+      fetch(this.siblingEndpoint("rate-limits/usage"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({
+          ruleIds,
+          ...(context.userId ? { userId: context.userId } : {}),
+          tokens: Math.min(Math.round(tokens), 10_000_000),
+        }),
+      })
+        .then(() => {
+          this.rateLimitStats.usageReports++;
+        })
+        .catch((error: unknown) => {
+          this.reportEnforcementFailure(asError(error), { operation: "rate_limit_usage" });
+        }),
+    );
+  }
+
+  /** The counter a request shares for a rule, as trAIce keys it for this API key. */
+  private rateLimitKey(limit: RateLimitMatch, context: RequestEnforcementContext): string {
+    if (limit.per === "user") return `${limit.ruleId}|user:${context.userId ?? ""}`;
+    return `${limit.ruleId}|${limit.per}`;
+  }
+
+  private async enforceRules<T, R extends ExactCacheRequest>(
+    request: R,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    context: RequestEnforcementContext,
   ): Promise<T> {
     if (context.bypass || !this.enforcementEnabled) return providerCall(request);
     if (!this.rulesAreFresh()) {
@@ -631,7 +1407,7 @@ export class CloudAdapter implements CostAdapter {
 
     if (decision.action === "DENY" || decision.action === "CAP_RETRIES") {
       this.trackDecision(
-        this.postBlockingDecision(rule, request.model, decision.action, context.retryCount, decision.reason),
+        this.postBlockingDecision(rule.id, request.model, decision.action, context.retryCount, decision.reason),
       );
       throw new TraiceEnforcementError(
         decision.action,
@@ -660,7 +1436,7 @@ export class CloudAdapter implements CostAdapter {
       }
       const effectiveRequest = { ...request, model: decision.servedModel } as R;
       const response = await providerCall(effectiveRequest);
-      const costBasis = responseCostBasis(response, context.provider);
+      const costBasis = responseCostBasis(response, context.provider, decision.servedModel);
       this.trackDecision(
         this.postModelDecision(
           rule,
@@ -682,6 +1458,40 @@ export class CloudAdapter implements CostAdapter {
     return providerCall(request);
   }
 
+  /**
+   * Run an Amazon Bedrock request (Converse, ConverseStream input, or any
+   * request that names its model as `modelId`) through the same rules as
+   * `enforceRequest`.
+   *
+   * Rules match on `modelId`, and a swap, downgrade, route, rollout, or
+   * fallback rewrites `modelId` in the request passed to `providerCall`.
+   * Decisions are reported for provider `aws-bedrock` unless the context
+   * names another.
+   *
+   * ```ts
+   * const response = await adapter.enforceBedrockRequest(
+   *   { modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", messages },
+   *   (input) => bedrock.send(new ConverseCommand(input)),
+   *   { feature: "escalation-agent" },
+   * );
+   * ```
+   */
+  async enforceBedrockRequest<T, R extends BedrockModelRequest>(
+    request: R,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+    context: RequestEnforcementContext = {},
+  ): Promise<T> {
+    const aliased = { ...request, model: request.modelId };
+    return this.enforceRequest(
+      aliased,
+      (effective, options) => {
+        const { model, ...rest } = effective;
+        return providerCall({ ...rest, modelId: model } as unknown as R, options);
+      },
+      { provider: "aws-bedrock", ...context },
+    );
+  }
+
   /** Process-local metrics for active exact-cache rules. */
   getExactCacheStats(): ExactCacheStats {
     const attempts = this.exactCacheHits + this.exactCacheMisses;
@@ -692,6 +1502,9 @@ export class CloudAdapter implements CostAdapter {
       size: this.exactCache.size,
       hitRate: attempts > 0 ? this.exactCacheHits / attempts : 0,
       savingsUsd: this.exactCacheSavingsUsdMicros / 1_000_000,
+      sharedHits: this.sharedCacheHits,
+      sharedLookupFailures: this.sharedCacheLookupFailures,
+      sharedStores: this.sharedCacheStores,
     };
   }
 
@@ -706,6 +1519,9 @@ export class CloudAdapter implements CostAdapter {
       size: this.semanticCache.size,
       hitRate: attempts > 0 ? this.semanticCacheHits / attempts : 0,
       savingsUsd: this.semanticCacheSavingsUsdMicros / 1_000_000,
+      sharedHits: this.sharedSemanticCacheHits,
+      sharedLookupFailures: this.sharedSemanticCacheLookupFailures,
+      sharedStores: this.sharedSemanticCacheStores,
     };
   }
 
@@ -779,7 +1595,7 @@ export class CloudAdapter implements CostAdapter {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           "X-Source": "traice-sdk",
-          "X-Traice-Enforcement-Version": "2",
+          "X-Traice-Enforcement-Version": "5",
         },
         signal: controller.signal,
       });
@@ -796,9 +1612,22 @@ export class CloudAdapter implements CostAdapter {
         evidence?: unknown;
         budgets?: unknown;
         ttlSeconds?: unknown;
+        sharedCache?: unknown;
+        sharedSemanticCache?: unknown;
+        rateLimit?: unknown;
+        strictCaps?: unknown;
+        loadBalance?: unknown;
       };
       this.enforcementEnabled = json.enabled !== false;
+      this.sharedCache = parseSharedCacheSettings(json.sharedCache);
+      this.sharedCacheSuspended = false;
+      this.sharedSemanticCache = parseSharedSemanticCacheSettings(json.sharedSemanticCache);
+      this.sharedSemanticCacheSuspended = false;
+      this.rateLimit = parseRateLimitSettings(json.rateLimit);
+      this.strictCaps = parseStrictCapSettings(json.strictCaps);
+      this.loadBalance = parseLoadBalanceSettings(json.loadBalance);
       this.rules = Array.isArray(json.rules) ? json.rules.filter(isCacheRule) : [];
+      this.resetLoadBalanceCooling();
       this.evidence = Array.isArray(json.evidence) ? json.evidence.filter(isEnforcementEvidence) : [];
       this.budgets = Array.isArray(json.budgets) ? json.budgets.filter(isEnforcementBudgetSnapshot) : [];
       const ttlSeconds = Number(json.ttlSeconds ?? 60);
@@ -896,6 +1725,36 @@ export class CloudAdapter implements CostAdapter {
       this.trackDecision(this.postExactCacheDecision(rule, request.model, cached.costBasis));
       return cached.response as T;
     }
+
+    // Shared exact cache: only for rules marked shared while the workspace is
+    // opted in. The request never leaves the process; TrAIce sees only an HMAC
+    // key. Any failure or timeout falls back to the provider.
+    const shared = this.sharedCacheFor(rule);
+    const sharedKey = shared ? sharedExactCacheKey(shared.keySalt, rule.id, request) : null;
+    if (shared && sharedKey) {
+      const hit = await this.lookupSharedCache(shared, rule.id, sharedKey);
+      if (hit) {
+        try {
+          const costBasis = responseCostBasis(hit.response, context.provider ?? hit.provider, request.model);
+          this.exactCacheHits++;
+          this.sharedCacheHits++;
+          this.exactCacheSavingsUsdMicros += costBasis.savingsUsdMicros;
+          this.setExactCache(key, {
+            response: hit.response,
+            expiresAt: Math.min(
+              Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
+              hit.expiresAt ?? Number.POSITIVE_INFINITY,
+            ),
+            costBasis,
+          });
+          this.trackDecision(this.postExactCacheDecision(rule, request.model, costBasis, "shared"));
+          return hit.response as T;
+        } catch {
+          // A response that cannot be costed is not served from the shared cache.
+        }
+      }
+    }
+
     this.exactCacheMisses++;
     this.trackDecision(this.postExactCacheMiss(rule, request.model));
 
@@ -904,15 +1763,143 @@ export class CloudAdapter implements CostAdapter {
     const response = await providerCall();
     try {
       const ttlSeconds = boundedTtlSeconds(rule.actionParams.cacheTtlSec);
+      const costBasis = responseCostBasis(response, context.provider, request.model);
       this.setExactCache(key, {
         response,
         expiresAt: Date.now() + ttlSeconds * 1000,
-        costBasis: responseCostBasis(response, context.provider),
+        costBasis,
       });
+      // Re-check: a refused lookup suspends the shared cache for this request too.
+      if (shared && sharedKey && !this.sharedCacheSuspended) {
+        this.trackDecision(this.storeSharedCache(shared, rule.id, sharedKey, response, costBasis, ttlSeconds));
+      }
     } catch {
       // A cache write/costing failure does not affect the provider response.
     }
     return response;
+  }
+
+  private sharedCacheFor(rule: EnforcementRule): SharedCacheSettings | null {
+    if (!this.sharedCache || this.sharedCacheSuspended) return null;
+    return rule.actionParams.shared === true ? this.sharedCache : null;
+  }
+
+  private async lookupSharedCache(
+    shared: SharedCacheSettings,
+    ruleId: string,
+    key: string,
+  ): Promise<{ response: unknown; provider?: CostEvent["provider"]; expiresAt?: number } | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), shared.timeoutMs);
+    try {
+      const response = await fetch(this.siblingEndpoint("cache/lookup"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({ ruleId, key }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        this.handleSharedCacheRefusal(response.status);
+        throw Object.assign(new Error(`Shared cache lookup failed with HTTP ${response.status}`), {
+          status: response.status,
+        });
+      }
+      const body = (await response.json()) as {
+        hit?: unknown;
+        response?: unknown;
+        provider?: unknown;
+        expiresAt?: unknown;
+      };
+      if (body.hit !== true || body.response === undefined || body.response === null) return null;
+      const expiresAt = typeof body.expiresAt === "string" ? Date.parse(body.expiresAt) : NaN;
+      return {
+        response: body.response,
+        ...(typeof body.provider === "string" ? { provider: body.provider as CostEvent["provider"] } : {}),
+        ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+      };
+    } catch (error) {
+      this.sharedCacheLookupFailures++;
+      this.enforcementStats.failOpenRequests++;
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_cache_lookup",
+        ...(status == null ? {} : { status }),
+      });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async storeSharedCache(
+    shared: SharedCacheSettings,
+    ruleId: string,
+    key: string,
+    response: unknown,
+    costBasis: ExactCacheCostBasis,
+    ttlSec: number,
+  ): Promise<void> {
+    let body: string;
+    try {
+      body = JSON.stringify({
+        ruleId,
+        key,
+        response,
+        provider: costBasis.provider,
+        model: costBasis.model,
+        costBasis: {
+          inputTokens: costBasis.inputTokens,
+          outputTokens: costBasis.outputTokens,
+          cacheReadTokens: costBasis.cacheReadTokens,
+          cacheWriteTokens: costBasis.cacheWriteTokens,
+        },
+        ttlSec,
+      });
+    } catch {
+      return;
+    }
+    // Large responses stay in the local cache only; TrAIce would refuse them anyway.
+    if (Buffer.byteLength(body, "utf8") > shared.maxResponseBytes + 4_096) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
+    try {
+      const result = await fetch(this.siblingEndpoint("cache/store"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!result.ok) {
+        this.handleSharedCacheRefusal(result.status);
+        throw Object.assign(new Error(`Shared cache store failed with HTTP ${result.status}`), {
+          status: result.status,
+        });
+      }
+      this.sharedCacheStores++;
+    } catch (error) {
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_cache_store",
+        ...(status == null ? {} : { status }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /** 403 shared_cache_disabled or 409 rule_not_shared: the setting changed, so stop until the next rules poll. */
+  private handleSharedCacheRefusal(status: number): void {
+    if (status === 403 || status === 409) this.sharedCacheSuspended = true;
   }
 
   private async executeSemanticCacheRule<T>(
@@ -949,23 +1936,209 @@ export class CloudAdapter implements CostAdapter {
       return cached.entry.response as T;
     }
 
+    // Shared semantic cache: only for rules marked shared while the workspace is
+    // opted in, and only with a named embedding model. TrAIce receives the
+    // embedding, never the request text. Any failure or timeout falls back to
+    // the provider.
+    const shared = this.sharedSemanticCacheFor(rule, vector);
+    if (shared) {
+      const hit = await this.lookupSharedSemanticCache(shared, rule.id, request.model, vector);
+      if (hit) {
+        try {
+          const costBasis = responseCostBasis(hit.response, context.provider ?? hit.provider, request.model);
+          this.semanticCacheHits++;
+          this.sharedSemanticCacheHits++;
+          this.semanticCacheSavingsUsdMicros += costBasis.savingsUsdMicros;
+          this.setSemanticCache(semanticCacheKey(this.apiKey, rule.id, request.model, text), {
+            ruleId: rule.id,
+            requestedModel: request.model,
+            vector,
+            response: hit.response,
+            expiresAt: Math.min(
+              Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
+              hit.expiresAt ?? Number.POSITIVE_INFINITY,
+            ),
+            costBasis,
+          });
+          this.trackDecision(
+            this.postSemanticCacheDecision(rule, request.model, "hit", hit.similarity, costBasis, "active", "shared"),
+          );
+          return hit.response as T;
+        } catch {
+          // A response that cannot be costed is not served from the shared cache.
+        }
+      }
+    }
+
     this.semanticCacheMisses++;
     this.trackDecision(this.postSemanticCacheDecision(rule, request.model, "miss", cached.similarity));
     const response = await providerCall();
     try {
+      const ttlSeconds = boundedTtlSeconds(rule.actionParams.cacheTtlSec);
+      const costBasis = responseCostBasis(response, context.provider, request.model);
       const key = semanticCacheKey(this.apiKey, rule.id, request.model, text);
       this.setSemanticCache(key, {
         ruleId: rule.id,
         requestedModel: request.model,
         vector,
         response,
-        expiresAt: Date.now() + boundedTtlSeconds(rule.actionParams.cacheTtlSec) * 1000,
-        costBasis: responseCostBasis(response, context.provider),
+        expiresAt: Date.now() + ttlSeconds * 1000,
+        costBasis,
       });
+      // Re-check: a refused lookup suspends the shared semantic cache for this request too.
+      if (shared && !this.sharedSemanticCacheSuspended) {
+        this.trackDecision(
+          this.storeSharedSemanticCache(shared, rule.id, request.model, vector, response, costBasis, ttlSeconds),
+        );
+      }
     } catch {
       // A cache write/costing failure does not affect the provider response.
     }
     return response;
+  }
+
+  private sharedSemanticCacheFor(
+    rule: EnforcementRule,
+    vector: readonly number[],
+  ): (SharedSemanticCacheSettings & { embeddingModel: string }) | null {
+    if (!this.sharedSemanticCache || this.sharedSemanticCacheSuspended) return null;
+    if (rule.actionParams.shared !== true) return null;
+    const embeddingModel = this.semanticCacheConfig?.embeddingModel?.trim();
+    if (!embeddingModel || vector.length > this.sharedSemanticCache.maxDimensions) return null;
+    return { ...this.sharedSemanticCache, embeddingModel: embeddingModel.slice(0, 128) };
+  }
+
+  private async lookupSharedSemanticCache(
+    shared: SharedSemanticCacheSettings & { embeddingModel: string },
+    ruleId: string,
+    requestedModel: string,
+    vector: readonly number[],
+  ): Promise<{
+    response: unknown;
+    similarity: number;
+    provider?: CostEvent["provider"];
+    expiresAt?: number;
+  } | null> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), shared.timeoutMs);
+    try {
+      const response = await fetch(this.siblingEndpoint("cache/semantic/lookup"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body: JSON.stringify({ ruleId, requestedModel, embeddingModel: shared.embeddingModel, embedding: vector }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        this.handleSharedSemanticCacheRefusal(response.status);
+        throw Object.assign(new Error(`Shared semantic cache lookup failed with HTTP ${response.status}`), {
+          status: response.status,
+        });
+      }
+      const body = (await response.json()) as {
+        hit?: unknown;
+        response?: unknown;
+        similarity?: unknown;
+        provider?: unknown;
+        expiresAt?: unknown;
+      };
+      if (body.hit !== true || body.response === undefined || body.response === null) return null;
+      const similarity = Number(body.similarity);
+      if (!Number.isFinite(similarity)) return null;
+      const expiresAt = typeof body.expiresAt === "string" ? Date.parse(body.expiresAt) : NaN;
+      return {
+        response: body.response,
+        similarity,
+        ...(typeof body.provider === "string" ? { provider: body.provider as CostEvent["provider"] } : {}),
+        ...(Number.isFinite(expiresAt) ? { expiresAt } : {}),
+      };
+    } catch (error) {
+      this.sharedSemanticCacheLookupFailures++;
+      this.enforcementStats.failOpenRequests++;
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_semantic_cache_lookup",
+        ...(status == null ? {} : { status }),
+      });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async storeSharedSemanticCache(
+    shared: SharedSemanticCacheSettings & { embeddingModel: string },
+    ruleId: string,
+    requestedModel: string,
+    vector: readonly number[],
+    response: unknown,
+    costBasis: ExactCacheCostBasis,
+    ttlSec: number,
+  ): Promise<void> {
+    let serializedResponse: string;
+    let body: string;
+    try {
+      serializedResponse = JSON.stringify(response);
+      body = JSON.stringify({
+        ruleId,
+        requestedModel,
+        embeddingModel: shared.embeddingModel,
+        embedding: vector,
+        response,
+        provider: costBasis.provider,
+        model: costBasis.model,
+        costBasis: {
+          inputTokens: costBasis.inputTokens,
+          outputTokens: costBasis.outputTokens,
+          cacheReadTokens: costBasis.cacheReadTokens,
+          cacheWriteTokens: costBasis.cacheWriteTokens,
+        },
+        ttlSec,
+      });
+    } catch {
+      return;
+    }
+    // Large responses stay in the local cache only; TrAIce would refuse them anyway.
+    if (Buffer.byteLength(serializedResponse, "utf8") > shared.maxResponseBytes) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.enforcementTimeoutMs);
+    try {
+      const result = await fetch(this.siblingEndpoint("cache/semantic/store"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "X-Source": "traice-sdk",
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (!result.ok) {
+        this.handleSharedSemanticCacheRefusal(result.status);
+        throw Object.assign(new Error(`Shared semantic cache store failed with HTTP ${result.status}`), {
+          status: result.status,
+        });
+      }
+      this.sharedSemanticCacheStores++;
+    } catch (error) {
+      const status =
+        typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : undefined;
+      this.reportEnforcementFailure(asError(error), {
+        operation: "shared_semantic_cache_store",
+        ...(status == null ? {} : { status }),
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /** 403 shared_cache_disabled or 409 rule_not_shared: the setting changed, so stop until the next rules poll. */
+  private handleSharedSemanticCacheRefusal(status: number): void {
+    if (status === 403 || status === 409) this.sharedSemanticCacheSuspended = true;
   }
 
   private async executeSemanticCacheShadow<T>(
@@ -979,7 +2152,7 @@ export class CloudAdapter implements CostAdapter {
     const text = semanticCacheText(request, context);
     if (!text) return response;
     try {
-      const costBasis = responseCostBasis(response, context.provider);
+      const costBasis = responseCostBasis(response, context.provider, request.model);
       this.trackDecision(this.observeSemanticOpportunity(rule, request.model, text, costBasis));
     } catch {
       // Shadow discovery is observational and never changes the response.
@@ -1030,30 +2203,68 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
+  /**
+   * Calls the requested model, retrying it and then calling the fallback model
+   * as the rule's `actionParams` allow:
+   *
+   * - `timeoutMs`: give up on an attempt after this long (each attempt, and the
+   *   fallback call, gets its own deadline);
+   * - `retryOn`: which failures lead to a retry or the fallback: `timeout`,
+   *   `429`, `5xx`, or `error` for any failure (the default, as before);
+   * - `maxRetries` and `backoffMs`: retry the requested model this many times,
+   *   with jittered exponential backoff, before falling back.
+   *
+   * A failure that `retryOn` does not cover is thrown as is. When the fallback
+   * also fails, the requested model's last error is thrown.
+   */
   private async executeFallbackRule<T, R extends ExactCacheRequest>(
     request: R,
-    providerCall: (effectiveRequest: R) => Promise<T>,
+    providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
     context: RequestEnforcementContext,
     rule: EnforcementRule,
     fallbackModel: string,
     reason: Record<string, unknown>,
   ): Promise<T> {
-    try {
-      return await providerCall(request);
-    } catch (primaryError) {
-      const fallbackRequest = { ...request, model: fallbackModel } as R;
+    const policy = fallbackPolicy(rule.actionParams);
+    let primaryError: unknown;
+    let failure: FallbackFailure = "error";
+    let attempts = 0;
+    for (;;) {
+      attempts++;
       try {
-        const response = await providerCall(fallbackRequest);
-        this.trackDecision(
-          this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "success", reason),
-        );
-        return response;
-      } catch {
-        this.trackDecision(
-          this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "failed", reason),
-        );
-        throw primaryError;
+        return await callWithDeadline(providerCall, request, policy.timeoutMs);
+      } catch (error) {
+        // A refusal by trAIce (a strict cap) is not a provider failure: never retried or sent to the fallback.
+        if (error instanceof TraiceEnforcementError) throw error;
+        primaryError = error;
+        failure = fallbackFailure(error);
+        if (!policy.retryOn.has("error") && !policy.retryOn.has(failure)) throw error;
+        if (attempts > policy.maxRetries) break;
+        await delay(backoffDelayMs(policy.backoffMs, attempts));
       }
+    }
+
+    const fallbackRequest = { ...request, model: fallbackModel } as R;
+    const startedAt = Date.now();
+    try {
+      const response = await callWithDeadline(providerCall, fallbackRequest, policy.timeoutMs);
+      this.trackDecision(
+        this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "success", reason, {
+          errorType: failure,
+          attempts,
+          fallbackLatencyMs: Date.now() - startedAt,
+        }),
+      );
+      return response;
+    } catch {
+      this.trackDecision(
+        this.postFallbackDecision(rule, request.model, fallbackModel, context.feature, "failed", reason, {
+          errorType: failure,
+          attempts,
+          fallbackLatencyMs: Date.now() - startedAt,
+        }),
+      );
+      throw primaryError;
     }
   }
 
@@ -1161,7 +2372,8 @@ export class CloudAdapter implements CostAdapter {
       return response;
     } catch (candidateError) {
       const candidateLatencyMs = Date.now() - candidateStartedAt;
-      if (!rollout.sourceFallbackEnabled) {
+      // A refusal by trAIce (a strict cap) is not a provider failure, so it makes no source fallback call.
+      if (!rollout.sourceFallbackEnabled || candidateError instanceof TraiceEnforcementError) {
         this.trackRolloutDecision(
           rule,
           action,
@@ -1253,7 +2465,10 @@ export class CloudAdapter implements CostAdapter {
     error?: unknown,
   ): void {
     try {
-      const costBasis = response === undefined ? undefined : responseCostBasis(response, context.provider);
+      const costBasis =
+        response === undefined
+          ? undefined
+          : responseCostBasis(response, context.provider, servedModel ?? requestedModel);
       this.trackDecision(
         this.postRolloutModelDecision(
           rule,
@@ -1389,10 +2604,12 @@ export class CloudAdapter implements CostAdapter {
     rule: EnforcementRule,
     requestedModel: string,
     costBasis: ExactCacheCostBasis,
+    cacheStore?: "shared",
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
       cacheOutcome: "hit",
+      ...(cacheStore ? { cacheStore } : {}),
       requestedModel,
       provider: costBasis.provider,
       servedModel: costBasis.model,
@@ -1418,12 +2635,14 @@ export class CloudAdapter implements CostAdapter {
     similarity: number | null,
     costBasis?: ExactCacheCostBasis,
     mode: "active" | "shadow" = "active",
+    cacheStore?: "shared",
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
       action: "CACHE_SEMANTIC",
       cacheOutcome,
       mode,
+      ...(cacheStore ? { cacheStore } : {}),
       requestedModel,
       similarity,
       ...(costBasis
@@ -1440,14 +2659,14 @@ export class CloudAdapter implements CostAdapter {
   }
 
   private postBlockingDecision(
-    rule: EnforcementRule,
+    ruleId: string,
     requestedModel: string,
     action: BlockingRuleAction,
     retryCount: number | undefined,
     reason: Record<string, unknown>,
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
-      ruleId: rule.id,
+      ruleId,
       action,
       requestedModel,
       retryCount: retryCount ?? 0,
@@ -1596,6 +2815,7 @@ export class CloudAdapter implements CostAdapter {
     feature: string | undefined,
     fallbackOutcome: "success" | "failed",
     reason: Record<string, unknown>,
+    details: { errorType: FallbackFailure; attempts: number; fallbackLatencyMs: number },
   ): Promise<void> {
     return this.postJson(this.siblingEndpoint("decisions"), {
       ruleId: rule.id,
@@ -1604,7 +2824,31 @@ export class CloudAdapter implements CostAdapter {
       servedModel,
       feature,
       fallbackOutcome,
-      reason,
+      errorType: details.errorType,
+      fallbackLatencyMs: details.fallbackLatencyMs,
+      reason: { ...reason, attempts: details.attempts },
+    });
+  }
+
+  /** One decision per load-balanced call, whatever the number of attempts. */
+  private postLoadBalanceDecision(
+    match: LoadBalanceMatch,
+    requestedModel: string,
+    result: LoadBalanceResult,
+  ): Promise<void> {
+    return this.postJson(this.siblingEndpoint("decisions"), {
+      ruleId: match.ruleId,
+      action: "LOAD_BALANCE",
+      mode: match.mode,
+      requestedModel,
+      keyAlias: result.keyAlias,
+      attempts: Math.min(Math.max(result.attempts, 1), LOAD_BALANCE_MAX_KEYS),
+      switchedFrom: [...result.switchedFrom],
+      ...(match.mode === "active" && result.outcome ? { loadBalanceOutcome: result.outcome } : {}),
+      ...(match.mode === "active" && result.outcome === "failed" && result.errorType
+        ? { errorType: result.errorType }
+        : {}),
+      protocolVersion: 5,
     });
   }
 
@@ -1656,7 +2900,19 @@ export class CloudAdapter implements CostAdapter {
     }
   }
 
-  private siblingEndpoint(resource: "rules" | "policy" | "decisions"): string {
+  private siblingEndpoint(
+    resource:
+      | "rules"
+      | "policy"
+      | "decisions"
+      | "cache/lookup"
+      | "cache/store"
+      | "cache/semantic/lookup"
+      | "cache/semantic/store"
+      | "rate-limits/acquire"
+      | "rate-limits/usage"
+      | "budget-caps/acquire",
+  ): string {
     const url = new URL(this.endpoint);
     url.pathname = url.pathname.replace(/\/events\/?$/, `/${resource}`);
     return url.toString();
@@ -1775,6 +3031,198 @@ export class CloudAdapter implements CostAdapter {
   }
 }
 
+function parseSharedCacheSettings(value: unknown): SharedCacheSettings | null {
+  if (!value || typeof value !== "object") return null;
+  const settings = value as {
+    enabled?: unknown;
+    version?: unknown;
+    keySalt?: unknown;
+    timeoutMs?: unknown;
+    maxResponseBytes?: unknown;
+  };
+  if (settings.enabled !== true || settings.version !== SHARED_EXACT_CACHE_KEY_VERSION) return null;
+  if (typeof settings.keySalt !== "string" || settings.keySalt.length < 16) return null;
+  const timeoutMs = Number(settings.timeoutMs);
+  const maxResponseBytes = Number(settings.maxResponseBytes);
+  return {
+    keySalt: settings.keySalt,
+    timeoutMs: Number.isFinite(timeoutMs)
+      ? Math.max(25, Math.min(2_000, Math.round(timeoutMs)))
+      : SHARED_CACHE_DEFAULT_TIMEOUT_MS,
+    maxResponseBytes:
+      Number.isFinite(maxResponseBytes) && maxResponseBytes > 0
+        ? Math.min(SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES, Math.round(maxResponseBytes))
+        : SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES,
+  };
+}
+
+function parseSharedSemanticCacheSettings(value: unknown): SharedSemanticCacheSettings | null {
+  if (!value || typeof value !== "object") return null;
+  const settings = value as {
+    enabled?: unknown;
+    version?: unknown;
+    timeoutMs?: unknown;
+    maxResponseBytes?: unknown;
+    maxDimensions?: unknown;
+  };
+  if (settings.enabled !== true || settings.version !== SHARED_SEMANTIC_CACHE_VERSION) return null;
+  const timeoutMs = Number(settings.timeoutMs);
+  const maxResponseBytes = Number(settings.maxResponseBytes);
+  const maxDimensions = Number(settings.maxDimensions);
+  return {
+    timeoutMs: Number.isFinite(timeoutMs)
+      ? Math.max(25, Math.min(2_000, Math.round(timeoutMs)))
+      : SHARED_SEMANTIC_CACHE_DEFAULT_TIMEOUT_MS,
+    maxResponseBytes:
+      Number.isFinite(maxResponseBytes) && maxResponseBytes > 0
+        ? Math.min(SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES, Math.round(maxResponseBytes))
+        : SHARED_CACHE_DEFAULT_MAX_RESPONSE_BYTES,
+    maxDimensions:
+      Number.isFinite(maxDimensions) && maxDimensions > 0
+        ? Math.min(8_192, Math.round(maxDimensions))
+        : SHARED_SEMANTIC_CACHE_DEFAULT_MAX_DIMENSIONS,
+  };
+}
+
+function parseRateLimitSettings(value: unknown): RateLimitSettings | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  const settings = value as { version?: unknown; timeoutMs?: unknown };
+  if (settings.version !== "rate-limit-v1") return null;
+  const timeoutMs =
+    typeof settings.timeoutMs === "number" && Number.isFinite(settings.timeoutMs) ? settings.timeoutMs : 150;
+  return { version: "rate-limit-v1", timeoutMs: Math.min(Math.max(timeoutMs, 25), 1_000) };
+}
+
+function parseStrictCapSettings(value: unknown): StrictCapSettings | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  const settings = value as { version?: unknown; timeoutMs?: unknown; caps?: unknown };
+  if (settings.version !== "strict-cap-v1" || !Array.isArray(settings.caps)) return null;
+  const timeoutMs =
+    typeof settings.timeoutMs === "number" && Number.isFinite(settings.timeoutMs)
+      ? settings.timeoutMs
+      : STRICT_CAP_DEFAULT_TIMEOUT_MS;
+  return {
+    version: "strict-cap-v1",
+    timeoutMs: Math.min(Math.max(timeoutMs, 25), 2_000),
+    caps: settings.caps.filter(isStrictCapEntry),
+  };
+}
+
+function parseLoadBalanceSettings(value: unknown): LoadBalanceSettings | null {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return null;
+  return (value as { version?: unknown }).version === "load-balance-v1" ? { version: "load-balance-v1" } : null;
+}
+
+/** The keys a load-balancing rule names, ignoring order and weights. */
+function loadBalanceAliases(keys: readonly LoadBalanceKey[]): string {
+  return keys
+    .map((key) => key.alias)
+    .sort()
+    .join(",");
+}
+
+/**
+ * How long a provider asked to wait after a rate limit, from the error's
+ * Retry-After header (seconds or an HTTP date), clamped to 1 s..600 s.
+ * Undefined when the error carries no usable header.
+ */
+function retryAfterMs(error: unknown, now: number): number | undefined {
+  const record = (typeof error === "object" && error !== null ? error : {}) as Record<string, unknown>;
+  const response = record.response as Record<string, unknown> | undefined;
+  const rawResponse = record.$response as Record<string, unknown> | undefined;
+  for (const headers of [record.headers, response?.headers, rawResponse?.headers]) {
+    const value = headerValue(headers, "retry-after")?.trim();
+    if (!value) continue;
+    const waitMs = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : Date.parse(value) - now;
+    if (!Number.isFinite(waitMs)) continue;
+    return Math.min(Math.max(waitMs, LOAD_BALANCE_MIN_COOLDOWN_MS), LOAD_BALANCE_MAX_COOLDOWN_MS);
+  }
+  return undefined;
+}
+
+/** A header from a `Headers`-like object (with `get`) or a plain record, by lowercase name. */
+function headerValue(headers: unknown, name: string): string | undefined {
+  if (headers == null || typeof headers !== "object") return undefined;
+  try {
+    const get = (headers as { get?: unknown }).get;
+    if (typeof get === "function") {
+      const value: unknown = get.call(headers, name);
+      if (typeof value === "string" || typeof value === "number") return String(value);
+    }
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() !== name) continue;
+      const first: unknown = Array.isArray(value) ? value[0] : value;
+      if (typeof first === "string" || typeof first === "number") return String(first);
+    }
+  } catch {
+    // An unreadable header is no header.
+  }
+  return undefined;
+}
+
+function isStrictCapEntry(value: unknown): value is StrictCapEntry {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as Partial<Record<keyof StrictCapEntry, unknown>>;
+  return (
+    typeof entry.ruleId === "string" &&
+    entry.ruleId.length > 0 &&
+    (entry.mode === "active" || entry.mode === "shadow") &&
+    typeof entry.scope === "string" &&
+    (entry.value === null || typeof entry.value === "string") &&
+    (entry.onUnavailable === "allow" || entry.onUnavailable === "block")
+  );
+}
+
+function capReservationKey(model: string, feature?: string): string {
+  return `${model}|${feature ?? ""}`;
+}
+
+const PROMPT_TEXT_FIELDS = ["messages", "system", "prompt", "input", "instructions", "contents"] as const;
+
+/**
+ * A rough input token count for a strict cap estimate: the characters of the
+ * request's message and prompt text divided by 4, rounded up. Undefined when
+ * the request has no text the SDK recognizes.
+ */
+function estimateInputTokens(request: ExactCacheRequest): number | undefined {
+  let characters = 0;
+  const visit = (value: unknown, depth: number): void => {
+    if (value == null || depth > 8) return;
+    if (typeof value === "string") {
+      characters += value.length;
+    } else if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+    } else if (typeof value === "object") {
+      const part = value as { text?: unknown; content?: unknown; parts?: unknown };
+      visit(part.text, depth + 1);
+      visit(part.content, depth + 1);
+      visit(part.parts, depth + 1);
+    }
+  };
+  try {
+    for (const field of PROMPT_TEXT_FIELDS) visit(request[field], 0);
+  } catch {
+    return undefined;
+  }
+  return characters > 0 ? Math.min(Math.ceil(characters / 4), 10_000_000) : undefined;
+}
+
+/** The request's output token limit, when it sets a positive one. */
+function requestMaxOutputTokens(request: ExactCacheRequest): number | undefined {
+  const inferenceConfig = request.inferenceConfig as { maxTokens?: unknown } | null | undefined;
+  const candidates = [
+    request.max_tokens,
+    request.max_completion_tokens,
+    request.maxTokens,
+    request.max_output_tokens,
+    inferenceConfig?.maxTokens,
+  ];
+  const limit = candidates.find(
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
+  );
+  return limit == null ? undefined : Math.min(Math.floor(limit), 10_000_000) || undefined;
+}
+
 function isCacheRule(value: unknown): value is EnforcementRule {
   if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
   const rule = value as Partial<EnforcementRule>;
@@ -1855,6 +3303,99 @@ function mergeBudgetPct(
   override?: Partial<Record<"workspace" | "feature" | "user", number>>,
 ): Partial<Record<"workspace" | "feature" | "user", number>> {
   return { ...cached, ...override };
+}
+
+/** How a provider call failed, for a fallback rule's `retryOn`. */
+export type FallbackFailure = "timeout" | "429" | "5xx" | "error";
+
+const FALLBACK_FAILURES: readonly FallbackFailure[] = ["timeout", "429", "5xx", "error"];
+
+interface FallbackPolicy {
+  timeoutMs: number | null;
+  retryOn: ReadonlySet<FallbackFailure>;
+  maxRetries: number;
+  backoffMs: number;
+}
+
+/** Reads a fallback rule's limits. Missing or invalid values keep the old behavior. */
+function fallbackPolicy(params: Record<string, unknown>): FallbackPolicy {
+  const timeoutMs =
+    typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+      ? Math.min(120_000, Math.max(1, Math.round(params.timeoutMs)))
+      : null;
+  const listed = Array.isArray(params.retryOn)
+    ? params.retryOn.filter((value): value is FallbackFailure => FALLBACK_FAILURES.includes(value as FallbackFailure))
+    : [];
+  return {
+    timeoutMs,
+    retryOn: new Set<FallbackFailure>(listed.length > 0 ? listed : ["error"]),
+    maxRetries: boundedPositiveInteger(params.maxRetries, 0, 0, 5),
+    backoffMs: boundedPositiveInteger(params.backoffMs, 250, 0, 10_000),
+  };
+}
+
+class ProviderCallTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Provider call exceeded ${timeoutMs} ms`);
+    this.name = "TimeoutError";
+  }
+}
+
+/** Classifies an error from OpenAI, Anthropic, AWS, fetch, or a deadline. */
+function fallbackFailure(error: unknown): FallbackFailure {
+  if (error instanceof ProviderCallTimeoutError) return "timeout";
+  const record = (typeof error === "object" && error !== null ? error : {}) as Record<string, unknown>;
+  const name = typeof record.name === "string" ? record.name : "";
+  if (name === "TimeoutError" || name === "APIConnectionTimeoutError" || record.code === "ETIMEDOUT") {
+    return "timeout";
+  }
+  const response = record.response as Record<string, unknown> | undefined;
+  const metadata = record.$metadata as Record<string, unknown> | undefined;
+  const status = [record.status, record.statusCode, response?.status, metadata?.httpStatusCode].find(
+    (value): value is number => typeof value === "number",
+  );
+  if (status === 429 || name === "ThrottlingException") return "429";
+  if (status !== undefined && status >= 500 && status <= 599) return "5xx";
+  return "error";
+}
+
+/**
+ * Runs one provider call, with a deadline when the rule sets one. The signal
+ * aborts at the deadline; a caller that ignores it still gets the timeout,
+ * and the abandoned call's result is discarded.
+ */
+async function callWithDeadline<T, R>(
+  providerCall: (effectiveRequest: R, options?: ProviderCallOptions) => Promise<T>,
+  request: R,
+  timeoutMs: number | null,
+): Promise<T> {
+  if (timeoutMs === null) return providerCall(request);
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new ProviderCallTimeoutError(timeoutMs);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  const call = providerCall(request, { signal: controller.signal });
+  call.catch(() => {});
+  try {
+    return await Promise.race([call, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Exponential backoff with full jitter: up to backoffMs * 2^(attempt - 1). */
+function backoffDelayMs(backoffMs: number, attempt: number): number {
+  if (backoffMs <= 0) return 0;
+  return Math.round(Math.random() * backoffMs * 2 ** (attempt - 1));
+}
+
+function delay(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
 function asError(value: unknown): Error {
@@ -1972,7 +3513,11 @@ function normalizeJson(value: unknown): unknown {
   return value;
 }
 
-function responseCostBasis(response: unknown, providerOverride?: CostEvent["provider"]): ExactCacheCostBasis {
+function responseCostBasis(
+  response: unknown,
+  providerOverride?: CostEvent["provider"],
+  modelHint?: string,
+): ExactCacheCostBasis {
   const value = response as {
     type?: unknown;
     object?: unknown;
@@ -1986,36 +3531,48 @@ function responseCostBasis(response: unknown, providerOverride?: CostEvent["prov
       completion_tokens?: unknown;
       cache_read_input_tokens?: unknown;
       cache_creation_input_tokens?: unknown;
+      cacheReadInputTokens?: unknown;
+      cacheWriteInputTokens?: unknown;
       inputTokenDetails?: { cacheReadTokens?: unknown; cacheWriteTokens?: unknown };
       input_tokens_details?: { cached_tokens?: unknown };
       prompt_tokens_details?: { cached_tokens?: unknown };
     };
   };
-  const model = typeof value?.model === "string" ? value.model : "unknown";
+  // Converse responses do not name the model, so the caller passes the model it served.
+  const model = typeof value?.model === "string" ? value.model : (modelHint ?? "unknown");
+  const converse = isConverseUsage(value);
   const provider =
     providerOverride ??
-    (value?.type === "message"
-      ? "anthropic"
-      : value?.object === "response" || value?.usage?.prompt_tokens !== undefined
-        ? "openai"
-        : "custom");
+    (converse
+      ? "aws-bedrock"
+      : value?.type === "message"
+        ? "anthropic"
+        : value?.object === "response" || value?.usage?.prompt_tokens !== undefined
+          ? "openai"
+          : "custom");
   const anthropic = provider === "anthropic";
   const cacheRead = nonNegativeNumber(
-    anthropic
-      ? value?.usage?.cache_read_input_tokens
-      : (value?.usage?.inputTokenDetails?.cacheReadTokens ??
+    converse
+      ? value?.usage?.cacheReadInputTokens
+      : anthropic
+        ? value?.usage?.cache_read_input_tokens
+        : (value?.usage?.inputTokenDetails?.cacheReadTokens ??
           value?.usage?.input_tokens_details?.cached_tokens ??
           value?.usage?.prompt_tokens_details?.cached_tokens),
   );
   const cacheWrite = nonNegativeNumber(
-    anthropic ? value?.usage?.cache_creation_input_tokens : value?.usage?.inputTokenDetails?.cacheWriteTokens,
+    converse
+      ? value?.usage?.cacheWriteInputTokens
+      : anthropic
+        ? value?.usage?.cache_creation_input_tokens
+        : value?.usage?.inputTokenDetails?.cacheWriteTokens,
   );
   const rawInput = nonNegativeNumber(
     anthropic
       ? value?.usage?.input_tokens
       : (value?.usage?.inputTokens ?? value?.usage?.input_tokens ?? value?.usage?.prompt_tokens),
   );
-  const input = anthropic ? rawInput + cacheRead + cacheWrite : rawInput;
+  const input = anthropic || converse ? rawInput + cacheRead + cacheWrite : rawInput;
   const output = nonNegativeNumber(
     anthropic
       ? value?.usage?.output_tokens
@@ -2031,6 +3588,16 @@ function responseCostBasis(response: unknown, providerOverride?: CostEvent["prov
     cacheWriteTokens: cacheWrite,
     savingsUsdMicros: Math.max(0, Math.round(totalCostUSD * 1_000_000)),
   };
+}
+
+/** Bedrock Converse usage: `output.message` with camel-case input and output token counts. */
+function isConverseUsage(value: unknown): boolean {
+  const response = value as { output?: { message?: unknown }; usage?: { inputTokens?: unknown }; stopReason?: unknown };
+  return (
+    response?.output?.message !== undefined &&
+    response?.usage?.inputTokens !== undefined &&
+    response?.stopReason !== undefined
+  );
 }
 
 function nonNegativeNumber(value: unknown): number {
@@ -2064,6 +3631,7 @@ export function toCloudEvent(
         : undefined),
     prompt: options.captureContent ? event.prompt : undefined,
     output: options.captureContent ? event.output : undefined,
+    request: options.captureContent ? event.request : undefined,
     promptTokens: event.inputTokens,
     outputTokens: event.outputTokens,
     totalTokens: event.totalTokens,
@@ -2073,6 +3641,9 @@ export function toCloudEvent(
     latencyMs: event.latencyMs,
     status: event.status,
     metadata: toCloudMetadata(event),
+    capReservationIds: event.capReservationIds?.length
+      ? event.capReservationIds.slice(0, STRICT_CAP_MAX_RESERVATIONS_PER_EVENT)
+      : undefined,
   });
 }
 

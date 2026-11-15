@@ -170,6 +170,26 @@ Shadow rules, unsupported actions, malformed rules, and rule API failures pass
 through unchanged. Decision telemetry is best-effort and never includes the
 request or response payload.
 
+Rate-limit rules and strict budget caps are checked by trAIce, so they hold
+across every instance. Before a call a rate-limit rule matches, the SDK asks
+trAIce to count it; a refusal throws `TraiceEnforcementError` with action
+`RATE_LIMIT` and `retryAfterMs`. Once a strictly capped budget passes 90% of its
+limit, the SDK asks trAIce to check each call the cap applies to, right before
+the provider call (cache hits make no check). trAIce refuses a call whose
+estimated cost would pass the limit, and the SDK throws `TraiceEnforcementError`
+with action `DENY` and `reason.strictCap` set to `true`. The SDK sends the
+model, provider, feature, user, and rough token counts, never the request text.
+Both checks wait at most a few hundred milliseconds and let the call through if
+trAIce does not answer, unless a strict cap is set to block calls when trAIce is
+unavailable. Pass `userId` in the context for per-user limits and caps.
+`getRateLimitStats()` and `getStrictCapStats()` report the counts.
+
+Load-balancing rules spread calls across your own provider keys: the SDK passes
+the alias of the key to use to your provider callback as `options.keyAlias`,
+your callback maps it to a client (trAIce never sees keys), and a key the
+provider rate-limits rests while the call moves to the next key.
+`getLoadBalanceStats()` reports the counts.
+
 Swap and downgrade rules execute only when the cached rules response includes a
 current experiment for the exact feature, source model, and target model. The
 experiment must meet the required equivalence and maximum quality-drop limits. The SDK passes
@@ -206,6 +226,30 @@ policy enables it.
 A fallback rule calls the original model first. After a provider error it makes
 one call with the configured fallback model. If that call also fails, the SDK
 rethrows the original provider error and does not add another retry.
+
+A fallback rule can also set limits in its action parameters:
+
+- `timeoutMs` (1 to 120000): give up on a call after this long. The original
+  call and the fallback call each get their own deadline.
+- `retryOn`: which failures lead to a retry or the fallback: `timeout`, `429`,
+  `5xx`, or `error` for any failure (the default). A failure the list does not
+  cover is thrown without a fallback.
+- `maxRetries` (0 to 5, default 0) and `backoffMs` (default 250): retry the
+  original model this many times, with jittered exponential backoff, before
+  falling back.
+
+The provider callback receives `{ signal }` as an optional second argument.
+Forward it so a call past its deadline stops instead of finishing in the
+background:
+
+```ts
+await cloud.enforceRequest(request, (effective, { signal } = {}) =>
+  openai.chat.completions.create(effective, { signal }),
+);
+```
+
+Fallback decisions report the failure type, the number of attempts on the
+original model, and the fallback call's latency.
 
 Call `warmEnforcement()` during application startup. Request-path evaluation
 reads only the in-memory rules and evidence cache. A cold or expired cache

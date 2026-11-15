@@ -1,5 +1,14 @@
 export type RuleAction =
-  "SWAP" | "DOWNGRADE" | "CACHE_EXACT" | "CACHE_SEMANTIC" | "DENY" | "CAP_RETRIES" | "FALLBACK" | "ROUTE";
+  | "SWAP"
+  | "DOWNGRADE"
+  | "CACHE_EXACT"
+  | "CACHE_SEMANTIC"
+  | "DENY"
+  | "CAP_RETRIES"
+  | "FALLBACK"
+  | "ROUTE"
+  | "RATE_LIMIT"
+  | "LOAD_BALANCE";
 
 export type RuleState = "DRAFT" | "SHADOW" | "ACTIVE" | "DISABLED";
 export type BudgetScope = "workspace" | "feature" | "user";
@@ -122,6 +131,12 @@ export function decide(
     .sort((a, b) => a.priority - b.priority);
 
   for (const rule of ordered) {
+    // Rate limits are counted by trAIce (matchRateLimitRules) and never stop
+    // evaluation, so a limit under its ceiling cannot hide a later rule.
+    if (rule.action === "RATE_LIMIT") continue;
+    // Load balancing picks a provider key for whatever model the other rules
+    // choose (matchLoadBalanceRule), so it never stops evaluation either.
+    if (rule.action === "LOAD_BALANCE") continue;
     const match = matchCondition(rule.condition, request, context);
     if (!match) continue;
 
@@ -193,6 +208,240 @@ export function decide(
   }
 
   return PASS_THROUGH;
+}
+
+/** Who shares one rate-limit counter: the whole workspace, each API key, or each end user. */
+export type RateLimitPer = "workspace" | "api_key" | "user";
+const RATE_LIMIT_PER: readonly RateLimitPer[] = ["workspace", "api_key", "user"];
+
+export interface RateLimitMatch {
+  ruleId: string;
+  ruleName: string;
+  mode: "active" | "shadow";
+  requestsPerMinute: number | null;
+  tokensPerMinute: number | null;
+  per: RateLimitPer;
+}
+
+/**
+ * Rate-limit rules that apply to a request, by ascending priority. Every
+ * matching rule is returned: trAIce counts the request against each one, so a
+ * limit holds across instances, and only an active rule over its limit
+ * refuses it. Only `always`, `model` and `feature` conditions apply; a rule
+ * without a valid limit or with an unknown `per` is ignored.
+ */
+export function matchRateLimitRules(req: EnforcementRequest, rules: EnforcementRule[]): RateLimitMatch[] {
+  return rules
+    .filter((rule) => rule.action === "RATE_LIMIT" && (rule.state === "ACTIVE" || rule.state === "SHADOW"))
+    .sort((a, b) => a.priority - b.priority)
+    .flatMap((rule): RateLimitMatch[] => {
+      const type = rule.condition?.type;
+      if (type !== "always" && type !== "model" && type !== "feature") return [];
+      if (!matchCondition(rule.condition, req, {})) return [];
+      const requestsPerMinute = positiveInteger(rule.actionParams.requestsPerMinute);
+      const tokensPerMinute = positiveInteger(rule.actionParams.tokensPerMinute);
+      if (requestsPerMinute == null && tokensPerMinute == null) return [];
+      const per = rule.actionParams.per ?? "workspace";
+      if (!RATE_LIMIT_PER.includes(per as RateLimitPer)) return [];
+      return [
+        {
+          ruleId: rule.id,
+          ruleName: rule.name,
+          mode: rule.state === "ACTIVE" ? "active" : "shadow",
+          requestsPerMinute,
+          tokensPerMinute,
+          per: per as RateLimitPer,
+        },
+      ];
+    });
+}
+
+/**
+ * Strict budget caps (enforcement protocol v4). `GET /api/v1/rules` lists the
+ * strictly capped budget scopes that are close to their limit for this key.
+ * Before a call, the SDK finds the entries that apply to the request and asks
+ * trAIce to check them; it never decides a strict cap on its own.
+ */
+export const STRICT_CAP_SCOPES = ["workspace", "feature", "user", "api_key", "team"] as const;
+export type StrictCapScope = (typeof STRICT_CAP_SCOPES)[number];
+export type StrictCapOnUnavailable = "allow" | "block";
+
+export type StrictCapEntry = {
+  ruleId: string;
+  mode: "active" | "shadow";
+  /** workspace, api_key and team apply to every call from this key; feature and user to matching calls. */
+  scope: StrictCapScope;
+  value: string | null;
+  onUnavailable: StrictCapOnUnavailable;
+};
+
+export type StrictCapRequest = { feature?: string | null; userId?: string | null };
+
+export type StrictCapMatch = {
+  ruleId: string;
+  mode: "active" | "shadow";
+  /** What to do when trAIce does not answer: block if any matching active entry says so. */
+  onUnavailable: StrictCapOnUnavailable;
+};
+
+function strictCapEntryApplies(entry: StrictCapEntry, req: StrictCapRequest): boolean {
+  if (entry.scope === "feature") return entry.value != null && req.feature === entry.value;
+  if (entry.scope === "user") return entry.value != null && req.userId === entry.value;
+  return STRICT_CAP_SCOPES.includes(entry.scope);
+}
+
+/** The strict caps a request must be checked against, one per rule, in the order received. */
+export function matchStrictCaps(req: StrictCapRequest, entries: readonly StrictCapEntry[]): StrictCapMatch[] {
+  const byRule = new Map<string, StrictCapMatch>();
+  for (const entry of entries) {
+    if (!entry || typeof entry.ruleId !== "string" || !strictCapEntryApplies(entry, req)) continue;
+    const mode = entry.mode === "active" ? "active" : "shadow";
+    const onUnavailable = mode === "active" && entry.onUnavailable === "block" ? "block" : "allow";
+    const existing = byRule.get(entry.ruleId);
+    if (!existing) {
+      byRule.set(entry.ruleId, { ruleId: entry.ruleId, mode, onUnavailable });
+    } else if (onUnavailable === "block") {
+      existing.onUnavailable = "block";
+    }
+  }
+  return Array.from(byRule.values());
+}
+
+/**
+ * Load balancing across provider keys (LOAD_BALANCE rules, enforcement
+ * protocol v5).
+ *
+ * Pure and deterministic: the caller supplies the random number and the clock.
+ * Provider keys never reach trAIce. A rule names key aliases the customer
+ * chose; the SDK picks one per call and hands it to the customer's provider
+ * callback, which maps the alias to a real client or key.
+ */
+export const LOAD_BALANCE_ALIAS_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
+export const LOAD_BALANCE_MIN_KEYS = 2;
+export const LOAD_BALANCE_MAX_KEYS = 10;
+export const LOAD_BALANCE_MAX_WEIGHT = 100;
+export const LOAD_BALANCE_MIN_COOLDOWN_MS = 1_000;
+export const LOAD_BALANCE_MAX_COOLDOWN_MS = 600_000;
+export const LOAD_BALANCE_DEFAULT_COOLDOWN_MS = 60_000;
+
+/** What to do when the provider rate-limits (HTTP 429) the key a call used. */
+export type LoadBalanceOnRateLimit = "next_key" | "none";
+export const LOAD_BALANCE_ON_RATE_LIMIT: readonly LoadBalanceOnRateLimit[] = ["next_key", "none"];
+
+export type LoadBalanceKey = { alias: string; weight: number };
+
+export type LoadBalanceParams = {
+  keys: LoadBalanceKey[];
+  onRateLimit: LoadBalanceOnRateLimit;
+  cooldownMs: number;
+};
+
+/**
+ * A stored rule's keys and settings, or null when they are not usable: fewer
+ * than two keys, more than ten, an alias outside the pattern, a repeated
+ * alias, or a weight outside 1 to 100. Unknown settings fall back to defaults.
+ */
+export function loadBalanceParams(actionParams: unknown): LoadBalanceParams | null {
+  if (!actionParams || typeof actionParams !== "object" || Array.isArray(actionParams)) return null;
+  const params = actionParams as Record<string, unknown>;
+  if (!Array.isArray(params.keys)) return null;
+  const keys: LoadBalanceKey[] = [];
+  const seen = new Set<string>();
+  for (const entry of params.keys) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const { alias, weight } = entry as Record<string, unknown>;
+    if (typeof alias !== "string" || !LOAD_BALANCE_ALIAS_PATTERN.test(alias) || seen.has(alias)) return null;
+    if (typeof weight !== "number" || !Number.isInteger(weight) || weight < 1 || weight > LOAD_BALANCE_MAX_WEIGHT) {
+      return null;
+    }
+    seen.add(alias);
+    keys.push({ alias, weight });
+  }
+  if (keys.length < LOAD_BALANCE_MIN_KEYS || keys.length > LOAD_BALANCE_MAX_KEYS) return null;
+  const onRateLimit = LOAD_BALANCE_ON_RATE_LIMIT.includes(params.onRateLimit as LoadBalanceOnRateLimit)
+    ? (params.onRateLimit as LoadBalanceOnRateLimit)
+    : "next_key";
+  const cooldown = params.cooldownMs;
+  const cooldownMs =
+    typeof cooldown === "number" &&
+    Number.isInteger(cooldown) &&
+    cooldown >= LOAD_BALANCE_MIN_COOLDOWN_MS &&
+    cooldown <= LOAD_BALANCE_MAX_COOLDOWN_MS
+      ? cooldown
+      : LOAD_BALANCE_DEFAULT_COOLDOWN_MS;
+  return { keys, onRateLimit, cooldownMs };
+}
+
+export type LoadBalancePickInput = {
+  /** A number in [0, 1); the SDK passes Math.random(). */
+  random: number;
+  /** Epoch milliseconds. */
+  now: number;
+  /** When each alias may be used again after a provider rate limit (epoch ms). */
+  coolingUntil?: Record<string, number>;
+  /** Aliases already tried for this call. */
+  exclude?: readonly string[];
+};
+
+/**
+ * The key alias for one call: a weighted pick among keys that are not cooling
+ * down after a rate limit, in the rule's order. When every remaining key is
+ * cooling down, the one that becomes available first (earliest in the rule on
+ * a tie). Null when every key was already tried.
+ */
+export function pickLoadBalanceKey(keys: readonly LoadBalanceKey[], input: LoadBalancePickInput): string | null {
+  const excluded = new Set(input.exclude ?? []);
+  const candidates = keys.filter((key) => !excluded.has(key.alias));
+  if (candidates.length === 0) return null;
+  const coolingUntil = input.coolingUntil ?? {};
+  const available = candidates.filter((key) => (coolingUntil[key.alias] ?? 0) <= input.now);
+  if (available.length === 0) {
+    let soonest = candidates[0]!;
+    for (const key of candidates) {
+      if ((coolingUntil[key.alias] ?? 0) < (coolingUntil[soonest.alias] ?? 0)) soonest = key;
+    }
+    return soonest.alias;
+  }
+  const total = available.reduce((sum, key) => sum + key.weight, 0);
+  const random = Number.isFinite(input.random) ? Math.min(Math.max(input.random, 0), 1 - Number.EPSILON) : 0;
+  let target = random * total;
+  for (const key of available) {
+    if (target < key.weight) return key.alias;
+    target -= key.weight;
+  }
+  return available[available.length - 1]!.alias;
+}
+
+export type LoadBalanceMatch = LoadBalanceParams & {
+  ruleId: string;
+  ruleName: string;
+  mode: "active" | "shadow";
+};
+
+/**
+ * The load-balancing rule that applies to a request: the first matching
+ * ACTIVE or SHADOW rule by ascending priority, or null. Only `always`, `model`
+ * and `feature` conditions apply. A rule whose keys are not usable is skipped,
+ * so the next matching rule (or none) applies.
+ */
+export function matchLoadBalanceRule(req: EnforcementRequest, rules: EnforcementRule[]): LoadBalanceMatch | null {
+  const ordered = rules
+    .filter((rule) => rule.action === "LOAD_BALANCE" && (rule.state === "ACTIVE" || rule.state === "SHADOW"))
+    .sort((a, b) => a.priority - b.priority);
+  for (const rule of ordered) {
+    const type = rule.condition?.type;
+    if (type !== "always" && type !== "model" && type !== "feature") continue;
+    if (!matchCondition(rule.condition, req, {})) continue;
+    const params = loadBalanceParams(rule.actionParams);
+    if (!params) continue;
+    return { ruleId: rule.id, ruleName: rule.name, mode: rule.state === "ACTIVE" ? "active" : "shadow", ...params };
+  }
+  return null;
+}
+
+function positiveInteger(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return null;
+  return value;
 }
 
 function nonNegativeInteger(value: unknown): number | null {

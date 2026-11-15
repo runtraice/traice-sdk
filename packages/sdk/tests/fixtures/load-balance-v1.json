@@ -1,0 +1,781 @@
+{
+  "protocolVersion": 5,
+  "matchCases": [
+    {
+      "name": "a load-balancing rule never stops a later rule from deciding",
+      "request": {
+        "model": "gpt-4.1-mini",
+        "feature": "chat"
+      },
+      "rules": [
+        {
+          "id": "spread",
+          "name": "spread",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "cache",
+          "name": "cache",
+          "state": "ACTIVE",
+          "priority": 20,
+          "condition": {
+            "type": "always"
+          },
+          "action": "CACHE_EXACT",
+          "actionParams": {
+            "cacheTtlSec": 300
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedMatch": {
+        "ruleId": "spread",
+        "ruleName": "spread",
+        "mode": "active",
+        "keys": [
+          {
+            "alias": "primary",
+            "weight": 50
+          },
+          {
+            "alias": "secondary",
+            "weight": 30
+          },
+          {
+            "alias": "overflow",
+            "weight": 20
+          }
+        ],
+        "onRateLimit": "next_key",
+        "cooldownMs": 30000
+      },
+      "expectedDecision": {
+        "action": "CACHE_EXACT",
+        "ruleId": "cache",
+        "mode": "active"
+      }
+    },
+    {
+      "name": "the first matching rule by priority applies, and a feature condition must match",
+      "request": {
+        "model": "gpt-4.1-mini",
+        "feature": "search"
+      },
+      "rules": [
+        {
+          "id": "chat-only",
+          "name": "chat-only",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": {
+            "type": "feature",
+            "equals": "chat"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "everything",
+          "name": "everything",
+          "state": "ACTIVE",
+          "priority": 5,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedMatch": {
+        "ruleId": "everything",
+        "ruleName": "everything",
+        "mode": "active",
+        "keys": [
+          {
+            "alias": "primary",
+            "weight": 50
+          },
+          {
+            "alias": "secondary",
+            "weight": 30
+          },
+          {
+            "alias": "overflow",
+            "weight": 20
+          }
+        ],
+        "onRateLimit": "next_key",
+        "cooldownMs": 30000
+      },
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH",
+        "ruleId": null
+      }
+    },
+    {
+      "name": "a rule in target verification matches in shadow mode",
+      "request": {
+        "model": "gpt-4.1-mini",
+        "feature": "chat"
+      },
+      "rules": [
+        {
+          "id": "preview",
+          "name": "preview",
+          "state": "SHADOW",
+          "priority": 10,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedMatch": {
+        "ruleId": "preview",
+        "ruleName": "preview",
+        "mode": "shadow",
+        "keys": [
+          {
+            "alias": "primary",
+            "weight": 50
+          },
+          {
+            "alias": "secondary",
+            "weight": 30
+          },
+          {
+            "alias": "overflow",
+            "weight": 20
+          }
+        ],
+        "onRateLimit": "next_key",
+        "cooldownMs": 30000
+      },
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH",
+        "ruleId": null
+      }
+    },
+    {
+      "name": "a rule with unusable keys is skipped",
+      "request": {
+        "model": "gpt-4.1-mini"
+      },
+      "rules": [
+        {
+          "id": "one-key",
+          "name": "one-key",
+          "state": "ACTIVE",
+          "priority": 1,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 1
+              }
+            ]
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "bad-alias",
+          "name": "bad-alias",
+          "state": "ACTIVE",
+          "priority": 2,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "Primary Key",
+                "weight": 1
+              },
+              {
+                "alias": "b",
+                "weight": 1
+              }
+            ]
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "repeated",
+          "name": "repeated",
+          "state": "ACTIVE",
+          "priority": 3,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "a",
+                "weight": 1
+              },
+              {
+                "alias": "a",
+                "weight": 1
+              }
+            ]
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "zero-weight",
+          "name": "zero-weight",
+          "state": "ACTIVE",
+          "priority": 4,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "a",
+                "weight": 0
+              },
+              {
+                "alias": "b",
+                "weight": 1
+              }
+            ]
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "defaults",
+          "name": "defaults",
+          "state": "ACTIVE",
+          "priority": 5,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "a",
+                "weight": 1
+              },
+              {
+                "alias": "b",
+                "weight": 3
+              }
+            ],
+            "onRateLimit": "spin",
+            "cooldownMs": 5
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedMatch": {
+        "ruleId": "defaults",
+        "ruleName": "defaults",
+        "mode": "active",
+        "keys": [
+          {
+            "alias": "a",
+            "weight": 1
+          },
+          {
+            "alias": "b",
+            "weight": 3
+          }
+        ],
+        "onRateLimit": "next_key",
+        "cooldownMs": 60000
+      },
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH",
+        "ruleId": null
+      }
+    },
+    {
+      "name": "budget and retry conditions never match a load-balancing rule",
+      "request": {
+        "model": "gpt-4.1-mini",
+        "retryCount": 3
+      },
+      "rules": [
+        {
+          "id": "budget",
+          "name": "budget",
+          "state": "ACTIVE",
+          "priority": 10,
+          "condition": {
+            "type": "budget",
+            "scope": "workspace",
+            "thresholdPct": 0
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "retry",
+          "name": "retry",
+          "state": "ACTIVE",
+          "priority": 10,
+          "condition": {
+            "type": "retry",
+            "gte": 1
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedMatch": null,
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH",
+        "ruleId": null
+      }
+    },
+    {
+      "name": "draft and disabled rules never match",
+      "request": {
+        "model": "gpt-4.1-mini"
+      },
+      "rules": [
+        {
+          "id": "draft",
+          "name": "draft",
+          "state": "DRAFT",
+          "priority": 10,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        },
+        {
+          "id": "disabled",
+          "name": "disabled",
+          "state": "DISABLED",
+          "priority": 10,
+          "condition": {
+            "type": "always"
+          },
+          "action": "LOAD_BALANCE",
+          "actionParams": {
+            "keys": [
+              {
+                "alias": "primary",
+                "weight": 50
+              },
+              {
+                "alias": "secondary",
+                "weight": 30
+              },
+              {
+                "alias": "overflow",
+                "weight": 20
+              }
+            ],
+            "onRateLimit": "next_key",
+            "cooldownMs": 30000
+          },
+          "requireEquivalencePct": null,
+          "modelAllowlist": []
+        }
+      ],
+      "expectedMatch": null,
+      "expectedDecision": {
+        "matched": false,
+        "action": "PASS_THROUGH",
+        "ruleId": null
+      }
+    }
+  ],
+  "pickCases": [
+    {
+      "name": "random 0 picks the first key",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0,
+        "now": 1000
+      },
+      "expected": "primary"
+    },
+    {
+      "name": "random 0.49 is still within the first key's half",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0.49,
+        "now": 1000
+      },
+      "expected": "primary"
+    },
+    {
+      "name": "random 0.5 starts the second key",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0.5,
+        "now": 1000
+      },
+      "expected": "secondary"
+    },
+    {
+      "name": "random 0.8 starts the third key",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0.8,
+        "now": 1000
+      },
+      "expected": "overflow"
+    },
+    {
+      "name": "random 0.999 picks the last key",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0.999,
+        "now": 1000
+      },
+      "expected": "overflow"
+    },
+    {
+      "name": "a key cooling down is left out and weights rescale",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0.6,
+        "now": 1000,
+        "coolingUntil": {
+          "primary": 5000
+        }
+      },
+      "expected": "overflow"
+    },
+    {
+      "name": "a key whose cooldown has ended is used again",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0,
+        "now": 5000,
+        "coolingUntil": {
+          "primary": 5000
+        }
+      },
+      "expected": "primary"
+    },
+    {
+      "name": "keys already tried for the call are left out",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0,
+        "now": 1000,
+        "exclude": ["primary"]
+      },
+      "expected": "secondary"
+    },
+    {
+      "name": "when every key is cooling down, the one available first",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0,
+        "now": 1000,
+        "coolingUntil": {
+          "primary": 9000,
+          "secondary": 4000,
+          "overflow": 4000
+        }
+      },
+      "expected": "secondary"
+    },
+    {
+      "name": "when every key was tried, none",
+      "keys": [
+        {
+          "alias": "primary",
+          "weight": 50
+        },
+        {
+          "alias": "secondary",
+          "weight": 30
+        },
+        {
+          "alias": "overflow",
+          "weight": 20
+        }
+      ],
+      "input": {
+        "random": 0.3,
+        "now": 1000,
+        "exclude": ["primary", "secondary", "overflow"]
+      },
+      "expected": null
+    }
+  ]
+}

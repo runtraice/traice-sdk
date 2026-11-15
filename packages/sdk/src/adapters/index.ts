@@ -24,7 +24,10 @@ export type {
   ExactCacheRequest,
   ExactCacheStats,
   ModelRuleAction,
+  BedrockModelRequest,
   RequestEnforcementContext,
+  FallbackFailure,
+  ProviderCallOptions,
   SemanticCacheConfig,
   SemanticCacheStats,
 } from "./cloud";

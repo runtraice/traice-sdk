@@ -1,3 +1,5 @@
+import type { CapturedRequest } from "./request-capture";
+
 export type EventMetadata = Record<string, unknown>;
 
 export interface CostEvent {
@@ -48,10 +50,22 @@ export interface CostEvent {
   promptHash?: string;
   /** Optional output text for cloud sample capture when the workspace opts in. */
   output?: string;
+  /**
+   * Optional full request (system prompt, conversation, sampling parameters)
+   * for replay when the workspace opts in. Sent only by a cloud adapter that
+   * captures content.
+   */
+  request?: CapturedRequest;
   /** Arbitrary structured metadata. Use tags for legacy string key/value data. */
   metadata?: EventMetadata;
   /** Legacy string key/value metadata. Preserved for backward compatibility. */
   tags?: Record<string, string>;
+  /**
+   * Strict budget caps: reservation ids trAIce returned when it let this call
+   * through. `CloudAdapter` attaches them, and sends them so trAIce settles the
+   * call's estimate once its cost is recorded.
+   */
+  capReservationIds?: string[];
 }
 
 export type ErrorHandler = (error: Error, event?: CostEvent) => void;
@@ -75,6 +89,12 @@ export interface MeterOptions {
   env?: string;
   prompt?: string;
   output?: string;
+  /**
+   * The request sent to the provider: OpenAI Chat Completions, Anthropic
+   * Messages, or Bedrock Converse parameters, or a `CapturedRequest`. Reduced
+   * with `captureRequest`; sent only by a cloud adapter that captures content.
+   */
+  request?: unknown;
   metadata?: EventMetadata;
   tags?: Record<string, string>;
   promptName?: string;

@@ -15,6 +15,7 @@ import { calculateCost, setUnknownModelHandler } from "./pricing";
 import { normalizeCacheTokens } from "./pricing";
 import { resolveAdapters } from "./adapters";
 import { budgetMonitor } from "./budget";
+import { captureRequest } from "./request-capture";
 
 // Re-export types
 export type {
@@ -52,6 +53,13 @@ export {
 // Re-export adapters
 export { ConsoleAdapter, LocalAdapter, WebhookAdapter, OTelAdapter, CloudAdapter, createAdapter } from "./adapters";
 export { TraiceEnforcementError } from "./adapters";
+export {
+  captureRequest,
+  CAPTURED_REQUEST_LIMITS,
+  type CapturedRequest,
+  type CapturedRequestMessage,
+  type CapturedRequestParams,
+} from "./request-capture";
 export type {
   BlockingRuleAction,
   BudgetAdvice,
@@ -66,8 +74,11 @@ export type {
   ExactCacheContext,
   ExactCacheRequest,
   ExactCacheStats,
+  BedrockModelRequest,
   ModelRuleAction,
   RequestEnforcementContext,
+  FallbackFailure,
+  ProviderCallOptions,
   SemanticCacheConfig,
   SemanticCacheStats,
 } from "./adapters";
@@ -278,6 +289,9 @@ export function resetBudget(): void {
 // ── Internal helpers ────────────────────────────────────────────
 
 function detectProvider(response: any): string {
+  if (isBedrockConverseResponse(response)) {
+    return "aws-bedrock";
+  }
   if (response?.type === "message" && response?.usage?.input_tokens !== undefined) {
     return "anthropic";
   }
@@ -304,6 +318,9 @@ type TokenUsage = {
 };
 
 function extractTokens(response: any, provider: string): TokenUsage {
+  if (provider === "aws-bedrock" || isBedrockConverseResponse(response)) {
+    return bedrockConverseUsage(response?.usage);
+  }
   const aiSdkUsageValue = response?.totalUsage ?? response?.usage;
   if (aiSdkUsageValue?.inputTokens !== undefined || aiSdkUsageValue?.outputTokens !== undefined) {
     return aiSdkUsage(aiSdkUsageValue);
@@ -329,6 +346,30 @@ function aiSdkUsage(usage: any): TokenUsage {
     outputTokens: nonNegativeInt(usage?.outputTokens),
     cacheReadTokens: cache.cacheReadTokens,
     cacheWriteTokens: cache.cacheWriteTokens,
+  };
+}
+
+/** A Bedrock Converse response: `output.message`, `stopReason`, and camel-case token usage. */
+function isBedrockConverseResponse(response: any): boolean {
+  return (
+    response?.output?.message !== undefined &&
+    response?.usage?.inputTokens !== undefined &&
+    response?.stopReason !== undefined
+  );
+}
+
+/**
+ * Converse reports cache reads and writes apart from `inputTokens`, so the
+ * total input is their sum, as for Anthropic.
+ */
+function bedrockConverseUsage(usage: any): TokenUsage {
+  const cacheReadTokens = nonNegativeInt(usage?.cacheReadInputTokens);
+  const cacheWriteTokens = nonNegativeInt(usage?.cacheWriteInputTokens);
+  return {
+    inputTokens: nonNegativeInt(usage?.inputTokens) + cacheReadTokens + cacheWriteTokens,
+    outputTokens: nonNegativeInt(usage?.outputTokens),
+    cacheReadTokens,
+    cacheWriteTokens,
   };
 }
 
@@ -439,6 +480,7 @@ function buildEvent(
     env: options.env ?? defaultTags.env,
     prompt: options.prompt,
     output: options.output,
+    request: options.request === undefined ? undefined : captureRequest(options.request),
     metadata: options.metadata,
     tags: Object.keys(mergedTags).length > 0 ? mergedTags : undefined,
   };
@@ -701,6 +743,8 @@ export class CostMeter {
     env?: string;
     prompt?: string;
     output?: string;
+    /** Provider request parameters or a `CapturedRequest`; see `MeterOptions.request`. */
+    request?: unknown;
     metadata?: Record<string, unknown>;
     tags?: Record<string, string>;
     latencyMs?: number;
@@ -745,6 +789,7 @@ export class CostMeter {
       env: data.env,
       prompt: data.prompt,
       output: data.output,
+      request: data.request === undefined ? undefined : captureRequest(data.request),
       metadata: data.metadata,
       tags: Object.keys(mergedTags).length > 0 ? mergedTags : undefined,
     };

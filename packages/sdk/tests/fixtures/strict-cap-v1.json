@@ -1,0 +1,186 @@
+{
+  "protocolVersion": 4,
+  "cases": [
+    {
+      "name": "a workspace entry applies to every call",
+      "request": {
+        "feature": "chat",
+        "userId": "u1"
+      },
+      "caps": [
+        {
+          "ruleId": "ws",
+          "mode": "active",
+          "scope": "workspace",
+          "value": null,
+          "onUnavailable": "allow"
+        }
+      ],
+      "expected": [
+        {
+          "ruleId": "ws",
+          "mode": "active",
+          "onUnavailable": "allow"
+        }
+      ]
+    },
+    {
+      "name": "a feature entry applies only to that feature",
+      "request": {
+        "feature": "search"
+      },
+      "caps": [
+        {
+          "ruleId": "f",
+          "mode": "active",
+          "scope": "feature",
+          "value": "chat",
+          "onUnavailable": "allow"
+        },
+        {
+          "ruleId": "f",
+          "mode": "active",
+          "scope": "feature",
+          "value": "search",
+          "onUnavailable": "allow"
+        }
+      ],
+      "expected": [
+        {
+          "ruleId": "f",
+          "mode": "active",
+          "onUnavailable": "allow"
+        }
+      ]
+    },
+    {
+      "name": "a feature entry does not apply to a call without a feature",
+      "request": {},
+      "caps": [
+        {
+          "ruleId": "f",
+          "mode": "active",
+          "scope": "feature",
+          "value": "chat",
+          "onUnavailable": "allow"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "a user entry applies only to that end user",
+      "request": {
+        "userId": "u2"
+      },
+      "caps": [
+        {
+          "ruleId": "u",
+          "mode": "active",
+          "scope": "user",
+          "value": "u1",
+          "onUnavailable": "block"
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "API key and team entries apply to every call from this key",
+      "request": {
+        "feature": "chat"
+      },
+      "caps": [
+        {
+          "ruleId": "k",
+          "mode": "active",
+          "scope": "api_key",
+          "value": null,
+          "onUnavailable": "allow"
+        },
+        {
+          "ruleId": "t",
+          "mode": "shadow",
+          "scope": "team",
+          "value": null,
+          "onUnavailable": "allow"
+        }
+      ],
+      "expected": [
+        {
+          "ruleId": "k",
+          "mode": "active",
+          "onUnavailable": "allow"
+        },
+        {
+          "ruleId": "t",
+          "mode": "shadow",
+          "onUnavailable": "allow"
+        }
+      ]
+    },
+    {
+      "name": "block when unavailable comes from any matching active entry",
+      "request": {
+        "feature": "chat"
+      },
+      "caps": [
+        {
+          "ruleId": "ws",
+          "mode": "active",
+          "scope": "workspace",
+          "value": null,
+          "onUnavailable": "allow"
+        },
+        {
+          "ruleId": "ws",
+          "mode": "active",
+          "scope": "workspace",
+          "value": null,
+          "onUnavailable": "block"
+        }
+      ],
+      "expected": [
+        {
+          "ruleId": "ws",
+          "mode": "active",
+          "onUnavailable": "block"
+        }
+      ]
+    },
+    {
+      "name": "a previewing cap never blocks when TrAIce is unavailable",
+      "request": {},
+      "caps": [
+        {
+          "ruleId": "ws",
+          "mode": "shadow",
+          "scope": "workspace",
+          "value": null,
+          "onUnavailable": "block"
+        }
+      ],
+      "expected": [
+        {
+          "ruleId": "ws",
+          "mode": "shadow",
+          "onUnavailable": "allow"
+        }
+      ]
+    },
+    {
+      "name": "unknown scopes are ignored",
+      "request": {
+        "feature": "chat"
+      },
+      "caps": [
+        {
+          "ruleId": "x",
+          "mode": "active",
+          "scope": "tenant",
+          "value": "acme",
+          "onUnavailable": "allow"
+        }
+      ],
+      "expected": []
+    }
+  ]
+}

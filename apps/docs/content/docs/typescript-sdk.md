@@ -111,6 +111,46 @@ const result = await meter(() => callVertexModel(), {
 
 Set `provider` to the stable identifier your pricing configuration and trAIce workspace use. `provider` also acts as the provider hint for streaming calls.
 
+## Meter an Amazon Bedrock call
+
+The SDK recognizes a Bedrock Converse response and records it as provider
+`aws-bedrock`. Converse reports cache reads and writes apart from
+`inputTokens`; the SDK adds them to the input count and records them as cache
+tokens. A Converse response does not name its model, so pass the `modelId` you
+called as `model`.
+
+```typescript
+import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
+import { meter } from "@traice/sdk";
+
+const bedrock = new BedrockRuntimeClient({ region: "us-east-1" });
+const input = {
+  modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  messages: [{ role: "user", content: [{ text: "Where is my refund?" }] }],
+};
+
+const response = await meter(() => bedrock.send(new ConverseCommand(input)), {
+  model: input.modelId,
+  feature: "escalation-agent",
+});
+```
+
+The SDK has no Bedrock price table, so the event's local cost is $0 and the
+SDK warns about the unknown model (turn this off with `warnOnMissingModel: false`).
+trAIce prices the call from its Bedrock rate card when the event arrives.
+
+To run Bedrock requests through active rules, use `enforceBedrockRequest()`.
+Rules match on `modelId`, and a swap, downgrade, route, rollout, or fallback
+rewrites `modelId` in the request passed to your call:
+
+```typescript
+const response = await cloud.enforceBedrockRequest(
+  input,
+  (effectiveInput) => bedrock.send(new ConverseCommand(effectiveInput)),
+  { feature: "escalation-agent" },
+);
+```
+
 ## Meter a stream
 
 `meterStream()` returns the async iterable immediately and records usage after the stream completes. Consume the stream fully so its terminal usage information can be observed.
@@ -221,6 +261,33 @@ Prompt and output samples are not sent by default, even when they are present
 on a local `CostEvent`. Set `captureContent: true` on `CloudAdapter`, or
 `cloudCaptureContent: true` in global configuration, only after the workspace
 has approved content collection.
+
+To let trAIce replay the whole request (system prompt, earlier turns and
+sampling parameters) rather than only the last prompt, pass the provider
+request as `request`:
+
+```ts
+const params = {
+  model: "gpt-5.5",
+  messages: [
+    { role: "system", content: "You are a support agent." },
+    { role: "user", content: question },
+  ],
+  temperature: 0.2,
+};
+const completion = await meter(() => openai.chat.completions.create(params), {
+  feature: "support",
+  request: params,
+});
+```
+
+`request` accepts OpenAI Chat Completions, Anthropic Messages, and Amazon
+Bedrock Converse parameters, or an already reduced `CapturedRequest`.
+`captureRequest()` keeps the system prompt, the user and assistant turns, and
+temperature, top-p, and maximum output tokens. It drops the request (the event
+is still recorded) when it holds tool calls or results, images, documents, or
+other non-text parts, or when it is over 200 messages or 128 KB. Like `prompt`
+and `output`, the request is sent only when content capture is on.
 
 When a local event includes `prompt`, cloud delivery derives a versioned,
 API-key-scoped HMAC for duplicate-spend analysis. The fingerprint is stable
@@ -354,6 +421,170 @@ fail open to one normal provider call. Use `getSemanticCacheStats()` for local
 cache health and savings metrics. For a shadow semantic-cache rule, matching
 and the USD floor are evaluated in process. Only the similarity and verified
 token cost basis are reported to trAIce.
+
+### Share exact-cache answers across instances
+
+Each process keeps its own exact cache. When a workspace owner opts in to the
+shared response cache in trAIce and marks an exact-cache rule as shared, the SDK
+also checks trAIce after a local miss, so instances share answers. Nothing to
+configure in the SDK: the setting arrives with the rules.
+
+The request never leaves your process. The SDK sends only a key, an HMAC of the
+rule and the complete request under a per-workspace salt. On a miss it calls
+your provider as usual, then stores the response in the background. Lookups
+wait at most 150 ms and fail open to the provider. Streams, explicit bypasses,
+and responses over 256 KB stay local. If the workspace opts out or the rule
+stops being shared, the SDK goes back to its local cache until the next rules
+refresh. `getExactCacheStats()` reports `sharedHits`, `sharedLookupFailures`,
+and `sharedStores`. Your API key needs the `cache` scope.
+
+### Share semantic-cache answers across instances
+
+The semantic cache can be shared the same way. When a workspace owner opts in
+to the shared semantic cache in trAIce and marks a semantic-cache rule as
+shared, the SDK checks trAIce after a local miss. Name your embedding model so
+only instances that embed the same way share answers:
+
+```typescript
+const cloud = new CloudAdapter({
+  apiKey: process.env.TRAICE_API_KEY!,
+  semanticCache: {
+    embed: async (text) => myEmbeddingClient.embed(text),
+    embeddingModel: "text-embedding-3-small",
+  },
+});
+```
+
+The request text never leaves your process. The SDK sends trAIce the embedding
+your `embed` function returned, the rule, the requested model and the embedding
+model name. trAIce stores the embedding, which similarity search needs, with
+the response encrypted, for at most the rule's cache time. An embedding is
+derived from the request, so the workspace opt-in says so. Without
+`embeddingModel` the semantic cache stays local. Lookups wait at most 300 ms and
+fail open to the provider; streams, explicit bypasses, and responses over
+256 KB stay local. A refused lookup turns sharing off until the next rules
+refresh. `getSemanticCacheStats()` reports `sharedHits`, `sharedLookupFailures`,
+and `sharedStores`. Your API key needs the `cache` scope.
+
+### Rate limits
+
+Rate-limit rules cap requests per minute, tokens per minute, or both, for the
+whole workspace, each API key, or each end user. trAIce counts them, so a limit
+holds across every instance of your app. Pass the end user's ID for per-user
+limits:
+
+```typescript
+try {
+  const response = await cloud.enforceRequest(request, (effective) => openai.chat.completions.create(effective), {
+    feature: "support-chat",
+    userId: currentUser.id,
+  });
+} catch (error) {
+  if (error instanceof TraiceEnforcementError && error.action === "RATE_LIMIT") {
+    // Retry later, or tell the user to slow down.
+    console.warn(`Rate limited; retry in ${error.retryAfterMs} ms`);
+  }
+}
+```
+
+Before a call a rate-limit rule matches, the SDK asks trAIce to count it. It
+waits at most 150 ms and lets the call through if trAIce does not answer. After
+a refusal, the SDK refuses calls for that rule locally until `retryAfterMs`
+passes, without asking trAIce again. Tokens are known only when a call returns,
+so the SDK reports them afterwards and calls already in flight can pass a
+tokens-per-minute limit. A rule in target verification never refuses; trAIce
+counts what it would have refused. `getRateLimitStats()` reports the counts.
+Older SDK versions never receive rate-limit rules.
+
+### Strict budget caps
+
+A budget cap blocks calls once the budget's spend, as of the last rules
+refresh, reaches its limit, so calls in flight and calls between refreshes can
+pass it. A strict cap closes that gap near the limit. Once a strictly capped
+budget passes 90% of its limit, the rules refresh lists it, and before each call
+the cap applies to, the SDK asks trAIce to check the call. trAIce adds the
+call's estimated cost to the period's spend and to the estimates of calls it
+already let through, and refuses the call if the total would pass the limit.
+Nothing to configure in the SDK. Pass `feature` and `userId` for feature and
+user caps, and `provider` for a better estimate:
+
+```typescript
+try {
+  const response = await cloud.enforceRequest(request, (effective) => openai.chat.completions.create(effective), {
+    feature: "support-chat",
+    userId: currentUser.id,
+    provider: "openai",
+  });
+} catch (error) {
+  if (error instanceof TraiceEnforcementError && error.action === "DENY" && error.reason.strictCap) {
+    // The budget cannot fit this call: error.reason names the budget, its limit, and its spend.
+  }
+}
+```
+
+The SDK sends the cap's rule, the feature, the user, the model the call goes to,
+the provider, a rough input token count (the characters of the message text
+divided by 4), and the request's output token limit (`max_tokens`), never the
+request text. The check runs right before the provider call, after rate limits,
+and only when the call reaches the provider: cache hits make no check. A refusal throws
+`TraiceEnforcementError` with action `DENY` and the cap's rule, without calling
+the provider. The SDK waits at most 300 ms. If trAIce does not answer in time or
+fails, the SDK lets the call through, unless the cap is set to block calls when
+trAIce is unavailable. A cap in preview never refuses; trAIce counts what it
+would have refused.
+
+An allowed call holds its estimate until its cost is recorded. When the call's
+cost event goes through the same `CloudAdapter`, the SDK sends the hold back with
+the next event of the same model and feature (`capReservationIds`), and trAIce
+releases it. Holds that never come back expire after 10 minutes.
+`getStrictCapStats()` reports `checked`, `refused`, `unavailable`,
+`blockedUnavailable`, and `shadowRefused`. Older SDK versions are never asked to
+check and keep blocking once their last refresh shows the budget spent.
+
+### Load balancing across keys
+
+A load-balancing rule spreads calls across several provider API keys of your
+own, for example to stay under each key's rate limit. The rule names each key
+by an alias you choose, with a weight. For each call the rule applies to, the
+SDK picks an alias by weight and passes it to your provider callback as
+`options.keyAlias`. Your callback maps the alias to its own client. trAIce
+never sees your keys, only the aliases:
+
+```typescript
+import OpenAI from "openai";
+
+const clients: Record<string, OpenAI> = {
+  primary: new OpenAI({ apiKey: process.env.OPENAI_KEY_PRIMARY }),
+  secondary: new OpenAI({ apiKey: process.env.OPENAI_KEY_SECONDARY }),
+};
+
+const response = await cloud.enforceRequest(request, (effective, options) => {
+  // No keyAlias when no load-balancing rule applies: use your default key.
+  const client = clients[options?.keyAlias ?? "primary"] ?? clients.primary;
+  return client.chat.completions.create(effective, { signal: options?.signal });
+});
+```
+
+The rule matches the request that actually goes to the provider, after any
+swap, rollout, or fallback, and the call's `feature`. When the provider
+rate-limits a key (HTTP 429), the SDK rests that key for the provider's
+`Retry-After` (held between 1 second and 10 minutes), or for the rule's cooldown
+when there is none. If the rule moves to the next key on a rate limit, the SDK
+retries the call on a key it has not tried yet, at most once per key; otherwise
+it throws the provider error. Other errors never switch keys (fallback rules
+handle them), and neither does a refusal from trAIce. Each attempt on another
+key is a new provider call, so strict caps check it too; a rate-limit rule
+counts the call once. When every key is rate-limited, the last provider error
+is thrown. Rest times are kept per `CloudAdapter` and start over when the rule's
+keys change.
+
+A rule in preview never changes the call: your callback gets no `keyAlias`,
+and trAIce records the key the rule would have used. The SDK reports one
+decision per call: the key it ended on, the number of provider calls, and the
+keys it left after a rate limit. If load balancing itself fails, the call goes
+to the provider as if no rule applied. `getLoadBalanceStats()` reports `calls`,
+`switches`, `exhausted`, and `byAlias`. Older SDK versions never receive
+load-balancing rules.
 
 ## Privacy and failure behavior
 
